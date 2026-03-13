@@ -1,0 +1,12 @@
+services:
+  control-plane:
+    build:
+      context: .
+    ports:
+      - "8000:8000"
+    environment:
+      FILMSTUDIO_ENV: docker
+      FILMSTUDIO_RUNTIME_ROOT: /app/runtime
+      FILMSTUDIO_DATABASE_PATH: /app/runtime/filmstudio.sqlite3
+    volumes:
+      - ./runtime:/app/runtime

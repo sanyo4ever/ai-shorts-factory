@@ -1,0 +1,164 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException, Request
+
+from filmstudio.domain.models import ProjectCreateRequest
+
+router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
+
+
+@router.get("")
+def list_projects(request: Request):
+    return request.app.state.project_service.list_projects()
+
+
+@router.post("")
+def create_project(request: Request, payload: ProjectCreateRequest):
+    try:
+        snapshot = request.app.state.project_service.create_project(payload)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return snapshot
+
+
+@router.get("/{project_id}")
+def get_project(request: Request, project_id: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return snapshot
+
+
+@router.post("/{project_id}/run")
+def run_project(request: Request, project_id: str):
+    try:
+        snapshot = request.app.state.worker.run_project(project_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Project not found") from None
+    return snapshot
+
+
+@router.get("/{project_id}/scenes")
+def get_scenes(request: Request, project_id: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return snapshot.scenes
+
+
+@router.get("/{project_id}/planning")
+def get_planning_bundle(request: Request, project_id: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    planning_kinds = {
+        "planning_manifest",
+        "story_bible",
+        "character_bible",
+        "scene_plan",
+        "shot_plan",
+        "asset_strategy",
+        "continuity_bible",
+    }
+    payload: dict[str, object] = {}
+    for artifact in snapshot.artifacts:
+        if artifact.kind not in planning_kinds:
+            continue
+        path = Path(artifact.path)
+        if not path.exists():
+            continue
+        payload[artifact.kind] = json.loads(path.read_text(encoding="utf-8"))
+    return payload
+
+
+@router.get("/{project_id}/temporal")
+def get_temporal_progress(request: Request, project_id: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return request.app.state.project_service.build_temporal_progress_view(snapshot)
+
+
+@router.get("/{project_id}/jobs")
+def get_jobs(request: Request, project_id: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return snapshot.jobs
+
+
+@router.get("/{project_id}/job-attempts")
+def get_job_attempts(request: Request, project_id: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return snapshot.job_attempts
+
+
+@router.get("/{project_id}/job-attempts/{attempt_id}")
+def get_job_attempt(request: Request, project_id: str, attempt_id: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    for attempt in snapshot.job_attempts:
+        if attempt.attempt_id == attempt_id:
+            return attempt
+    raise HTTPException(status_code=404, detail="Job attempt not found")
+
+
+@router.get("/{project_id}/job-attempts/{attempt_id}/logs")
+def get_job_attempt_logs(request: Request, project_id: str, attempt_id: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    for attempt in snapshot.job_attempts:
+        if attempt.attempt_id != attempt_id:
+            continue
+        return {
+            "attempt_id": attempt_id,
+            "log_path": attempt.metadata.get("log_path"),
+            "events": request.app.state.attempt_log_store.read_events(project_id, attempt_id),
+        }
+    raise HTTPException(status_code=404, detail="Job attempt not found")
+
+
+@router.get("/{project_id}/job-attempts/{attempt_id}/manifest")
+def get_job_attempt_manifest(request: Request, project_id: str, attempt_id: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    for attempt in snapshot.job_attempts:
+        if attempt.attempt_id != attempt_id:
+            continue
+        manifest = request.app.state.attempt_log_store.read_manifest(project_id, attempt_id)
+        if manifest is None:
+            raise HTTPException(status_code=404, detail="Attempt manifest not found")
+        return manifest
+    raise HTTPException(status_code=404, detail="Job attempt not found")
+
+
+@router.get("/{project_id}/artifacts")
+def get_artifacts(request: Request, project_id: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return snapshot.artifacts
+
+
+@router.get("/{project_id}/qc-reports")
+def get_qc_reports(request: Request, project_id: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return snapshot.qc_reports
+
+
+@router.get("/{project_id}/recovery-plans")
+def get_recovery_plans(request: Request, project_id: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return snapshot.recovery_plans
