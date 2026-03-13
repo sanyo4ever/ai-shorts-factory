@@ -60,6 +60,25 @@ The target architecture remains workflow-first, quality-first, and local self-ho
 
 This repository is licensed under the GNU Affero General Public License v3.0 (`AGPL-3.0`). If you modify the system and make it available over a network, the corresponding source for that modified version must remain available under the same license. See [LICENSE](LICENSE).
 
+## Prerequisites
+
+The current repo is optimized first for a local Windows workstation flow.
+
+- Python `3.11+`
+- PowerShell
+- `ffmpeg` and `ffprobe` available in `PATH`
+- enough disk space for `runtime/` artifacts and optional model downloads
+- optional but recommended for live media backends: NVIDIA GPU with current drivers
+
+The deterministic baseline path does not require every heavy backend to be installed. The first public run path is:
+
+- FastAPI control plane
+- local worker
+- deterministic planning or explicit `Ollama`
+- local `Piper` for dialogue
+- deterministic subtitles
+- `ffmpeg` or `ffprobe` for render and QC
+
 ## Quick Start
 
 ```bash
@@ -67,6 +86,12 @@ python -m venv .venv
 .venv\\Scripts\\activate
 pip install -e .[dev]
 uvicorn filmstudio.main:app --reload
+```
+
+If you are starting from a fresh clone, create a local env file first:
+
+```powershell
+Copy-Item .env.example .env
 ```
 
 Default mode keeps planning deterministic, uses local `Piper` for dialogue, uses deterministic subtitles, and relies on local `ffmpeg`/`ffprobe` for render and QC. To enable live planning through `Ollama`, set:
@@ -79,6 +104,60 @@ set FILMSTUDIO_LLM_MODEL=llama3.1:8b
 You can override planner, orchestrator, and media backend choice per project request by sending `planner_backend`, `planner_model`, `orchestrator_backend`, `visual_backend`, `video_backend`, `tts_backend`, `music_backend`, `lipsync_backend`, and `subtitle_backend` in the create-project payload.
 `FILMSTUDIO_AUTO_MANAGE_SERVICES=1` is now the normal one-box runtime mode: the pipeline starts heavyweight local services on demand for the relevant stage, runs them sequentially, and performs a final cleanup sweep after the project run. Manual `start_*` scripts are now for debugging, warm-up, or isolated backend bring-up rather than for the default end-to-end path.
 The default local render profile is now `FILMSTUDIO_RENDER_WIDTH=720`, `FILMSTUDIO_RENDER_HEIGHT=1280`, `FILMSTUDIO_RENDER_FPS=24`, so fresh projects plan and render as vertical shorts unless you override those settings explicitly.
+
+## First End-to-End Run
+
+For a first local run, start with the default baseline instead of enabling every heavy backend at once.
+
+1. Start the API:
+
+```powershell
+.venv\Scripts\python.exe -m uvicorn filmstudio.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+2. In another terminal, create a project:
+
+```powershell
+$body = @{
+  title = "Hello vertical short"
+  language = "uk"
+  script = "Оповідач: Герой виходить у кадр. Герой: Ми будуємо локальну AI студію."
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://127.0.0.1:8000/api/v1/projects" `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+3. Take the returned `project_id` and run the worker:
+
+```powershell
+.venv\Scripts\python.exe .\scripts\run_local_worker.py <project_id>
+```
+
+4. Inspect the outputs:
+
+- final video: `runtime/artifacts/<project_id>/renders/final.mp4`
+- subtitles: `runtime/artifacts/<project_id>/subtitles/`
+- manifests and logs: `runtime/artifacts/<project_id>/` and `runtime/logs/<project_id>/`
+
+This path is the best starting point for anyone cloning the repo for the first time because it exercises the real control plane, worker, manifests, and final render flow without requiring every optional backend to be bootstrapped first.
+
+## Optional Live Backends
+
+After the baseline path works, individual live backends can be enabled per project or through env settings:
+
+- `Ollama` for planning
+- `ComfyUI` for visual generation
+- `Wan` for `hero_insert` video shots
+- `MuseTalk` for portrait lipsync
+- `ACE-Step` for music
+- `WhisperX` for subtitle alignment
+- `Temporal` for durable orchestration
+
+The repo includes dedicated `bootstrap_*`, `start_*`, `stop_*`, and campaign scripts for those backends. Bring them up one by one, not all at once.
 
 Default TTS uses local `Piper` with the checked-in runtime model path under `runtime/models/piper/...`.
 The dialogue manifest now persists both original script text and the actual `tts_input_text` sent to `Piper`; for `language=uk`, the backend normalizes Ukrainian Latin-script dialogue into Cyrillic lowercase before synthesis so mixed-script operator input does not leak directly into the TTS engine.
