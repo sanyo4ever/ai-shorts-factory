@@ -33,6 +33,7 @@ if (-not (Test-Path $PythonExe)) {
 & $MimExe install "mmdet==3.1.0"
 & $MimExe install "mmpose==1.1.0"
 & $PipExe install --no-cache-dir "numpy<2"
+& $PythonExe (Join-Path $RepoRoot "scripts\patch_musetalk_preprocessing.py") $ServiceRoot
 
 @'
 from pathlib import Path

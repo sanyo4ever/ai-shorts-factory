@@ -1440,14 +1440,10 @@ class DeterministicMediaAdapters:
 
     @staticmethod
     def _source_face_inference_ready(face_probe_payload: dict[str, Any]) -> bool:
-        checks = face_probe_payload.get("checks") if isinstance(face_probe_payload.get("checks"), dict) else {}
-        return bool(
-            checks.get("face_detected")
-            and checks.get("landmarks_detected")
-            and checks.get("semantic_layout_ok")
-            and checks.get("face_size_ok")
-            and not face_probe_payload.get("failure_reasons")
-        )
+        # Recovery passes can legitimately end up with strong landmark geometry even if the
+        # detector-specific flag stayed false after cropping/padding. For inference readiness,
+        # treat the same recovered geometry contract as sufficient.
+        return DeterministicMediaAdapters._face_probe_effective_pass(face_probe_payload)
 
     @classmethod
     def _face_probe_can_recover_with_tightening(cls, face_probe_payload: dict[str, Any]) -> bool:
@@ -4532,16 +4528,16 @@ class DeterministicMediaAdapters:
                     selected_normalized_probe = normalized_probe
                     selected_normalize_command = normalize_command
                     selected_normalize_duration_sec = normalize_run.duration_sec
-                selected_normalized_output_path = attempt_normalized_output_path
-                selected_attempt_index = source_attempt_index
-                if primary_character["character_id"]:
-                    successful_source_refs_by_character[primary_character["character_id"]] = {
-                        "path": str(prepared_source_path),
-                        "kind": "prior_successful_lipsync_source",
-                        "shot_id": shot.shot_id,
-                        "attempt_index": source_attempt_index,
-                    }
-                break
+                    selected_normalized_output_path = attempt_normalized_output_path
+                    selected_attempt_index = source_attempt_index
+                    if primary_character["character_id"]:
+                        successful_source_refs_by_character[primary_character["character_id"]] = {
+                            "path": str(prepared_source_path),
+                            "kind": "prior_successful_lipsync_source",
+                            "shot_id": shot.shot_id,
+                            "attempt_index": source_attempt_index,
+                        }
+                    break
 
                 if (
                     selected_musetalk_result is None
@@ -6422,6 +6418,8 @@ class DeterministicMediaAdapters:
     def _subtitle_recommended_max_lines(shot: ShotPlan) -> int:
         if shot.strategy == "hero_insert" and shot.composition.subtitle_lane == "top":
             return 3
+        if shot.strategy == "portrait_lipsync":
+            return 3
         return 2
 
     @staticmethod
@@ -6666,6 +6664,37 @@ class DeterministicMediaAdapters:
         }
 
     def _expected_project_duration(self, snapshot: ProjectSnapshot) -> float:
+        shot_video_map = {
+            artifact.metadata.get("shot_id"): artifact
+            for artifact in snapshot.artifacts
+            if artifact.kind == "shot_video"
+        }
+        lipsync_video_map = {
+            artifact.metadata.get("shot_id"): artifact
+            for artifact in snapshot.artifacts
+            if artifact.kind == "shot_lipsync_video"
+        }
+        require_musetalk = snapshot.project.metadata.get("lipsync_backend") == "musetalk"
+        actual_duration_sec = 0.0
+        has_complete_output_timeline = True
+        for scene in snapshot.scenes:
+            for shot in scene.shots:
+                if shot.strategy == "portrait_lipsync" and require_musetalk:
+                    shot_artifact = lipsync_video_map.get(shot.shot_id)
+                else:
+                    shot_artifact = lipsync_video_map.get(shot.shot_id) or shot_video_map.get(shot.shot_id)
+                if shot_artifact is None:
+                    has_complete_output_timeline = False
+                    break
+                duration_sec = float(shot_artifact.metadata.get("duration_sec", 0.0) or 0.0)
+                if duration_sec <= 0.0:
+                    has_complete_output_timeline = False
+                    break
+                actual_duration_sec += duration_sec
+            if not has_complete_output_timeline:
+                break
+        if has_complete_output_timeline and actual_duration_sec > 0.0:
+            return actual_duration_sec
         shot_ranges = self._shot_time_ranges(snapshot)
         if not shot_ranges:
             return 0.0

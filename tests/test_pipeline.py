@@ -325,8 +325,56 @@ def test_generate_subtitles_builds_layout_aware_ass_track(tmp_path) -> None:
     assert layout_payload["backend"] == "deterministic"
     assert layout_payload["render_profile"]["orientation"] == "portrait"
     assert layout_payload["cues"][0]["subtitle_lane"] == "bottom"
-    assert layout_payload["cues"][0]["recommended_max_lines"] == 2
+    assert layout_payload["cues"][0]["recommended_max_lines"] == 3
     assert layout_payload["cues"][0]["fits_safe_zone"] is True
+
+
+def test_expected_project_duration_prefers_actual_output_timeline(tmp_path) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="Expected duration from outputs",
+            script="SCENE 1. HERO hovoryt.\nHERO: Pryvit.\n\nSCENE 2. HERO znov hovoryt.\nHERO: Znov pryvit.",
+            language="uk",
+            lipsync_backend="musetalk",
+        )
+    )
+    first_shot = snapshot.scenes[0].shots[0]
+    second_shot = snapshot.scenes[1].shots[0]
+    first_shot.strategy = "portrait_lipsync"
+    second_shot.strategy = "portrait_lipsync"
+    adapters = DeterministicMediaAdapters(artifact_store, lipsync_backend="musetalk")
+
+    first_output = runtime_root / "first_synced.mp4"
+    second_output = runtime_root / "second_synced.mp4"
+    first_output.write_bytes(b"first")
+    second_output.write_bytes(b"second")
+    snapshot.artifacts.extend(
+        [
+            ArtifactRecord(
+                artifact_id=new_id("artifact"),
+                kind="shot_lipsync_video",
+                path=str(first_output),
+                stage="apply_lipsync",
+                metadata={"shot_id": first_shot.shot_id, "duration_sec": 6.42},
+            ),
+            ArtifactRecord(
+                artifact_id=new_id("artifact"),
+                kind="shot_lipsync_video",
+                path=str(second_output),
+                stage="apply_lipsync",
+                metadata={"shot_id": second_shot.shot_id, "duration_sec": 5.41},
+            ),
+        ]
+    )
+
+    assert adapters._expected_project_duration(snapshot) == pytest.approx(11.83)
 
 
 def test_local_pipeline_hero_insert_uses_top_subtitle_lane_and_visibility_probe(tmp_path) -> None:
@@ -2558,7 +2606,7 @@ def test_musetalk_output_face_isolation_tightening_reprobes_before_rejecting(
     assert Path(manifest["output_face_manifest_path"]).exists()
 
 
-def test_musetalk_source_detector_relief_reprobes_before_inference(tmp_path, monkeypatch) -> None:
+def test_musetalk_source_landmark_fallback_proceeds_without_detector_relief(tmp_path, monkeypatch) -> None:
     runtime_root = tmp_path / "runtime"
     artifact_store = ArtifactStore(runtime_root / "artifacts")
     service = ProjectService(
@@ -2820,13 +2868,10 @@ def test_musetalk_source_detector_relief_reprobes_before_inference(tmp_path, mon
 
     lipsync_result = adapters.apply_lipsync(snapshot)
     artifact_kinds = {artifact.kind for artifact in lipsync_result.artifacts}
-    assert "lipsync_source_detector_relieved_image" in artifact_kinds
-    assert inference_sources == ["musetalk_source_attempt_01_detector_relieved.png"]
-    assert probe_variants == [
-        "musetalk_source_attempt_01.png",
-        "musetalk_source_attempt_01_detector_relieved.png",
-    ]
-    assert any("pad=768:768" in " ".join(args) for args in command_calls)
+    assert "lipsync_source_detector_relieved_image" not in artifact_kinds
+    assert inference_sources == ["musetalk_source_attempt_01.png"]
+    assert probe_variants == ["musetalk_source_attempt_01.png"]
+    assert not any("pad=768:768" in " ".join(args) for args in command_calls)
 
     manifest_path = Path(
         next(artifact.path for artifact in lipsync_result.artifacts if artifact.kind == "lipsync_manifest")
@@ -2834,9 +2879,9 @@ def test_musetalk_source_detector_relief_reprobes_before_inference(tmp_path, mon
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["source_attempt_count"] == 1
     assert manifest["source_inference_ready"] is True
-    assert manifest["source_detector_adjustment"]["applied"] is True
+    assert manifest["source_detector_adjustment"] is None
     assert manifest["source_attempts"][0]["source_inference_ready"] is True
-    assert manifest["source_attempts"][0]["source_detector_adjustment"]["applied"] is True
+    assert "source_detector_adjustment" not in manifest["source_attempts"][0]
 
 
 def test_musetalk_output_face_quality_retries_before_accepting_attempt(tmp_path, monkeypatch) -> None:
@@ -3416,6 +3461,29 @@ def test_face_probe_effective_pass_accepts_landmark_only_valid_probe() -> None:
     )
 
 
+def test_source_face_inference_ready_accepts_landmark_only_valid_probe() -> None:
+    payload = {
+        "passed": False,
+        "failure_reasons": [],
+        "checks": {
+            "face_detected": False,
+            "landmarks_detected": True,
+            "semantic_layout_ok": True,
+            "face_size_ok": True,
+        },
+        "selected_bbox": [200.0, 200.0, 480.0, 560.0],
+        "metrics": {
+            "bbox_width_px": 280.0,
+            "bbox_height_px": 360.0,
+            "bbox_area_ratio": 0.18,
+            "eye_distance_px": 128.0,
+            "eye_tilt_ratio": 0.02,
+            "nose_center_offset_ratio": 0.03,
+        },
+    }
+    assert DeterministicMediaAdapters._source_face_inference_ready(payload) is True
+
+
 def test_face_isolation_summary_rejects_large_secondary_detection() -> None:
     summary = DeterministicMediaAdapters._summarize_face_isolation(
         {
@@ -3592,3 +3660,217 @@ def test_prepare_musetalk_source_reuses_prior_successful_source_reference(tmp_pa
     assert manifest["preferred_reference_shot_id"] == first_shot.shot_id
     assert manifest["character_reference_path"] == str(character_reference_path)
     assert manifest["workflow"]["2"]["class_type"] == "LoadImage"
+
+
+def test_apply_lipsync_persists_canonical_outputs_for_each_portrait_shot(tmp_path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="MuseTalk canonical outputs",
+            script="SCENE 1. HERO hovoryt.\nHERO: Pryvit.\n\nSCENE 2. HERO znovu hovoryt.\nHERO: Znov pryvit.",
+            language="uk",
+            visual_backend="comfyui",
+            lipsync_backend="musetalk",
+        )
+    )
+    first_shot = snapshot.scenes[0].shots[0]
+    second_shot = snapshot.scenes[1].shots[0]
+    first_shot.strategy = "portrait_lipsync"
+    second_shot.strategy = "portrait_lipsync"
+    first_shot.dialogue = [DialogueLine(character_name="Hero", text="Pryvit.")]
+    second_shot.dialogue = [DialogueLine(character_name="Hero", text="Znov pryvit.")]
+
+    character_id = snapshot.project.characters[0].character_id
+    character_reference_path = (
+        runtime_root / f"artifacts/{snapshot.project.project_id}/characters/{character_id}/reference.png"
+    )
+    character_reference_path.parent.mkdir(parents=True, exist_ok=True)
+    character_reference_path.write_bytes(b"fake-character-reference")
+    character_manifest_path = artifact_store.write_json(
+        snapshot.project.project_id,
+        f"characters/{character_id}/generation_manifest.json",
+        {"backend": "comfyui", "character_id": character_id, "prompt_id": "prompt_character"},
+    )
+    snapshot.artifacts.extend(
+        [
+            ArtifactRecord(
+                artifact_id=new_id("artifact"),
+                kind="character_reference",
+                path=str(character_reference_path),
+                stage="build_characters",
+                metadata={"backend": "comfyui", "character_id": character_id},
+            ),
+            ArtifactRecord(
+                artifact_id=new_id("artifact"),
+                kind="character_generation_manifest",
+                path=str(character_manifest_path),
+                stage="build_characters",
+                metadata={"backend": "comfyui", "character_id": character_id},
+            ),
+        ]
+    )
+
+    adapters = DeterministicMediaAdapters(
+        artifact_store,
+        visual_backend="comfyui",
+        comfyui_checkpoint_name="model.safetensors",
+        comfyui_input_dir=runtime_root / "services" / "ComfyUI" / "input",
+        lipsync_backend="musetalk",
+        musetalk_python_binary=sys.executable,
+        musetalk_repo_path=runtime_root / "services" / "MuseTalk",
+        ffmpeg_binary="ffmpeg",
+        ffprobe_binary="ffprobe",
+    )
+    adapters.musetalk_repo_path.mkdir(parents=True, exist_ok=True)
+    dialogue_result = adapters.synthesize_dialogue(snapshot)
+    snapshot.artifacts.extend(dialogue_result.artifacts)
+
+    class FakeComfyClient:
+        def __init__(self) -> None:
+            self.counter = 0
+
+        def generate_image(self, workflow, *, output_node_id="7"):
+            self.counter += 1
+            assert output_node_id == "8"
+            return ComfyUIImageResult(
+                prompt_id=f"prompt_lipsync_source_{self.counter}",
+                filename=f"musetalk_source_{self.counter}.png",
+                subfolder="filmstudio/tests",
+                output_type="output",
+                image_bytes=b"fake-png",
+                workflow=workflow,
+                history={f"prompt_lipsync_source_{self.counter}": {"outputs": {}}},
+                duration_sec=1.0,
+            )
+
+    def fake_run_command(args, *, timeout_sec=300.0, cwd=None, env=None):
+        output_path = Path(args[-1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if output_path.suffix.lower() == ".png":
+            output_path.write_bytes(b"fake-png")
+        else:
+            output_path.write_bytes(b"fake-mp4")
+        return CommandResult(
+            args=args,
+            returncode=0,
+            stdout="ok",
+            stderr="",
+            duration_sec=1.0,
+        )
+
+    def fake_ffprobe_media(ffprobe_binary, media_path, *, timeout_sec=30.0):
+        path = Path(media_path)
+        if path.suffix.lower() == ".png":
+            return {
+                "format": {"duration": "1.0", "size": "1024", "bit_rate": "1000"},
+                "streams": [
+                    {"codec_type": "video", "codec_name": "png", "width": 768, "height": 768}
+                ],
+            }
+        return {
+            "format": {"duration": "3.0", "size": "1024", "bit_rate": "1000"},
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "width": 720,
+                    "height": 1280,
+                    "r_frame_rate": "24/1",
+                },
+                {
+                    "codec_type": "audio",
+                    "codec_name": "aac",
+                    "channels": 2,
+                    "sample_rate": "48000",
+                },
+            ],
+        }
+
+    def fake_run_musetalk_source_probe(config, *, source_media_path, result_root):
+        result_root.mkdir(parents=True, exist_ok=True)
+        probe_path = result_root / "musetalk_source_face_probe.json"
+        stdout_path = result_root / "musetalk_source_face_probe_stdout.log"
+        stderr_path = result_root / "musetalk_source_face_probe_stderr.log"
+        payload = {
+            "backend": "musetalk_face_preflight",
+            "source_path": str(source_media_path),
+            "passed": True,
+            "failure_reasons": [],
+            "warnings": [],
+            "checks": {
+                "face_detected": True,
+                "landmarks_detected": True,
+                "semantic_layout_ok": True,
+                "face_size_ok": True,
+            },
+            "metrics": {
+                "bbox_width_px": 320.0,
+                "bbox_height_px": 330.0,
+                "bbox_area_ratio": 0.18 if not source_media_path.name.startswith("frame_") else 0.11,
+                "eye_distance_px": 140.0,
+                "eye_tilt_ratio": 0.02,
+                "nose_center_offset_ratio": 0.08,
+            },
+        }
+        probe_path.write_text(json.dumps(payload), encoding="utf-8")
+        stdout_path.write_text("probe ok", encoding="utf-8")
+        stderr_path.write_text("", encoding="utf-8")
+        return MuseTalkSourceProbeResult(
+            payload=payload,
+            probe_path=probe_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            command=["python", "-c", "probe"],
+            duration_sec=0.5,
+        )
+
+    def fake_run_musetalk_inference(config, *, source_media_path, audio_path, result_root, result_name):
+        output_dir = result_root / config.version
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / result_name
+        output_path.write_bytes(b"fake-musetalk-mp4")
+        task_config_path = result_root / "musetalk_task.yaml"
+        task_config_path.write_text("task_0:\n", encoding="utf-8")
+        stdout_path = result_root / "musetalk_stdout.log"
+        stderr_path = result_root / "musetalk_stderr.log"
+        stdout_path.write_text("stdout", encoding="utf-8")
+        stderr_path.write_text("", encoding="utf-8")
+        return MuseTalkRunResult(
+            output_video_path=output_path,
+            task_config_path=task_config_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            command=["python", "-m", "scripts.inference"],
+            duration_sec=2.0,
+            result_dir=output_dir,
+        )
+
+    adapters._comfyui_client = FakeComfyClient()  # type: ignore[assignment]
+    monkeypatch.setattr("filmstudio.services.media_adapters.resolve_binary", lambda value: value)
+    monkeypatch.setattr("filmstudio.services.media_adapters.run_command", fake_run_command)
+    monkeypatch.setattr("filmstudio.services.media_adapters.ffprobe_media", fake_ffprobe_media)
+    monkeypatch.setattr(
+        "filmstudio.services.media_adapters.run_musetalk_source_probe",
+        fake_run_musetalk_source_probe,
+    )
+    monkeypatch.setattr(
+        "filmstudio.services.media_adapters.run_musetalk_inference",
+        fake_run_musetalk_inference,
+    )
+
+    lipsync_result = adapters.apply_lipsync(snapshot)
+    snapshot.artifacts.extend(lipsync_result.artifacts)
+
+    assert sum(artifact.kind == "shot_lipsync_video" for artifact in lipsync_result.artifacts) == 2
+    assert sum(artifact.kind == "lipsync_manifest" for artifact in lipsync_result.artifacts) == 2
+    assert sum(artifact.kind == "shot_lipsync_raw_video" for artifact in lipsync_result.artifacts) == 2
+
+    ordered_videos = adapters._ordered_shot_videos(snapshot)
+    assert len(ordered_videos) == 2
+    assert all(path.name == "synced.mp4" for path in ordered_videos)
