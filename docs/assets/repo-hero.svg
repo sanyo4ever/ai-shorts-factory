@@ -1,0 +1,103 @@
+<svg width="1600" height="900" viewBox="0 0 1600 900" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">AI Shorts Factory hero banner</title>
+  <desc id="desc">Original stylized action banner for the AI Shorts Factory repository with a bold cinematic 9 by 16 production theme.</desc>
+  <defs>
+    <linearGradient id="bg" x1="138" y1="98" x2="1440" y2="826" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#172554"/>
+      <stop offset="0.34" stop-color="#0F172A"/>
+      <stop offset="0.7" stop-color="#7C2D12"/>
+      <stop offset="1" stop-color="#FB923C"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="498" y1="164" x2="1048" y2="746" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38BDF8"/>
+      <stop offset="0.52" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="sun" x1="1160" y1="150" x2="1160" y2="520" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FDE68A"/>
+      <stop offset="1" stop-color="#FB7185"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#FEF3C7"/>
+      <stop offset="1" stop-color="#FDBA74"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#020617" flood-opacity="0.35"/>
+    </filter>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0V48" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1600" height="900" rx="36" fill="url(#bg)"/>
+  <rect width="1600" height="900" rx="36" fill="url(#grid)"/>
+
+  <circle cx="1160" cy="280" r="196" fill="url(#sun)" opacity="0.9"/>
+  <circle cx="1160" cy="280" r="148" fill="#FDE68A" opacity="0.14"/>
+  <circle cx="1160" cy="280" r="116" fill="#FFF7ED" opacity="0.08"/>
+
+  <path d="M0 664C156 602 262 578 396 560C500 544 608 516 734 472C916 410 1122 370 1600 382V900H0V664Z" fill="#0F172A" opacity="0.58"/>
+  <path d="M0 744C150 704 286 690 436 674C646 650 798 578 952 528C1126 470 1300 438 1600 446V900H0V744Z" fill="#1E293B" opacity="0.72"/>
+  <path d="M0 800C164 770 304 754 496 726C642 704 778 652 936 602C1126 544 1314 526 1600 538V900H0V800Z" fill="#334155" opacity="0.9"/>
+
+  <g opacity="0.8">
+    <path d="M176 130L290 182L232 240L96 194L176 130Z" fill="#F8FAFC" fill-opacity="0.12"/>
+    <path d="M1348 560L1502 508L1530 592L1374 640L1348 560Z" fill="#F8FAFC" fill-opacity="0.1"/>
+    <path d="M124 320L240 352L202 430L82 396L124 320Z" fill="#FDE68A" fill-opacity="0.08"/>
+    <path d="M1318 126L1452 168L1392 254L1250 206L1318 126Z" fill="#93C5FD" fill-opacity="0.12"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="500" y="144" width="600" height="640" rx="42" fill="#0F172A" stroke="#F8FAFC" stroke-opacity="0.16" stroke-width="3"/>
+    <rect x="528" y="172" width="544" height="584" rx="30" fill="url(#panel)"/>
+    <rect x="576" y="230" width="450" height="476" rx="36" fill="#0B1120" fill-opacity="0.6" stroke="#E2E8F0" stroke-opacity="0.18" stroke-width="2"/>
+    <rect x="628" y="286" width="346" height="316" rx="26" fill="#0F172A" opacity="0.88"/>
+    <rect x="658" y="318" width="286" height="180" rx="22" fill="#38BDF8" fill-opacity="0.18" stroke="#BAE6FD" stroke-opacity="0.45" stroke-width="2"/>
+    <path d="M690 440C736 394 784 364 836 348C888 332 930 338 962 366V466H690V440Z" fill="#F97316" opacity="0.88"/>
+    <path d="M694 458C754 412 812 386 866 384C912 382 948 394 980 418V466H694V458Z" fill="#22C55E" opacity="0.78"/>
+    <circle cx="744" cy="374" r="20" fill="#FDE68A"/>
+    <rect x="680" y="530" width="244" height="18" rx="9" fill="#E2E8F0" fill-opacity="0.95"/>
+    <rect x="706" y="560" width="198" height="18" rx="9" fill="#E2E8F0" fill-opacity="0.7"/>
+    <rect x="610" y="638" width="382" height="26" rx="13" fill="#020617" fill-opacity="0.54"/>
+    <rect x="640" y="644" width="152" height="14" rx="7" fill="#FB7185"/>
+    <rect x="812" y="644" width="82" height="14" rx="7" fill="#FDE68A"/>
+    <rect x="904" y="644" width="56" height="14" rx="7" fill="#38BDF8"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="116" y="160" width="312" height="172" rx="28" fill="#0F172A" fill-opacity="0.84" stroke="#F8FAFC" stroke-opacity="0.16" stroke-width="2"/>
+    <text x="150" y="218" fill="#F8FAFC" font-family="'Arial Black', 'Segoe UI', sans-serif" font-size="28" letter-spacing="1.2">SCRIPT TO SCREEN</text>
+    <text x="150" y="258" fill="#BAE6FD" font-family="'Segoe UI', sans-serif" font-size="20">Planning. Continuity. QC.</text>
+    <path d="M152 290H392" stroke="#38BDF8" stroke-width="10" stroke-linecap="round"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="1132" y="602" width="330" height="152" rx="28" fill="#0F172A" fill-opacity="0.84" stroke="#F8FAFC" stroke-opacity="0.16" stroke-width="2"/>
+    <text x="1168" y="654" fill="#F8FAFC" font-family="'Arial Black', 'Segoe UI', sans-serif" font-size="26" letter-spacing="1.4">VERTICAL FIRST</text>
+    <text x="1168" y="694" fill="#FDE68A" font-family="'Segoe UI', sans-serif" font-size="20">9:16 delivery with subtitles and final render</text>
+    <path d="M1168 720H1420" stroke="#FB7185" stroke-width="10" stroke-linecap="round"/>
+  </g>
+
+  <g>
+    <rect x="108" y="528" width="214" height="92" rx="22" fill="url(#card)" stroke="#0F172A" stroke-opacity="0.12"/>
+    <text x="146" y="585" fill="#7C2D12" font-family="'Arial Black', 'Segoe UI', sans-serif" font-size="34">STORY</text>
+    <rect x="238" y="438" width="214" height="92" rx="22" fill="#38BDF8" fill-opacity="0.88" stroke="#0F172A" stroke-opacity="0.12"/>
+    <text x="276" y="495" fill="#082F49" font-family="'Arial Black', 'Segoe UI', sans-serif" font-size="34">VOICE</text>
+    <rect x="1210" y="420" width="214" height="92" rx="22" fill="#FB7185" fill-opacity="0.88" stroke="#0F172A" stroke-opacity="0.12"/>
+    <text x="1246" y="477" fill="#4C0519" font-family="'Arial Black', 'Segoe UI', sans-serif" font-size="34">SHOT</text>
+    <rect x="1286" y="512" width="214" height="92" rx="22" fill="#4ADE80" fill-opacity="0.9" stroke="#0F172A" stroke-opacity="0.12"/>
+    <text x="1330" y="569" fill="#052E16" font-family="'Arial Black', 'Segoe UI', sans-serif" font-size="34">QC</text>
+  </g>
+
+  <g opacity="0.92">
+    <path d="M410 732L482 660L558 732L482 804L410 732Z" fill="#FDE68A"/>
+    <path d="M1082 202L1146 138L1208 202L1146 266L1082 202Z" fill="#38BDF8"/>
+    <path d="M1320 286L1380 226L1442 286L1380 348L1320 286Z" fill="#FB7185"/>
+  </g>
+
+  <g>
+    <text x="110" y="820" fill="#F8FAFC" font-family="'Arial Black', 'Segoe UI', sans-serif" font-size="86" letter-spacing="2">AI SHORTS</text>
+    <text x="110" y="888" fill="#FDE68A" font-family="'Arial Black', 'Segoe UI', sans-serif" font-size="86" letter-spacing="2">FACTORY</text>
+    <text x="1048" y="842" text-anchor="end" fill="#E2E8F0" font-family="'Segoe UI', sans-serif" font-size="24">Workflow-first film infrastructure for modern vertical storytelling</text>
+  </g>
+</svg>
