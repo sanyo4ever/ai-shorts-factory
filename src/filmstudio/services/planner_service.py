@@ -9,12 +9,17 @@ from filmstudio.core.settings import Settings
 from filmstudio.domain.models import (
     CharacterProfile,
     DialogueLine,
+    ProductPresetContract,
     ProjectCreateRequest,
     SafeZonePlan,
     ScenePlan,
     ShotPlan,
     VerticalCompositionPlan,
     new_id,
+)
+from filmstudio.services.product_preset_catalog import (
+    build_product_preset_payload,
+    get_product_preset_catalog,
 )
 from filmstudio.services.runtime_support import list_ollama_models, ollama_generate_json
 
@@ -23,6 +28,7 @@ from filmstudio.services.runtime_support import list_ollama_models, ollama_gener
 class PlanningBundle:
     characters: list[CharacterProfile]
     scenes: list[ScenePlan]
+    product_preset: dict[str, Any]
     story_bible: dict[str, Any]
     character_bible: dict[str, Any]
     scene_plan: dict[str, Any]
@@ -203,6 +209,7 @@ class PlannerService:
     ) -> PlanningBundle:
         del project_id
         characters = self.extract_characters(request)
+        product_preset = self._build_product_preset(request)
         raw_blocks = [block.strip() for block in re.split(r"\n\s*\n", request.script) if block.strip()]
         if not raw_blocks:
             raw_blocks = [request.script.strip()]
@@ -222,7 +229,7 @@ class PlannerService:
                     shots=shots,
                 )
             )
-        return self._compose_bundle(request, characters, scenes)
+        return self._compose_bundle(request, characters, scenes, product_preset=product_preset)
 
     def _compose_bundle(
         self,
@@ -230,6 +237,7 @@ class PlannerService:
         characters: list[CharacterProfile],
         scenes: list[ScenePlan],
         *,
+        product_preset: dict[str, Any] | None = None,
         story_bible: dict[str, Any] | None = None,
         character_bible: dict[str, Any] | None = None,
         scene_plan: dict[str, Any] | None = None,
@@ -237,21 +245,40 @@ class PlannerService:
         asset_strategy: dict[str, Any] | None = None,
         continuity_bible: dict[str, Any] | None = None,
     ) -> PlanningBundle:
+        resolved_product_preset = product_preset or self._build_product_preset(request)
         return PlanningBundle(
             characters=characters,
             scenes=scenes,
-            story_bible=story_bible or self._build_story_bible(request, scenes),
-            character_bible=character_bible or self._build_character_bible(request, characters),
+            product_preset=resolved_product_preset,
+            story_bible=story_bible or self._build_story_bible(request, scenes, resolved_product_preset),
+            character_bible=character_bible
+            or self._build_character_bible(request, characters, resolved_product_preset),
             scene_plan=scene_plan or self._build_scene_plan(scenes),
             shot_plan=shot_plan or self._build_shot_plan(scenes),
-            asset_strategy=asset_strategy or self._build_asset_strategy(scenes),
-            continuity_bible=continuity_bible or self._build_continuity_bible(scenes),
+            asset_strategy=asset_strategy or self._build_asset_strategy(scenes, resolved_product_preset),
+            continuity_bible=continuity_bible
+            or self._build_continuity_bible(scenes, resolved_product_preset),
         )
+
+    @staticmethod
+    def build_product_preset_catalog() -> dict[str, Any]:
+        return get_product_preset_catalog()
+
+    @staticmethod
+    def _build_product_preset(request: ProjectCreateRequest) -> dict[str, Any]:
+        contract = ProductPresetContract(
+            style_preset=request.style_preset,
+            voice_cast_preset=request.voice_cast_preset,
+            music_preset=request.music_preset,
+            short_archetype=request.short_archetype,
+        )
+        return build_product_preset_payload(contract)
 
     def _build_story_bible(
         self,
         request: ProjectCreateRequest,
         scenes: list[ScenePlan],
+        product_preset: dict[str, Any],
     ) -> dict[str, Any]:
         first_line = next((line.strip() for line in request.script.splitlines() if line.strip()), request.title)
         synopsis_parts = [scene.summary for scene in scenes[:3]]
@@ -264,6 +291,7 @@ class PlannerService:
             "theme": "to_be_refined",
             "tone": request.style,
             "language": request.language,
+            "product_preset": product_preset,
             "target_duration_sec": request.target_duration_sec,
             "estimated_duration_sec": sum(scene.duration_sec for scene in scenes),
             "scene_count": len(scenes),
@@ -289,27 +317,36 @@ class PlannerService:
                     "avoid multi-subject clutter in portrait closeups",
                 ],
             },
+            "style_direction": product_preset["style_direction"],
+            "music_direction": product_preset["music_direction"],
+            "archetype_direction": product_preset["archetype_direction"],
         }
 
     def _build_character_bible(
         self,
         request: ProjectCreateRequest,
         characters: list[CharacterProfile],
+        product_preset: dict[str, Any],
     ) -> dict[str, Any]:
+        voice_direction = product_preset["voice_cast_direction"]
+        speaker_roles = list(voice_direction.get("speaker_roles") or [])
         return {
             "language": request.language,
+            "voice_cast_preset": product_preset["voice_cast_preset"],
+            "voice_cast_direction": voice_direction,
             "characters": [
                 {
                     "character_id": character.character_id,
                     "name": character.name,
-                    "role": "speaker",
+                    "role": speaker_roles[index] if index < len(speaker_roles) else "speaker",
                     "voice_hint": character.voice_hint,
                     "visual_hint": character.visual_hint,
                     "palette": "to_be_defined",
                     "wardrobe": "to_be_defined",
                     "speech_style": "derived_from_script",
+                    "voice_delivery": voice_direction.get("delivery"),
                 }
-                for character in characters
+                for index, character in enumerate(characters)
             ],
         }
 
@@ -355,7 +392,7 @@ class PlannerService:
         }
 
     @staticmethod
-    def _build_asset_strategy(scenes: list[ScenePlan]) -> dict[str, Any]:
+    def _build_asset_strategy(scenes: list[ScenePlan], product_preset: dict[str, Any]) -> dict[str, Any]:
         strategies = []
         for scene in scenes:
             for shot in scene.shots:
@@ -384,13 +421,32 @@ class PlannerService:
                         },
                         "caption_safe_required": True,
                         "vertical_safe_zone_lock": True,
+                        "product_preset": {
+                            "style_preset": product_preset["style_preset"],
+                            "music_preset": product_preset["music_preset"],
+                            "short_archetype": product_preset["short_archetype"],
+                        },
                     }
                 )
-        return {"shots": strategies}
+        return {
+            "product_preset": {
+                "style_preset": product_preset["style_preset"],
+                "music_preset": product_preset["music_preset"],
+                "short_archetype": product_preset["short_archetype"],
+            },
+            "shots": strategies,
+        }
 
     @staticmethod
-    def _build_continuity_bible(scenes: list[ScenePlan]) -> dict[str, Any]:
+    def _build_continuity_bible(
+        scenes: list[ScenePlan],
+        product_preset: dict[str, Any],
+    ) -> dict[str, Any]:
         return {
+            "product_preset": {
+                "voice_cast_preset": product_preset["voice_cast_preset"],
+                "short_archetype": product_preset["short_archetype"],
+            },
             "scene_states": [
                 {
                     "scene_id": scene.scene_id,
@@ -522,6 +578,7 @@ class OllamaPlannerService(PlannerService):
         request: ProjectCreateRequest,
     ) -> PlanningBundle:
         del project_id
+        product_preset = self._build_product_preset(request)
         payload = ollama_generate_json(
             base_url=self.base_url,
             model=self.model_name,
@@ -534,16 +591,31 @@ class OllamaPlannerService(PlannerService):
             request,
             characters,
             scenes,
-            story_bible=self._normalize_story_bible(request, scenes, payload.get("story_bible")),
+            product_preset=product_preset,
+            story_bible=self._normalize_story_bible(
+                request,
+                scenes,
+                product_preset,
+                payload.get("story_bible"),
+            ),
             character_bible=self._normalize_character_bible(
                 request,
                 characters,
+                product_preset,
                 payload.get("character_bible"),
             ),
             scene_plan=self._normalize_scene_plan(scenes, payload.get("scene_plan")),
             shot_plan=self._normalize_shot_plan(scenes, payload.get("shot_plan")),
-            asset_strategy=self._normalize_asset_strategy(scenes, payload.get("asset_strategy")),
-            continuity_bible=self._normalize_continuity_bible(scenes, payload.get("continuity_bible")),
+            asset_strategy=self._normalize_asset_strategy(
+                scenes,
+                product_preset,
+                payload.get("asset_strategy"),
+            ),
+            continuity_bible=self._normalize_continuity_bible(
+                scenes,
+                product_preset,
+                payload.get("continuity_bible"),
+            ),
         )
 
     def _system_prompt(self) -> str:
@@ -559,11 +631,18 @@ class OllamaPlannerService(PlannerService):
 
     @staticmethod
     def _prompt(request: ProjectCreateRequest) -> str:
+        product_preset = ProductPresetContract(
+            style_preset=request.style_preset,
+            voice_cast_preset=request.voice_cast_preset,
+            music_preset=request.music_preset,
+            short_archetype=request.short_archetype,
+        )
         return json.dumps(
             {
                 "task": "Turn the screenplay into structured production planning JSON.",
                 "language": request.language,
                 "style": request.style,
+                "product_preset": product_preset.model_dump(),
                 "target_duration_sec": request.target_duration_sec,
                 "character_names": request.character_names,
                 "script": request.script,
@@ -811,25 +890,33 @@ class OllamaPlannerService(PlannerService):
         self,
         request: ProjectCreateRequest,
         scenes: list[ScenePlan],
+        product_preset: dict[str, Any],
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        base = self._build_story_bible(request, scenes)
+        base = self._build_story_bible(request, scenes, product_preset)
         if not isinstance(payload, dict):
             return base
         base.update({key: value for key, value in payload.items() if value not in (None, "", [])})
+        base["product_preset"] = product_preset
+        base["style_direction"] = product_preset["style_direction"]
+        base["music_direction"] = product_preset["music_direction"]
+        base["archetype_direction"] = product_preset["archetype_direction"]
         return base
 
     def _normalize_character_bible(
         self,
         request: ProjectCreateRequest,
         characters: list[CharacterProfile],
+        product_preset: dict[str, Any],
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        base = self._build_character_bible(request, characters)
+        base = self._build_character_bible(request, characters, product_preset)
         if not isinstance(payload, dict):
             return base
         if isinstance(payload.get("characters"), list) and payload["characters"]:
             base["characters"] = payload["characters"][:3]
+        base["voice_cast_preset"] = product_preset["voice_cast_preset"]
+        base["voice_cast_direction"] = product_preset["voice_cast_direction"]
         return base
 
     def _normalize_scene_plan(
@@ -905,9 +992,10 @@ class OllamaPlannerService(PlannerService):
     def _normalize_asset_strategy(
         self,
         scenes: list[ScenePlan],
+        product_preset: dict[str, Any],
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        base = self._build_asset_strategy(scenes)
+        base = self._build_asset_strategy(scenes, product_preset)
         if not isinstance(payload, dict):
             return base
         if isinstance(payload.get("shots"), list) and payload["shots"]:
@@ -942,14 +1030,20 @@ class OllamaPlannerService(PlannerService):
                     }
                 )
             base["shots"] = merged
+        base["product_preset"] = {
+            "style_preset": product_preset["style_preset"],
+            "music_preset": product_preset["music_preset"],
+            "short_archetype": product_preset["short_archetype"],
+        }
         return base
 
     def _normalize_continuity_bible(
         self,
         scenes: list[ScenePlan],
+        product_preset: dict[str, Any],
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        base = self._build_continuity_bible(scenes)
+        base = self._build_continuity_bible(scenes, product_preset)
         if not isinstance(payload, dict):
             return base
         if isinstance(payload.get("scene_states"), list) and payload["scene_states"]:
@@ -969,6 +1063,10 @@ class OllamaPlannerService(PlannerService):
                     }
                 )
             base["scene_states"] = merged_states
+        base["product_preset"] = {
+            "voice_cast_preset": product_preset["voice_cast_preset"],
+            "short_archetype": product_preset["short_archetype"],
+        }
         return base
 
 

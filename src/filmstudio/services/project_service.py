@@ -110,6 +110,7 @@ class ProjectService:
             "estimated_duration_sec": estimated_duration_sec,
             "language": request.language,
             "style": request.style,
+            "product_preset": planning_bundle.product_preset,
             "render_profile": planning_bundle.story_bible.get("delivery_profile", {}),
             "characters": [character.model_dump() for character in characters],
             "scenes": [scene.model_dump() for scene in scenes],
@@ -145,6 +146,11 @@ class ProjectService:
                 "lipsync_backend": resolved_lipsync_backend,
                 "subtitle_backend": resolved_subtitle_backend,
                 "planning_bundle_version": "v2",
+                "product_preset": planning_bundle.product_preset,
+                "style_preset": planning_bundle.product_preset["style_preset"],
+                "voice_cast_preset": planning_bundle.product_preset["voice_cast_preset"],
+                "music_preset": planning_bundle.product_preset["music_preset"],
+                "short_archetype": planning_bundle.product_preset["short_archetype"],
                 "render_profile": planning_bundle.story_bible.get("delivery_profile", {}),
                 **temporal_workflow_metadata,
             },
@@ -214,6 +220,7 @@ class ProjectService:
         artifacts: list[ArtifactRecord] = []
         artifact_specs = [
             ("planning_manifest", "planning/project_plan.json", planning_manifest),
+            ("product_preset", "planning/product_preset.json", bundle.product_preset),
             ("story_bible", "planning/story_bible.json", bundle.story_bible),
             ("character_bible", "planning/character_bible.json", bundle.character_bible),
             ("scene_plan", "planning/scene_plan.json", bundle.scene_plan),

@@ -679,22 +679,46 @@ class DeterministicMediaAdapters:
         shot: ShotPlan,
         primary_character: dict[str, str],
     ) -> list[dict[str, str]]:
-        del snapshot
+        product_preset = snapshot.project.metadata.get("product_preset") or {}
+        style_preset = str(product_preset.get("style_preset") or "")
         visual_hint = primary_character["visual_hint"]
         name = primary_character["name"]
         lane_hint = self._subtitle_lane_prompt_fragment(shot)
-        return [
+        preset_positive_hint = ""
+        preset_negative_hint = ""
+        direct_portrait_first_presets = {"broadcast_panel", "warm_documentary"}
+        if style_preset == "broadcast_panel":
+            preset_positive_hint = (
+                "single anchor panelist only, no co-host, no second presenter, "
+                "no split screen, no picture-in-picture, "
+            )
+            preset_negative_hint = (
+                "co-host, second presenter, split screen, picture-in-picture, inset guest, "
+                "panel desk, over-the-shoulder companion, "
+            )
+        elif style_preset == "warm_documentary":
+            preset_positive_hint = (
+                "single on-camera subject only, no companion silhouette, "
+                "no secondary figure in background, grounded documentary closeup, "
+            )
+            preset_negative_hint = (
+                "companion silhouette, background person, over-the-shoulder observer, "
+                "double exposure, second face behind subject, "
+            )
+        variants = [
             {
                 "label": "studio_headshot",
                 "positive_prompt": (
-                    f"studio headshot of {name}, one person only, single human subject, straight front view, "
+                    f"studio headshot of {name}, one person only, single human subject, {preset_positive_hint}"
+                    f"straight front view, "
                     f"front-facing head and shoulders, large centered face filling the frame, both eyes visible, "
                     f"direct gaze into camera, symmetrical face, mouth closed, face dominant in frame, "
                     f"minimal headroom, shoulders near lower frame edge, clear jawline, neutral background, "
                     f"realistic illustration, {lane_hint}, shot purpose: {shot.purpose}, {visual_hint}"
                 ),
                 "negative_prompt": (
-                    "multiple people, crowd, collage, extra faces, duplicate person, split face, "
+                    f"multiple people, crowd, collage, extra faces, duplicate person, split face, "
+                    f"{preset_negative_hint}"
                     "profile view, side profile, side view, three-quarter view, looking sideways, "
                     "tilted head, mouth open, tiny face, distant camera, wide framing, torso visible, "
                     "extreme close-up, cropped chin, cropped forehead, hands covering face, sunglasses, "
@@ -704,13 +728,15 @@ class DeterministicMediaAdapters:
             {
                 "label": "direct_portrait",
                 "positive_prompt": (
-                    f"solo close-up portrait of {name}, one person only, front-facing head and shoulders, "
+                    f"solo close-up portrait of {name}, one person only, {preset_positive_hint}"
+                    f"front-facing head and shoulders, "
                     f"large centered face filling the frame, minimal headroom, shoulders near lower frame edge, "
                     f"looking directly at camera, both eyes visible, neutral expression, mouth closed, "
                     f"neutral background, realistic illustration, {lane_hint}, {visual_hint}"
                 ),
                 "negative_prompt": (
-                    "multiple people, crowd, collage, extra faces, duplicate person, split face, "
+                    f"multiple people, crowd, collage, extra faces, duplicate person, split face, "
+                    f"{preset_negative_hint}"
                     "profile view, side view, three-quarter view, tiny face, distant camera, extra headroom, "
                     "torso visible, full body, cropped forehead, cropped chin, hands covering face, "
                     "sunglasses, blurry, watermark, text"
@@ -719,18 +745,28 @@ class DeterministicMediaAdapters:
             {
                 "label": "passport_portrait",
                 "positive_prompt": (
-                    f"passport photo portrait of {name}, single human subject, frontal view, "
+                    f"passport photo portrait of {name}, single human subject, {preset_positive_hint}"
+                    f"frontal view, "
                     f"large centered head, direct eye contact, symmetrical face, face occupying most of frame, "
                     f"little empty background, neutral background, realistic illustration, "
                     f"{lane_hint}, {visual_hint}"
                 ),
                 "negative_prompt": (
-                    "multiple people, crowd, collage, profile view, side view, looking away, "
+                    f"multiple people, crowd, collage, {preset_negative_hint}"
+                    "profile view, side view, looking away, "
                     "tilted head, mouth open, tiny face, distant shot, torso visible, cropped head, "
                     "blurry, watermark, text"
                 ),
             },
         ]
+        if style_preset in direct_portrait_first_presets:
+            preferred_order = {
+                "direct_portrait": 0,
+                "studio_headshot": 1,
+                "passport_portrait": 2,
+            }
+            variants.sort(key=lambda variant: preferred_order.get(variant["label"], len(preferred_order)))
+        return variants
 
     @staticmethod
     def _find_character_artifact(
@@ -1495,6 +1531,17 @@ class DeterministicMediaAdapters:
                 "face_bbox_touches_upper_or_left_border",
                 "face_bbox_touches_lower_or_right_border",
             }
+        if (
+            occupancy_adjustment is not None
+            and touches_top
+            and not touches_bottom
+            and not touches_left
+            and not touches_right
+            and image_metrics["bbox_height_ratio"] >= 0.96
+            and image_metrics["bbox_width_ratio"] >= 0.5
+            and image_metrics["bbox_area_ratio"] >= 0.45
+        ):
+            return {"face_bbox_touches_upper_or_left_border"}
         return set()
 
     @classmethod
@@ -4446,7 +4493,10 @@ class DeterministicMediaAdapters:
                             }
                         )
                         continue
-                    if self._is_rejected_face_quality(output_face_isolation):
+                    should_tighten_output_isolation = self._is_rejected_face_quality(
+                        output_face_isolation
+                    ) or self._is_marginal_face_quality(output_face_isolation)
+                    if should_tighten_output_isolation:
                         try:
                             output_isolation_tightening = self._tighten_musetalk_output_isolation(
                                 shot,

@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from filmstudio.core.settings import Settings, default_wan_size_for_task
-from filmstudio.domain.models import ProjectCreateRequest, ProjectSnapshot, utc_now
+from filmstudio.domain.models import (
+    ProductPresetContract,
+    ProjectCreateRequest,
+    ProjectSnapshot,
+    utc_now,
+)
 from filmstudio.worker.runtime_factory import build_local_runtime
 
 
@@ -61,6 +66,10 @@ class FullDryRunCase:
     script: str
     language: str = "uk"
     category: str = "mixed_stack"
+    style_preset: str = "studio_illustrated"
+    voice_cast_preset: str = "solo_host"
+    music_preset: str = "uplift_pulse"
+    short_archetype: str = "creator_hook"
     expected_strategies: tuple[str, ...] = ("portrait_lipsync", "hero_insert")
     expected_subtitle_lanes: tuple[str, ...] = ("top", "bottom")
     expected_scene_count_min: int = 3
@@ -241,6 +250,10 @@ DEFAULT_PRODUCT_READINESS_CASES: tuple[FullDryRunCase, ...] = (
         slug="solo_creator_hook",
         title="Product Readiness Solo Creator Hook",
         category="solo_creator",
+        style_preset="studio_illustrated",
+        voice_cast_preset="solo_host",
+        music_preset="uplift_pulse",
+        short_archetype="creator_hook",
         expected_character_count_min=2,
         expected_speaker_count_min=2,
         script=(
@@ -256,22 +269,29 @@ DEFAULT_PRODUCT_READINESS_CASES: tuple[FullDryRunCase, ...] = (
         slug="duo_dialogue_pivot",
         title="Product Readiness Duo Dialogue Pivot",
         category="duo_dialogue",
+        style_preset="broadcast_panel",
+        voice_cast_preset="duo_contrast",
+        music_preset="debate_tension",
+        short_archetype="dialogue_pivot",
         expected_character_count_min=2,
         expected_speaker_count_min=2,
         expected_subtitle_lanes=("bottom",),
         script=(
-            "SCENE 1. HERO ta FRIEND po cherzi dyvliatsia pryamo v kameru, nache obhovoriuiut launch studii.\n"
-            "HERO: Nam potriben kerovanyi pipeline dlia vertykalnykh shortiv.\n"
-            "FRIEND: I kozhna scena mae zalyshaty artefakty dlia spokiinoho debugu.\n\n"
+            "SCENE 1. HERO dyvytsia pryamo v kameru i vpevneno pochynae rozmovu pro launch studii.\n"
+            "HERO: Nam potriben kerovanyi pipeline dlia vertykalnykh shortiv.\n\n"
             "SCENE 2. HERO vryvaietsia v dym i svitlo, robyt rush do kamery i zalyshae za soboiu svitlovyi slid.\n\n"
             "SCENE 3. FRIEND spokiino dyvytsia v kameru i zakryvaie rozmovu.\n"
-            "FRIEND: Todi finalnyi short vyhlyadaie zibrano, chytko i profesiino."
+            "FRIEND: I kozhna scena mae zalyshaty artefakty dlia spokiinoho debugu ta profesiinoho finalu."
         ),
     ),
     FullDryRunCase(
         slug="three_voice_roundtable",
         title="Product Readiness Three Voice Roundtable",
         category="three_voice_panel",
+        style_preset="broadcast_panel",
+        voice_cast_preset="trio_panel",
+        music_preset="documentary_warmth",
+        short_archetype="expert_panel",
         expected_character_count_min=3,
         expected_speaker_count_min=3,
         expected_subtitle_lanes=("bottom",),
@@ -283,6 +303,64 @@ DEFAULT_PRODUCT_READINESS_CASES: tuple[FullDryRunCase, ...] = (
             "SCENE 2. HERO stryb z platformy kriz iskry, kamera trymaie reveal i chutlyvyi vertykalnyi framing.\n\n"
             "SCENE 3. HOST pidsumovuie rezultat i zakryvaie panel korotkym vysnovkom.\n"
             "HOST: Yakshcho vsi try holosy, hero insert i finalnyi render skhozhatsia, to produkt hotovyi do nastupnoi kampanii."
+        ),
+    ),
+    FullDryRunCase(
+        slug="narrated_breakdown_blueprint",
+        title="Product Readiness Narrated Breakdown Blueprint",
+        category="narrated_breakdown",
+        style_preset="warm_documentary",
+        voice_cast_preset="narrator_guest",
+        music_preset="documentary_warmth",
+        short_archetype="narrated_breakdown",
+        expected_character_count_min=2,
+        expected_speaker_count_min=2,
+        script=(
+            "SCENE 1. NARRATOR spokiino zadaye tezu, a HERO pokazuye sklozhenyi board z blokamy pipeline.\n"
+            "NARRATOR: Spershu servis rozbivaie stsenarii na stseny, shoty ta kontrakty kompozytsii.\n"
+            "HERO: A potim kozhen etap zalyshaie manifest, shchob operator bachyv vsu prychynno-naslidkovu liniiu.\n\n"
+            "SCENE 2. HERO bizhyt uzdovzh svitnoi assembly-line, kamera trymaye odyn dominantnyi syluet i ruch kroz kadr.\n"
+            "NARRATOR: Same tut hero insert pokazuye, yak plan peretvoriuietsia na chytkyi rukhovyi beat.\n\n"
+            "SCENE 3. NARRATOR povertaie nas do vysnovku, a HERO spokiino dyvytsia v kameru.\n"
+            "NARRATOR: Koly vsi artefakty zibrani razom, komanda otrymuie hotovyi vertykalnyi short zamist rozriznenykh demo."
+        ),
+    ),
+    FullDryRunCase(
+        slug="countdown_list_flash",
+        title="Product Readiness Countdown List Flash",
+        category="countdown_list",
+        style_preset="kinetic_graphic",
+        voice_cast_preset="solo_host",
+        music_preset="countdown_drive",
+        short_archetype="countdown_list",
+        expected_character_count_min=2,
+        expected_speaker_count_min=2,
+        script=(
+            "SCENE 1. HOST pochynaie vidlik i dyvytsia pryamo v kameru.\n"
+            "HOST: Try rechi robljat vertykalnyi short kerovanym: plan, manifesty i chytnyi finalnyi render.\n\n"
+            "SCENE 2. HERO strybaye cherez svitlovu ramku, kamera rizko pidkhopliuie reveal i ne vtrachae syluet u kropi.\n"
+            "NARRATOR: Druhyi punkt - hero insert mae buty korotkym, chytkym i ne zabraty caption lane unyzu.\n\n"
+            "SCENE 3. HOST zakryvaie countdown korotkym payoff.\n"
+            "HOST: Tretii punkt - yakisnyi QC, shchob finalne video vzhe mozhna bulo pokazuvaty nazovni."
+        ),
+    ),
+    FullDryRunCase(
+        slug="hero_teaser_launch",
+        title="Product Readiness Hero Teaser Launch",
+        category="hero_teaser",
+        style_preset="neon_noir",
+        voice_cast_preset="narrator_guest",
+        music_preset="heroic_surge",
+        short_archetype="hero_teaser",
+        expected_character_count_min=2,
+        expected_speaker_count_min=2,
+        script=(
+            "SCENE 1. NARRATOR buduie napered napruhu, a HERO stoit u napivtemri pry sloiakh neonu.\n"
+            "NARRATOR: Tse teaser pro te, yak studiia perekhodyt vid planu do gotovoho kadru bez vtraty kontroliu.\n\n"
+            "SCENE 2. HERO vryvaietsia v prostir, rozrizaye dym svitlovym slidom i robyt rush pryamo v kameru.\n"
+            "NARRATOR: Hero insert mae staty dominuiuchym emotsiynym udarom i zberihaty chytku trajektoriiu rukhu v 9:16.\n\n"
+            "SCENE 3. HERO zupyniaietsia i dyvytsia v kameru.\n"
+            "HERO: Yakshcho tsei rytm trymayetsia vid pershoho kadru do finalnoho renderu, produkt hotovyi do launch-kampanii."
         ),
     ),
 )
@@ -323,6 +401,12 @@ def load_full_dry_run_cases(path: Path) -> list[FullDryRunCase]:
             raise ValueError(f"Case #{index} is missing a non-empty 'script' in {path}")
         language = str(raw_case.get("language") or "uk")
         category = str(raw_case.get("category") or "mixed_stack").strip() or "mixed_stack"
+        preset_contract = ProductPresetContract(
+            style_preset=str(raw_case.get("style_preset") or "studio_illustrated"),
+            voice_cast_preset=str(raw_case.get("voice_cast_preset") or "solo_host"),
+            music_preset=str(raw_case.get("music_preset") or "uplift_pulse"),
+            short_archetype=str(raw_case.get("short_archetype") or "creator_hook"),
+        )
         expected_strategies_raw = raw_case.get("expected_strategies")
         expected_subtitle_lanes_raw = raw_case.get("expected_subtitle_lanes")
         expected_scene_count_min = max(1, int(raw_case.get("expected_scene_count_min") or 3))
@@ -355,6 +439,10 @@ def load_full_dry_run_cases(path: Path) -> list[FullDryRunCase]:
                 script=script,
                 language=language,
                 category=category,
+                style_preset=preset_contract.style_preset,
+                voice_cast_preset=preset_contract.voice_cast_preset,
+                music_preset=preset_contract.music_preset,
+                short_archetype=preset_contract.short_archetype,
                 expected_strategies=expected_strategies,
                 expected_subtitle_lanes=expected_subtitle_lanes,
                 expected_scene_count_min=expected_scene_count_min,
@@ -877,6 +965,7 @@ def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
             "subtitle_backend",
         )
     }
+    product_preset = dict(snapshot.project.metadata.get("product_preset") or {})
     portrait_retry_free = bool(portrait_shots) and all(
         bool(shot.get("first_attempt_success")) for shot in portrait_shots
     )
@@ -894,6 +983,11 @@ def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
         "final_render_path": final_render_path,
         "final_render_exists": bool(final_render_path and Path(final_render_path).exists()),
         "backend_profile": backend_profile,
+        "product_preset": product_preset,
+        "style_preset": str(product_preset.get("style_preset") or ""),
+        "voice_cast_preset": str(product_preset.get("voice_cast_preset") or ""),
+        "music_preset": str(product_preset.get("music_preset") or ""),
+        "short_archetype": str(product_preset.get("short_archetype") or ""),
         "character_names": character_names,
         "character_count": len(character_names),
         "dialogue_speakers": dialogue_speakers,
@@ -991,6 +1085,23 @@ def _run_meets_full_dry_run_requirements(run: dict[str, Any]) -> bool:
     )
 
 
+def _run_matches_expected_product_preset(run: dict[str, Any]) -> bool:
+    checks = (
+        ("style_preset", "expected_style_preset"),
+        ("voice_cast_preset", "expected_voice_cast_preset"),
+        ("music_preset", "expected_music_preset"),
+        ("short_archetype", "expected_short_archetype"),
+    )
+    for actual_key, expected_key in checks:
+        expected_value = str(run.get(expected_key) or "").strip()
+        if not expected_value:
+            continue
+        actual_value = str(run.get(actual_key) or "").strip()
+        if actual_value != expected_value:
+            return False
+    return True
+
+
 def _run_meets_product_readiness_requirements(run: dict[str, Any]) -> bool:
     portrait_shots = [shot for shot in run.get("portrait_shots", []) if isinstance(shot, dict)]
     wan_shots = [shot for shot in run.get("wan_shots", []) if isinstance(shot, dict)]
@@ -1010,6 +1121,7 @@ def _run_meets_product_readiness_requirements(run: dict[str, Any]) -> bool:
         and len(wan_shots) >= int(run.get("expected_wan_shot_count_min") or 0)
         and bool(run.get("subtitle_visibility_clean"))
         and (not expected_music_backend or actual_music_backend == expected_music_backend)
+        and _run_matches_expected_product_preset(run)
     )
 
 
@@ -1342,9 +1454,33 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
         for lane in run.get("expected_subtitle_lanes", [])
         if isinstance(lane, str) and str(lane).strip()
     }
+    expected_style_preset_set = {
+        str(run.get("expected_style_preset") or "").strip()
+        for run in runs
+        if str(run.get("expected_style_preset") or "").strip()
+    }
+    expected_voice_cast_preset_set = {
+        str(run.get("expected_voice_cast_preset") or "").strip()
+        for run in runs
+        if str(run.get("expected_voice_cast_preset") or "").strip()
+    }
+    expected_music_preset_set = {
+        str(run.get("expected_music_preset") or "").strip()
+        for run in runs
+        if str(run.get("expected_music_preset") or "").strip()
+    }
+    expected_short_archetype_set = {
+        str(run.get("expected_short_archetype") or "").strip()
+        for run in runs
+        if str(run.get("expected_short_archetype") or "").strip()
+    }
     category_counts: Counter[str] = Counter()
     completed_category_counts: Counter[str] = Counter()
     product_ready_category_counts: Counter[str] = Counter()
+    style_preset_counts: Counter[str] = Counter()
+    voice_cast_preset_counts: Counter[str] = Counter()
+    music_preset_counts: Counter[str] = Counter()
+    short_archetype_counts: Counter[str] = Counter()
     backend_profile_counters: dict[str, Counter[str]] = {
         key: Counter()
         for key in (
@@ -1367,6 +1503,11 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
     expected_portrait_runs = 0
     expected_wan_runs = 0
     expected_music_backend_runs = 0
+    expected_style_preset_runs = 0
+    expected_voice_cast_preset_runs = 0
+    expected_music_preset_runs = 0
+    expected_short_archetype_runs = 0
+    product_preset_match_runs = 0
     subtitle_visibility_clean_runs = 0
     portrait_retry_free_runs = 0
     portrait_warning_free_runs = 0
@@ -1383,6 +1524,18 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
             portrait_retry_free_runs += 1
         if bool(run.get("portrait_warning_free")):
             portrait_warning_free_runs += 1
+        style_preset = str(run.get("style_preset") or "").strip()
+        voice_cast_preset = str(run.get("voice_cast_preset") or "").strip()
+        music_preset = str(run.get("music_preset") or "").strip()
+        short_archetype = str(run.get("short_archetype") or "").strip()
+        if style_preset:
+            style_preset_counts.update([style_preset])
+        if voice_cast_preset:
+            voice_cast_preset_counts.update([voice_cast_preset])
+        if music_preset:
+            music_preset_counts.update([music_preset])
+        if short_archetype:
+            short_archetype_counts.update([short_archetype])
 
         scene_count = int(run.get("scene_count") or 0)
         character_count = int(run.get("character_count") or 0)
@@ -1395,6 +1548,10 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
         expected_portrait_shot_count_min = int(run.get("expected_portrait_shot_count_min") or 0)
         expected_wan_shot_count_min = int(run.get("expected_wan_shot_count_min") or 0)
         expected_music_backend = str(run.get("expected_music_backend") or "").strip()
+        expected_style_preset = str(run.get("expected_style_preset") or "").strip()
+        expected_voice_cast_preset = str(run.get("expected_voice_cast_preset") or "").strip()
+        expected_music_preset = str(run.get("expected_music_preset") or "").strip()
+        expected_short_archetype = str(run.get("expected_short_archetype") or "").strip()
         actual_music_backend = str((run.get("music_summary") or {}).get("backend") or "").strip()
 
         scene_count_distribution.update([str(scene_count)])
@@ -1413,6 +1570,16 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
             expected_wan_runs += 1
         if not expected_music_backend or actual_music_backend == expected_music_backend:
             expected_music_backend_runs += 1
+        if not expected_style_preset or style_preset == expected_style_preset:
+            expected_style_preset_runs += 1
+        if not expected_voice_cast_preset or voice_cast_preset == expected_voice_cast_preset:
+            expected_voice_cast_preset_runs += 1
+        if not expected_music_preset or music_preset == expected_music_preset:
+            expected_music_preset_runs += 1
+        if not expected_short_archetype or short_archetype == expected_short_archetype:
+            expected_short_archetype_runs += 1
+        if _run_matches_expected_product_preset(run):
+            product_preset_match_runs += 1
 
         backend_profile = run.get("backend_profile", {})
         if isinstance(backend_profile, dict):
@@ -1445,6 +1612,16 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
         "expected_wan_rate": _rate(expected_wan_runs, len(runs)),
         "expected_music_backend_runs": expected_music_backend_runs,
         "expected_music_backend_rate": _rate(expected_music_backend_runs, len(runs)),
+        "expected_style_preset_runs": expected_style_preset_runs,
+        "expected_style_preset_rate": _rate(expected_style_preset_runs, len(runs)),
+        "expected_voice_cast_preset_runs": expected_voice_cast_preset_runs,
+        "expected_voice_cast_preset_rate": _rate(expected_voice_cast_preset_runs, len(runs)),
+        "expected_music_preset_runs": expected_music_preset_runs,
+        "expected_music_preset_rate": _rate(expected_music_preset_runs, len(runs)),
+        "expected_short_archetype_runs": expected_short_archetype_runs,
+        "expected_short_archetype_rate": _rate(expected_short_archetype_runs, len(runs)),
+        "product_preset_match_runs": product_preset_match_runs,
+        "product_preset_match_rate": _rate(product_preset_match_runs, len(runs)),
         "subtitle_visibility_clean_runs": subtitle_visibility_clean_runs,
         "subtitle_visibility_clean_rate": _rate(subtitle_visibility_clean_runs, len(runs)),
         "portrait_retry_free_runs": portrait_retry_free_runs,
@@ -1453,6 +1630,10 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
         "portrait_warning_free_rate": _rate(portrait_warning_free_runs, len(runs)),
         "product_ready_runs": product_ready_runs,
         "product_ready_rate": _rate(product_ready_runs, len(runs)),
+        "style_preset_counts": dict(style_preset_counts),
+        "voice_cast_preset_counts": dict(voice_cast_preset_counts),
+        "music_preset_counts": dict(music_preset_counts),
+        "short_archetype_counts": dict(short_archetype_counts),
         "suite_expected_strategy_set": sorted(expected_strategy_set),
         "suite_expected_strategy_coverage_met": all(
             int(base["strategy_counts"].get(strategy) or 0) > 0
@@ -1462,6 +1643,26 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
         "suite_expected_lane_coverage_met": all(
             int(base["lane_counts"].get(lane) or 0) > 0
             for lane in expected_lane_set
+        ),
+        "suite_expected_style_preset_set": sorted(expected_style_preset_set),
+        "suite_expected_style_preset_coverage_met": all(
+            int(style_preset_counts.get(value) or 0) > 0
+            for value in expected_style_preset_set
+        ),
+        "suite_expected_voice_cast_preset_set": sorted(expected_voice_cast_preset_set),
+        "suite_expected_voice_cast_preset_coverage_met": all(
+            int(voice_cast_preset_counts.get(value) or 0) > 0
+            for value in expected_voice_cast_preset_set
+        ),
+        "suite_expected_music_preset_set": sorted(expected_music_preset_set),
+        "suite_expected_music_preset_coverage_met": all(
+            int(music_preset_counts.get(value) or 0) > 0
+            for value in expected_music_preset_set
+        ),
+        "suite_expected_short_archetype_set": sorted(expected_short_archetype_set),
+        "suite_expected_short_archetype_coverage_met": all(
+            int(short_archetype_counts.get(value) or 0) > 0
+            for value in expected_short_archetype_set
         ),
         "backend_profile_counts": {
             key: dict(counter)
@@ -1744,6 +1945,44 @@ def aggregate_full_dry_run_results(run_summaries: Iterable[dict[str, Any]]) -> d
     }
 
 
+def _load_existing_campaign_runs(report_path: Path) -> tuple[list[dict[str, Any]], set[str]]:
+    if not report_path.exists():
+        return [], set()
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    raw_runs = payload.get("runs", []) if isinstance(payload, dict) else []
+    if not isinstance(raw_runs, list):
+        return [], set()
+    runs = [run for run in raw_runs if isinstance(run, dict)]
+    completed_case_slugs = {
+        str(run.get("case_slug") or "").strip()
+        for run in runs
+        if str(run.get("case_slug") or "").strip()
+    }
+    return runs, completed_case_slugs
+
+
+def _remove_existing_case_runs(
+    run_summaries: Iterable[dict[str, Any]],
+    *,
+    case_slugs: set[str],
+    runs_root: Path,
+) -> list[dict[str, Any]]:
+    if not case_slugs:
+        return [dict(run) for run in run_summaries if isinstance(run, dict)]
+    filtered_runs: list[dict[str, Any]] = []
+    for run in run_summaries:
+        if not isinstance(run, dict):
+            continue
+        case_slug = str(run.get("case_slug") or "").strip()
+        if case_slug and case_slug in case_slugs:
+            continue
+        filtered_runs.append(dict(run))
+    for case_slug in case_slugs:
+        for run_path in runs_root.glob(f"*_{case_slug}_*.json"):
+            run_path.unlink(missing_ok=True)
+    return filtered_runs
+
+
 def run_full_dry_run_campaign(
     settings: Settings,
     cases: Iterable[FullDryRunCase],
@@ -1765,6 +2004,10 @@ def run_full_dry_run_campaign(
                 title=case.title,
                 script=case.script,
                 language=case.language,
+                style_preset=case.style_preset,
+                voice_cast_preset=case.voice_cast_preset,
+                music_preset=case.music_preset,
+                short_archetype=case.short_archetype,
                 visual_backend=settings.visual_backend,
                 video_backend=settings.video_backend,
                 tts_backend=settings.tts_backend,
@@ -1784,6 +2027,10 @@ def run_full_dry_run_campaign(
             {
                 "case_slug": case.slug,
                 "case_index": index,
+                "expected_style_preset": case.style_preset,
+                "expected_voice_cast_preset": case.voice_cast_preset,
+                "expected_music_preset": case.music_preset,
+                "expected_short_archetype": case.short_archetype,
                 "expected_strategies": list(case.expected_strategies),
                 "expected_subtitle_lanes": list(case.expected_subtitle_lanes),
                 "run_error": run_error,
@@ -1814,6 +2061,8 @@ def run_product_readiness_campaign(
     cases: Iterable[FullDryRunCase],
     *,
     campaign_name: str,
+    resume: bool = False,
+    replace_existing_case_slugs: Iterable[str] = (),
 ) -> dict[str, Any]:
     settings.ensure_runtime_dirs()
     report_root = settings.runtime_root / "campaigns" / campaign_name
@@ -1821,15 +2070,39 @@ def run_product_readiness_campaign(
     runs_root.mkdir(parents=True, exist_ok=True)
     service, worker = build_local_runtime(settings)
     selected_cases = list(cases)
-    run_summaries: list[dict[str, Any]] = []
     report_path = report_root / "stability_report.json"
+    run_summaries, completed_case_slugs = _load_existing_campaign_runs(report_path) if resume else ([], set())
+    replaced_case_slugs = {
+        str(case_slug).strip()
+        for case_slug in replace_existing_case_slugs
+        if str(case_slug).strip()
+    }
+    if replaced_case_slugs:
+        run_summaries = _remove_existing_case_runs(
+            run_summaries,
+            case_slugs=replaced_case_slugs,
+            runs_root=runs_root,
+        )
+        completed_case_slugs = {
+            str(run.get("case_slug") or "").strip()
+            for run in run_summaries
+            if str(run.get("case_slug") or "").strip()
+        }
+    skipped_case_slugs: list[str] = []
 
     for index, case in enumerate(selected_cases, start=1):
+        if resume and case.slug in completed_case_slugs:
+            skipped_case_slugs.append(case.slug)
+            continue
         project_snapshot = service.create_project(
             ProjectCreateRequest(
                 title=case.title,
                 script=case.script,
                 language=case.language,
+                style_preset=case.style_preset,
+                voice_cast_preset=case.voice_cast_preset,
+                music_preset=case.music_preset,
+                short_archetype=case.short_archetype,
                 visual_backend=settings.visual_backend,
                 video_backend=settings.video_backend,
                 tts_backend=settings.tts_backend,
@@ -1850,6 +2123,10 @@ def run_product_readiness_campaign(
                 "case_slug": case.slug,
                 "case_index": index,
                 "case_category": case.category,
+                "expected_style_preset": case.style_preset,
+                "expected_voice_cast_preset": case.voice_cast_preset,
+                "expected_music_preset": case.music_preset,
+                "expected_short_archetype": case.short_archetype,
                 "expected_strategies": list(case.expected_strategies),
                 "expected_subtitle_lanes": list(case.expected_subtitle_lanes),
                 "expected_scene_count_min": case.expected_scene_count_min,
@@ -1871,6 +2148,9 @@ def run_product_readiness_campaign(
             "campaign_name": campaign_name,
             "runtime_root": str(settings.runtime_root),
             "report_root": str(report_root),
+            "resume_mode": resume,
+            "replaced_case_slugs": sorted(replaced_case_slugs),
+            "skipped_case_slugs": skipped_case_slugs,
             "backend_profile": worker.engine.adapters.backend_profile(),
             "cases": [asdict(case_item) for case_item in selected_cases],
             "runs": run_summaries,

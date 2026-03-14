@@ -76,6 +76,16 @@ def parse_args() -> argparse.Namespace:
         default="verified_live",
         help="Apply the pinned verified local stack profile or use the current environment as-is.",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume an existing campaign report and skip cases that already have saved run summaries.",
+    )
+    parser.add_argument(
+        "--replace-existing",
+        action="store_true",
+        help="When resuming, remove saved runs for the selected case slugs and rerun them.",
+    )
     return parser.parse_args()
 
 
@@ -125,6 +135,8 @@ def main() -> int:
         settings,
         cases,
         campaign_name=args.campaign_name,
+        resume=args.resume,
+        replace_existing_case_slugs=[case.slug for case in cases] if args.replace_existing else (),
     )
     print(json.dumps(report, indent=2, ensure_ascii=False))
     return 0

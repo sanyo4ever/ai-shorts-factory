@@ -48,6 +48,7 @@ def test_local_pipeline_completes_and_emits_qc(tmp_path) -> None:
     assert any(artifact.kind == "subtitle_layout_manifest" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "subtitle_visibility_probe" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "final_render_manifest" for artifact in final_snapshot.artifacts)
+    assert any(artifact.kind == "product_preset" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "story_bible" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "asset_strategy" for artifact in final_snapshot.artifacts)
     final_video = next(artifact for artifact in final_snapshot.artifacts if artifact.kind == "final_video")
@@ -223,6 +224,49 @@ def test_face_probe_effective_warnings_suppress_resolved_vertical_border_touch()
         "face_bbox_touches_upper_or_left_border",
         "face_bbox_touches_lower_or_right_border",
     ]
+    assert quality["status"] == "excellent"
+    assert quality["component_scores"]["penalties"] == 0.0
+
+
+def test_face_probe_effective_warnings_suppress_resolved_top_border_touch_after_tightening() -> None:
+    face_probe_payload = {
+        "passed": True,
+        "warnings": ["face_bbox_touches_upper_or_left_border"],
+        "image_width": 768,
+        "image_height": 768,
+        "detected_face_count": 1,
+        "detections": [
+            [179.0, 108.0, 453.0, 422.0, 0.8333],
+        ],
+        "selected_bbox": [165.6667, 0.0, 607.3333, 759.0],
+        "checks": {
+            "face_detected": True,
+            "landmarks_detected": True,
+            "semantic_layout_ok": True,
+            "face_size_ok": True,
+        },
+        "metrics": {
+            "bbox_width_px": 441.6666,
+            "bbox_height_px": 759.0,
+            "bbox_area_ratio": 0.5683,
+            "eye_distance_px": 194.5999,
+            "eye_tilt_ratio": 0.0102,
+            "nose_center_offset_ratio": 0.0132,
+        },
+    }
+
+    occupancy = DeterministicMediaAdapters._summarize_musetalk_source_occupancy(face_probe_payload)
+    DeterministicMediaAdapters._annotate_effective_face_probe_warnings(
+        face_probe_payload,
+        face_occupancy_summary=occupancy,
+        occupancy_adjustment={"applied": True},
+    )
+    quality = DeterministicMediaAdapters._summarize_source_face_quality(face_probe_payload)
+
+    assert occupancy["status"] == "excellent"
+    assert face_probe_payload["raw_warnings"] == ["face_bbox_touches_upper_or_left_border"]
+    assert face_probe_payload["effective_warnings"] == []
+    assert face_probe_payload["resolved_warnings"] == ["face_bbox_touches_upper_or_left_border"]
     assert quality["status"] == "excellent"
     assert quality["component_scores"]["penalties"] == 0.0
 
@@ -3652,6 +3696,76 @@ def test_musetalk_source_prompt_variants_prioritize_studio_headshot(tmp_path) ->
         "passport_portrait",
     ]
     assert "shot purpose" in variants[0]["positive_prompt"]
+
+
+def test_musetalk_source_prompt_variants_prioritize_direct_portrait_for_broadcast_panel(tmp_path) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="MuseTalk broadcast panel prompt ordering",
+            script="HERO: Pryvit!",
+            language="uk",
+            style_preset="broadcast_panel",
+            lipsync_backend="musetalk",
+        )
+    )
+    shot = next(shot for scene in snapshot.scenes for shot in scene.shots if shot.dialogue)
+    adapters = DeterministicMediaAdapters(artifact_store)
+
+    variants = adapters._musetalk_source_prompt_variants(
+        snapshot,
+        shot,
+        {"character_id": "", "name": "Hero", "visual_hint": "stylized portrait of Hero"},
+    )
+
+    assert [variant["label"] for variant in variants] == [
+        "direct_portrait",
+        "studio_headshot",
+        "passport_portrait",
+    ]
+    assert "single anchor panelist only" in variants[0]["positive_prompt"]
+    assert "split screen" in variants[0]["negative_prompt"]
+
+
+def test_musetalk_source_prompt_variants_prioritize_direct_portrait_for_warm_documentary(tmp_path) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="MuseTalk warm documentary prompt ordering",
+            script="NARRATOR: Pryvit!",
+            language="uk",
+            style_preset="warm_documentary",
+            lipsync_backend="musetalk",
+        )
+    )
+    shot = next(shot for scene in snapshot.scenes for shot in scene.shots if shot.dialogue)
+    adapters = DeterministicMediaAdapters(artifact_store)
+
+    variants = adapters._musetalk_source_prompt_variants(
+        snapshot,
+        shot,
+        {"character_id": "", "name": "Narrator", "visual_hint": "stylized portrait of Narrator"},
+    )
+
+    assert [variant["label"] for variant in variants] == [
+        "direct_portrait",
+        "studio_headshot",
+        "passport_portrait",
+    ]
+    assert "single on-camera subject only" in variants[0]["positive_prompt"]
+    assert "double exposure" in variants[0]["negative_prompt"]
 
 
 def test_prepare_musetalk_source_reuses_prior_successful_source_reference(tmp_path, monkeypatch) -> None:

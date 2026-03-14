@@ -15,6 +15,43 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
 
 
+StylePreset = Literal[
+    "studio_illustrated",
+    "broadcast_panel",
+    "warm_documentary",
+    "kinetic_graphic",
+    "neon_noir",
+]
+VoiceCastPreset = Literal[
+    "solo_host",
+    "duo_contrast",
+    "trio_panel",
+    "narrator_guest",
+]
+MusicPreset = Literal[
+    "uplift_pulse",
+    "debate_tension",
+    "documentary_warmth",
+    "countdown_drive",
+    "heroic_surge",
+]
+ShortArchetype = Literal[
+    "creator_hook",
+    "dialogue_pivot",
+    "expert_panel",
+    "narrated_breakdown",
+    "countdown_list",
+    "hero_teaser",
+]
+
+
+class ProductPresetContract(BaseModel):
+    style_preset: StylePreset = "studio_illustrated"
+    voice_cast_preset: VoiceCastPreset = "solo_host"
+    music_preset: MusicPreset = "uplift_pulse"
+    short_archetype: ShortArchetype = "creator_hook"
+
+
 class CharacterProfile(BaseModel):
     character_id: str
     name: str
@@ -156,6 +193,10 @@ class ProjectCreateRequest(BaseModel):
     script: str
     language: str = "uk"
     style: str = "stylized_short"
+    style_preset: StylePreset = "studio_illustrated"
+    voice_cast_preset: VoiceCastPreset = "solo_host"
+    music_preset: MusicPreset = "uplift_pulse"
+    short_archetype: ShortArchetype = "creator_hook"
     character_names: list[str] = Field(default_factory=list)
     target_duration_sec: int = 120
     orchestrator_backend: str | None = None

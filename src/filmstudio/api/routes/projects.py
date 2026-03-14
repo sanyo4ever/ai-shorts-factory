@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 
 from filmstudio.domain.models import ProjectCreateRequest
+from filmstudio.services.planner_service import PlannerService
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
 
@@ -13,6 +14,11 @@ router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
 @router.get("")
 def list_projects(request: Request):
     return request.app.state.project_service.list_projects()
+
+
+@router.get("/preset-catalog")
+def get_preset_catalog():
+    return PlannerService.build_product_preset_catalog()
 
 
 @router.post("")
@@ -56,6 +62,7 @@ def get_planning_bundle(request: Request, project_id: str):
         raise HTTPException(status_code=404, detail="Project not found")
     planning_kinds = {
         "planning_manifest",
+        "product_preset",
         "story_bible",
         "character_bible",
         "scene_plan",

@@ -32,6 +32,7 @@ The current codebase restores:
 - deterministic planner, workflow engine, and media adapter contracts
 - optional `Ollama` planner wiring through an explicit backend setting
 - formal planning artifacts for `story_bible`, `character_bible`, `scene_plan`, `shot_plan`, `asset_strategy`, and `continuity_bible`
+- a typed product preset contract for `style_preset`, `voice_cast_preset`, `music_preset`, and `short_archetype`, persisted into project metadata and planning artifacts
 - a typed vertical composition contract per shot, including `framing`, `subject_anchor`, `eye_line`, `subtitle_lane`, and explicit `safe_zones` that now flow from planning into prompts and runtime manifests
 - deterministic visual generation as the stable baseline plus opt-in `ComfyUI` wiring for character-package and storyboard stages
 - live local Ukrainian TTS through `Piper` with the `uk_UA-ukrainian_tts-medium` voice pack
@@ -42,6 +43,7 @@ The current codebase restores:
 - frame-diff subtitle visibility QC that samples cue boxes on `video_track` vs `subtitle_video_track` to confirm burned subtitles are visually present where the layout manifest expects them
 - dedicated subtitle-lane campaign tooling for `hero_insert` top-lane verification, with per-run lane summaries and aggregate visibility reports
 - dedicated product-readiness campaign tooling for broader real-script verification across multiple vertical-short categories, with case-level topology expectations and aggregate readiness metrics
+- a public preset catalog endpoint plus preset-aware product-readiness reporting for release-gate coverage
 - real `FFmpeg` shot composition and final portrait render assembly with a default `720x1280` master profile
 - `ffprobe`-backed QC on the produced media artifacts
 - filesystem-backed GPU lease tracking for single-GPU scheduling visibility
@@ -61,6 +63,7 @@ Current verified one-box milestones on this workstation:
 
 - a fresh mixed-stack dry run under `runtime/campaigns/full_dry_run_v8/` completed end to end with `ComfyUI + Piper + Wan + MuseTalk + ACE-Step + FFmpeg/QC`, `720x1280` output, `QC passed`, and `qc_finding_counts={}`
 - a broader 3-case product-readiness suite under `runtime/campaigns/product_readiness_v5_retry_free/` completed `3/3` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, `portrait_retry_free_rate=1.0`, `portrait_warning_free_rate=1.0`, and `qc_finding_counts={}`
+- the broader presetized release-gate suite under `runtime/campaigns/product_readiness_v6_preset_suite_v3/` completed `6/6` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, `portrait_retry_free_rate=1.0`, `portrait_warning_free_rate=1.0`, `product_preset_match_rate=1.0`, and `qc_finding_counts={}`
 
 ## License
 
@@ -108,6 +111,7 @@ set FILMSTUDIO_LLM_MODEL=llama3.1:8b
 ```
 
 You can override planner, orchestrator, and media backend choice per project request by sending `planner_backend`, `planner_model`, `orchestrator_backend`, `visual_backend`, `video_backend`, `tts_backend`, `music_backend`, `lipsync_backend`, and `subtitle_backend` in the create-project payload.
+You can also send `style_preset`, `voice_cast_preset`, `music_preset`, and `short_archetype` to pin the product contract for a run instead of relying only on raw script heuristics.
 `FILMSTUDIO_AUTO_MANAGE_SERVICES=1` is now the normal one-box runtime mode: the pipeline starts heavyweight local services on demand for the relevant stage, runs them sequentially, and performs a final cleanup sweep after the project run. Manual `start_*` scripts are now for debugging, warm-up, or isolated backend bring-up rather than for the default end-to-end path.
 The default local render profile is now `FILMSTUDIO_RENDER_WIDTH=720`, `FILMSTUDIO_RENDER_HEIGHT=1280`, `FILMSTUDIO_RENDER_FPS=24`, so fresh projects plan and render as vertical shorts unless you override those settings explicitly.
 
@@ -135,6 +139,12 @@ Invoke-RestMethod `
   -Uri "http://127.0.0.1:8000/api/v1/projects" `
   -ContentType "application/json" `
   -Body $body
+```
+
+You can inspect the available public product presets before creating a project:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/projects/preset-catalog"
 ```
 
 3. Take the returned `project_id` and run the worker:
@@ -184,10 +194,19 @@ python scripts/run_local_worker.py <project_id>
 Run the broader product-readiness suite on the verified one-box stack:
 
 ```bash
-python scripts/run_product_readiness_campaign.py --campaign-name product_readiness_v5_retry_free
+python scripts/run_product_readiness_campaign.py --campaign-name product_readiness_v6_preset_suite_v3
 ```
 
-The product-readiness runner uses curated multi-scene vertical-short cases, writes a report under `runtime/campaigns/<campaign_name>/stability_report.json`, and tracks category-aware readiness metrics such as `product_ready_rate`, topology expectations, suite-level strategy or lane coverage, and per-backend participation. The current verified reference run on this workstation is `runtime/campaigns/product_readiness_v5_retry_free/`, which completed `3/3` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, `portrait_retry_free_rate=1.0`, `portrait_warning_free_rate=1.0`, and `qc_finding_counts={}`.
+The product-readiness runner uses curated multi-scene vertical-short cases, writes a report under `runtime/campaigns/<campaign_name>/stability_report.json`, and tracks category-aware readiness metrics such as `product_ready_rate`, topology expectations, suite-level strategy or lane coverage, per-backend participation, and preset-contract coverage. The current verified reference run on this workstation is `runtime/campaigns/product_readiness_v6_preset_suite_v3/`, which completed `6/6` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, `portrait_retry_free_rate=1.0`, `portrait_warning_free_rate=1.0`, `product_preset_match_rate=1.0`, and `qc_finding_counts={}`.
+
+The runner also supports resumable and replace-in-place flows for long campaigns:
+
+```bash
+python scripts/run_product_readiness_campaign.py --campaign-name product_readiness_v6_preset_suite_v3 --categories hero_teaser --resume
+python scripts/run_product_readiness_campaign.py --campaign-name product_readiness_v6_preset_suite_v3 --categories narrated_breakdown --resume --replace-existing
+```
+
+Use `--resume` to continue an existing report with only the missing categories, and `--replace-existing` when you want to rerun a previously recorded category inside the same campaign and recompute the aggregate without creating a new campaign name.
 
 Run a dedicated `hero_insert` top-lane subtitle campaign:
 
@@ -309,6 +328,7 @@ set FILMSTUDIO_GPU_LEASE_WAIT_TIMEOUT_SEC=300.0
 - `GET /health/resources`
 - `POST /api/v1/projects`
 - `GET /api/v1/projects`
+- `GET /api/v1/projects/preset-catalog`
 - `GET /api/v1/projects/{project_id}`
 - `GET /api/v1/projects/{project_id}/planning`
 - `GET /api/v1/projects/{project_id}/temporal`

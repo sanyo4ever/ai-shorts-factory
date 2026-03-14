@@ -392,6 +392,10 @@ def test_load_full_dry_run_cases_reads_expected_fields(tmp_path) -> None:
                         "script": "SCENE 1. HERO hovoryt.\nHERO: Pryvit.",
                         "language": "uk",
                         "category": "duo_dialogue",
+                        "style_preset": "broadcast_panel",
+                        "voice_cast_preset": "duo_contrast",
+                        "music_preset": "debate_tension",
+                        "short_archetype": "dialogue_pivot",
                         "expected_strategies": ["portrait_lipsync", "hero_insert"],
                         "expected_subtitle_lanes": ["top", "bottom"],
                         "expected_scene_count_min": 3,
@@ -417,6 +421,10 @@ def test_load_full_dry_run_cases_reads_expected_fields(tmp_path) -> None:
             script="SCENE 1. HERO hovoryt.\nHERO: Pryvit.",
             language="uk",
             category="duo_dialogue",
+            style_preset="broadcast_panel",
+            voice_cast_preset="duo_contrast",
+            music_preset="debate_tension",
+            short_archetype="dialogue_pivot",
             expected_strategies=("portrait_lipsync", "hero_insert"),
             expected_subtitle_lanes=("top", "bottom"),
             expected_scene_count_min=3,
@@ -971,6 +979,14 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
                 "qc_status": "passed",
                 "qc_findings": [],
                 "case_category": "duo_dialogue",
+                "style_preset": "broadcast_panel",
+                "voice_cast_preset": "duo_contrast",
+                "music_preset": "debate_tension",
+                "short_archetype": "dialogue_pivot",
+                "expected_style_preset": "broadcast_panel",
+                "expected_voice_cast_preset": "duo_contrast",
+                "expected_music_preset": "debate_tension",
+                "expected_short_archetype": "dialogue_pivot",
                 "scene_count": 3,
                 "character_count": 2,
                 "speaker_count": 2,
@@ -1013,6 +1029,14 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
                 "qc_status": "passed",
                 "qc_findings": [],
                 "case_category": "three_voice_panel",
+                "style_preset": "broadcast_panel",
+                "voice_cast_preset": "trio_panel",
+                "music_preset": "documentary_warmth",
+                "short_archetype": "expert_panel",
+                "expected_style_preset": "broadcast_panel",
+                "expected_voice_cast_preset": "trio_panel",
+                "expected_music_preset": "documentary_warmth",
+                "expected_short_archetype": "expert_panel",
                 "scene_count": 2,
                 "character_count": 2,
                 "speaker_count": 2,
@@ -1063,10 +1087,19 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
     assert aggregate["expected_portrait_runs"] == 2
     assert aggregate["expected_wan_runs"] == 2
     assert aggregate["expected_music_backend_runs"] == 2
+    assert aggregate["expected_style_preset_runs"] == 2
+    assert aggregate["expected_voice_cast_preset_runs"] == 2
+    assert aggregate["expected_music_preset_runs"] == 2
+    assert aggregate["expected_short_archetype_runs"] == 2
+    assert aggregate["product_preset_match_runs"] == 2
     assert aggregate["subtitle_visibility_clean_runs"] == 1
     assert aggregate["portrait_retry_free_runs"] == 1
     assert aggregate["portrait_warning_free_runs"] == 1
     assert aggregate["product_ready_runs"] == 1
+    assert aggregate["style_preset_counts"] == {"broadcast_panel": 2}
+    assert aggregate["voice_cast_preset_counts"] == {"duo_contrast": 1, "trio_panel": 1}
+    assert aggregate["music_preset_counts"] == {"debate_tension": 1, "documentary_warmth": 1}
+    assert aggregate["short_archetype_counts"] == {"dialogue_pivot": 1, "expert_panel": 1}
     assert aggregate["backend_profile_counts"]["video_backend"] == {"wan": 2}
     assert aggregate["backend_profile_counts"]["music_backend"] == {"ace_step": 2}
 
@@ -1157,6 +1190,16 @@ def test_run_product_readiness_campaign_writes_report(tmp_path, monkeypatch) -> 
             "project_id": snapshot.project.project_id,
             "title": snapshot.project.title,
             "status": "completed",
+            "product_preset": {
+                "style_preset": "broadcast_panel",
+                "voice_cast_preset": "trio_panel",
+                "music_preset": "documentary_warmth",
+                "short_archetype": "expert_panel",
+            },
+            "style_preset": "broadcast_panel",
+            "voice_cast_preset": "trio_panel",
+            "music_preset": "documentary_warmth",
+            "short_archetype": "expert_panel",
             "scene_count": 3,
             "character_count": 3,
             "speaker_count": 3,
@@ -1198,6 +1241,10 @@ def test_run_product_readiness_campaign_writes_report(tmp_path, monkeypatch) -> 
                 title="Three Voice Roundtable",
                 script="SCENE 1. HOST: Pryvit.\nHERO: Pryvit.\nFRIEND: Pryvit.",
                 category="three_voice_panel",
+                style_preset="broadcast_panel",
+                voice_cast_preset="trio_panel",
+                music_preset="documentary_warmth",
+                short_archetype="expert_panel",
                 expected_character_count_min=3,
                 expected_speaker_count_min=3,
             )
@@ -1206,10 +1253,470 @@ def test_run_product_readiness_campaign_writes_report(tmp_path, monkeypatch) -> 
     )
 
     assert len(created_payloads) == 1
+    assert created_payloads[0].style_preset == "broadcast_panel"
+    assert created_payloads[0].voice_cast_preset == "trio_panel"
+    assert created_payloads[0].music_preset == "documentary_warmth"
+    assert created_payloads[0].short_archetype == "expert_panel"
     assert created_payloads[0].music_backend == settings.music_backend
     assert report["aggregate"]["product_ready_runs"] == 1
+    assert report["aggregate"]["product_preset_match_runs"] == 1
     assert report["aggregate"]["case_category_counts"] == {"three_voice_panel": 1}
     assert (runtime_root / "campaigns" / "product_readiness_test" / "stability_report.json").exists()
+
+
+def test_run_product_readiness_campaign_resume_skips_existing_case(tmp_path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    settings = get_settings.__wrapped__()  # type: ignore[attr-defined]
+    settings = settings.__class__(
+        **{
+            **settings.__dict__,
+            "runtime_root": runtime_root,
+            "database_path": runtime_root / "filmstudio.sqlite3",
+            "gpu_lease_root": runtime_root / "manifests" / "gpu_leases",
+        }
+    )
+    settings.ensure_runtime_dirs()
+
+    created_payloads: list[ProjectCreateRequest] = []
+
+    class FakeService:
+        def create_project(self, request: ProjectCreateRequest) -> ProjectSnapshot:
+            created_payloads.append(request)
+            return ProjectSnapshot(
+                project=ProjectRecord(
+                    project_id="proj_resume",
+                    title=request.title,
+                    script=request.script,
+                    language=request.language,
+                    style="stylized_short",
+                    target_duration_sec=120,
+                    estimated_duration_sec=18,
+                    status="queued",
+                ),
+                scenes=[],
+                jobs=[],
+                job_attempts=[],
+                artifacts=[],
+                qc_reports=[],
+            )
+
+        def require_snapshot(self, project_id: str) -> ProjectSnapshot:
+            raise AssertionError(f"Unexpected require_snapshot for {project_id}")
+
+    class FakeWorker:
+        class Engine:
+            class Adapters:
+                @staticmethod
+                def backend_profile() -> dict[str, str]:
+                    return {
+                        "visual_backend": "comfyui",
+                        "video_backend": "wan",
+                        "tts_backend": "piper",
+                        "music_backend": "ace_step",
+                        "lipsync_backend": "musetalk",
+                        "subtitle_backend": "deterministic",
+                    }
+
+            adapters = Adapters()
+
+        engine = Engine()
+
+        def run_project(self, project_id: str) -> ProjectSnapshot:
+            return ProjectSnapshot(
+                project=ProjectRecord(
+                    project_id=project_id,
+                    title="Resume case",
+                    script="SCENE 1. HERO hovoryt.",
+                    language="uk",
+                    style="stylized_short",
+                    target_duration_sec=120,
+                    estimated_duration_sec=18,
+                    status="completed",
+                ),
+                scenes=[],
+                jobs=[],
+                job_attempts=[],
+                artifacts=[],
+                qc_reports=[],
+            )
+
+    monkeypatch.setattr(
+        "filmstudio.worker.stability_sweep.build_local_runtime",
+        lambda local_settings: (FakeService(), FakeWorker()),
+    )
+    monkeypatch.setattr(
+        "filmstudio.worker.stability_sweep.summarize_project_run",
+        lambda snapshot: {
+            "project_id": snapshot.project.project_id,
+            "title": snapshot.project.title,
+            "status": "completed",
+            "product_preset": {
+                "style_preset": "broadcast_panel",
+                "voice_cast_preset": "duo_contrast",
+                "music_preset": "debate_tension",
+                "short_archetype": "dialogue_pivot",
+            },
+            "style_preset": "broadcast_panel",
+            "voice_cast_preset": "duo_contrast",
+            "music_preset": "debate_tension",
+            "short_archetype": "dialogue_pivot",
+            "scene_count": 3,
+            "character_count": 2,
+            "speaker_count": 2,
+            "shot_strategy_counts": {"portrait_lipsync": 1, "hero_insert": 1},
+            "portrait_shots": [{"shot_id": "shot_portrait"}],
+            "portrait_retry_free": True,
+            "portrait_warning_free": True,
+            "wan_shots": [{"shot_id": "shot_wan"}],
+            "subtitle_summary": {"lane_counts": {"bottom": 1, "top": 1}},
+            "subtitle_visibility_clean": True,
+            "music_summary": {
+                "backend": "ace_step",
+                "manifest_available": True,
+                "music_bed_exists": True,
+            },
+            "render_summary": {
+                "actual_resolution": "720x1280",
+                "subtitle_burned_in": True,
+                "target_matches_actual": True,
+            },
+            "backend_profile": {
+                "visual_backend": "comfyui",
+                "video_backend": "wan",
+                "tts_backend": "piper",
+                "music_backend": "ace_step",
+                "lipsync_backend": "musetalk",
+                "subtitle_backend": "deterministic",
+            },
+            "qc_status": "passed",
+            "qc_findings": [],
+        },
+    )
+
+    existing_report_root = runtime_root / "campaigns" / "product_readiness_resume_test"
+    existing_report_root.mkdir(parents=True, exist_ok=True)
+    (existing_report_root / "stability_report.json").write_text(
+        json.dumps(
+            {
+                "runs": [
+                    {
+                        "case_slug": "already_done",
+                        "status": "completed",
+                        "product_preset": {
+                            "style_preset": "studio_illustrated",
+                            "voice_cast_preset": "solo_host",
+                            "music_preset": "uplift_pulse",
+                            "short_archetype": "creator_hook",
+                        },
+                        "style_preset": "studio_illustrated",
+                        "voice_cast_preset": "solo_host",
+                        "music_preset": "uplift_pulse",
+                        "short_archetype": "creator_hook",
+                        "scene_count": 3,
+                        "character_count": 2,
+                        "speaker_count": 2,
+                        "expected_scene_count_min": 3,
+                        "expected_character_count_min": 2,
+                        "expected_speaker_count_min": 2,
+                        "expected_portrait_shot_count_min": 1,
+                        "expected_wan_shot_count_min": 1,
+                        "expected_music_backend": "ace_step",
+                        "expected_style_preset": "studio_illustrated",
+                        "expected_voice_cast_preset": "solo_host",
+                        "expected_music_preset": "uplift_pulse",
+                        "expected_short_archetype": "creator_hook",
+                        "shot_strategy_counts": {"portrait_lipsync": 1, "hero_insert": 1},
+                        "portrait_shots": [{"shot_id": "shot_existing"}],
+                        "portrait_retry_free": True,
+                        "portrait_warning_free": True,
+                        "wan_shots": [{"shot_id": "shot_existing_wan"}],
+                        "expected_strategies": ["portrait_lipsync", "hero_insert"],
+                        "expected_subtitle_lanes": ["bottom", "top"],
+                        "subtitle_summary": {"lane_counts": {"bottom": 1, "top": 1}},
+                        "subtitle_visibility_clean": True,
+                        "music_summary": {
+                            "backend": "ace_step",
+                            "manifest_available": True,
+                            "music_bed_exists": True,
+                        },
+                        "render_summary": {
+                            "actual_resolution": "720x1280",
+                            "subtitle_burned_in": True,
+                            "target_matches_actual": True,
+                        },
+                        "backend_profile": {
+                            "visual_backend": "comfyui",
+                            "video_backend": "wan",
+                            "tts_backend": "piper",
+                            "music_backend": "ace_step",
+                            "lipsync_backend": "musetalk",
+                            "subtitle_backend": "deterministic",
+                        },
+                        "qc_status": "passed",
+                        "qc_findings": [],
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_product_readiness_campaign(
+        settings,
+        [
+            FullDryRunCase(slug="already_done", title="Already Done", script="SCENE 1. HERO: Pryvit."),
+            FullDryRunCase(
+                slug="resume_case",
+                title="Resume Case",
+                script="SCENE 1. HERO: Pryvit.\n\nSCENE 2. HERO runs.\n\nSCENE 3. FRIEND: Vitayu.",
+                category="duo_dialogue",
+                style_preset="broadcast_panel",
+                voice_cast_preset="duo_contrast",
+                music_preset="debate_tension",
+                short_archetype="dialogue_pivot",
+                expected_character_count_min=2,
+                expected_speaker_count_min=2,
+            ),
+        ],
+        campaign_name="product_readiness_resume_test",
+        resume=True,
+    )
+
+    assert len(created_payloads) == 1
+    assert created_payloads[0].title == "Resume Case"
+    assert report["skipped_case_slugs"] == ["already_done"]
+    assert report["aggregate"]["total_runs"] == 2
+
+
+def test_run_product_readiness_campaign_replace_existing_case(tmp_path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    settings = get_settings.__wrapped__()  # type: ignore[attr-defined]
+    settings = settings.__class__(
+        **{
+            **settings.__dict__,
+            "runtime_root": runtime_root,
+            "database_path": runtime_root / "filmstudio.sqlite3",
+            "gpu_lease_root": runtime_root / "manifests" / "gpu_leases",
+        }
+    )
+    settings.ensure_runtime_dirs()
+
+    created_payloads: list[ProjectCreateRequest] = []
+
+    class FakeService:
+        def create_project(self, request: ProjectCreateRequest) -> ProjectSnapshot:
+            created_payloads.append(request)
+            return ProjectSnapshot(
+                project=ProjectRecord(
+                    project_id="proj_replaced",
+                    title=request.title,
+                    script=request.script,
+                    language=request.language,
+                    style="stylized_short",
+                    target_duration_sec=120,
+                    estimated_duration_sec=18,
+                    status="queued",
+                ),
+                scenes=[],
+                jobs=[],
+                job_attempts=[],
+                artifacts=[],
+                qc_reports=[],
+            )
+
+        def require_snapshot(self, project_id: str) -> ProjectSnapshot:
+            raise AssertionError(f"Unexpected require_snapshot for {project_id}")
+
+    class FakeWorker:
+        class Engine:
+            class Adapters:
+                @staticmethod
+                def backend_profile() -> dict[str, str]:
+                    return {
+                        "visual_backend": "comfyui",
+                        "video_backend": "wan",
+                        "tts_backend": "piper",
+                        "music_backend": "ace_step",
+                        "lipsync_backend": "musetalk",
+                        "subtitle_backend": "deterministic",
+                    }
+
+            adapters = Adapters()
+
+        engine = Engine()
+
+        def run_project(self, project_id: str) -> ProjectSnapshot:
+            return ProjectSnapshot(
+                project=ProjectRecord(
+                    project_id=project_id,
+                    title="Refreshed case",
+                    script="SCENE 1. HERO hovoryt.\n\nSCENE 2. HERO runs.\n\nSCENE 3. FRIEND hovoryt.",
+                    language="uk",
+                    style="stylized_short",
+                    target_duration_sec=120,
+                    estimated_duration_sec=18,
+                    status="completed",
+                ),
+                scenes=[],
+                jobs=[],
+                job_attempts=[],
+                artifacts=[],
+                qc_reports=[],
+            )
+
+    monkeypatch.setattr(
+        "filmstudio.worker.stability_sweep.build_local_runtime",
+        lambda local_settings: (FakeService(), FakeWorker()),
+    )
+    monkeypatch.setattr(
+        "filmstudio.worker.stability_sweep.summarize_project_run",
+        lambda snapshot: {
+            "project_id": snapshot.project.project_id,
+            "title": snapshot.project.title,
+            "status": "completed",
+            "product_preset": {
+                "style_preset": "warm_documentary",
+                "voice_cast_preset": "narrator_guest",
+                "music_preset": "documentary_warmth",
+                "short_archetype": "narrated_breakdown",
+            },
+            "style_preset": "warm_documentary",
+            "voice_cast_preset": "narrator_guest",
+            "music_preset": "documentary_warmth",
+            "short_archetype": "narrated_breakdown",
+            "scene_count": 3,
+            "character_count": 2,
+            "speaker_count": 2,
+            "shot_strategy_counts": {"portrait_lipsync": 2, "hero_insert": 1},
+            "portrait_shots": [{"shot_id": "shot_refreshed"}],
+            "portrait_retry_free": True,
+            "portrait_warning_free": True,
+            "wan_shots": [{"shot_id": "shot_refreshed_wan"}],
+            "subtitle_summary": {"lane_counts": {"bottom": 1, "top": 1}},
+            "subtitle_visibility_clean": True,
+            "music_summary": {
+                "backend": "ace_step",
+                "manifest_available": True,
+                "music_bed_exists": True,
+            },
+            "render_summary": {
+                "actual_resolution": "720x1280",
+                "subtitle_burned_in": True,
+                "target_matches_actual": True,
+            },
+            "backend_profile": {
+                "visual_backend": "comfyui",
+                "video_backend": "wan",
+                "tts_backend": "piper",
+                "music_backend": "ace_step",
+                "lipsync_backend": "musetalk",
+                "subtitle_backend": "deterministic",
+            },
+            "qc_status": "passed",
+            "qc_findings": [],
+        },
+    )
+
+    existing_report_root = runtime_root / "campaigns" / "product_readiness_replace_test"
+    existing_report_root.mkdir(parents=True, exist_ok=True)
+    existing_run_path = existing_report_root / "runs" / "01_narrated_breakdown_blueprint_proj_old.json"
+    existing_run_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_run_path.write_text("{}", encoding="utf-8")
+    (existing_report_root / "stability_report.json").write_text(
+        json.dumps(
+            {
+                "runs": [
+                    {
+                        "case_slug": "narrated_breakdown_blueprint",
+                        "status": "completed",
+                        "product_preset": {
+                            "style_preset": "warm_documentary",
+                            "voice_cast_preset": "narrator_guest",
+                            "music_preset": "documentary_warmth",
+                            "short_archetype": "narrated_breakdown",
+                        },
+                        "style_preset": "warm_documentary",
+                        "voice_cast_preset": "narrator_guest",
+                        "music_preset": "documentary_warmth",
+                        "short_archetype": "narrated_breakdown",
+                        "scene_count": 3,
+                        "character_count": 2,
+                        "speaker_count": 2,
+                        "expected_scene_count_min": 3,
+                        "expected_character_count_min": 2,
+                        "expected_speaker_count_min": 2,
+                        "expected_portrait_shot_count_min": 1,
+                        "expected_wan_shot_count_min": 1,
+                        "expected_music_backend": "ace_step",
+                        "expected_style_preset": "warm_documentary",
+                        "expected_voice_cast_preset": "narrator_guest",
+                        "expected_music_preset": "documentary_warmth",
+                        "expected_short_archetype": "narrated_breakdown",
+                        "shot_strategy_counts": {"portrait_lipsync": 1, "hero_insert": 1},
+                        "portrait_shots": [{"shot_id": "shot_old"}],
+                        "portrait_retry_free": False,
+                        "portrait_warning_free": True,
+                        "wan_shots": [{"shot_id": "shot_old_wan"}],
+                        "expected_strategies": ["portrait_lipsync", "hero_insert"],
+                        "expected_subtitle_lanes": ["bottom", "top"],
+                        "subtitle_summary": {"lane_counts": {"bottom": 1, "top": 1}},
+                        "subtitle_visibility_clean": True,
+                        "music_summary": {
+                            "backend": "ace_step",
+                            "manifest_available": True,
+                            "music_bed_exists": True,
+                        },
+                        "render_summary": {
+                            "actual_resolution": "720x1280",
+                            "subtitle_burned_in": True,
+                            "target_matches_actual": True,
+                        },
+                        "backend_profile": {
+                            "visual_backend": "comfyui",
+                            "video_backend": "wan",
+                            "tts_backend": "piper",
+                            "music_backend": "ace_step",
+                            "lipsync_backend": "musetalk",
+                            "subtitle_backend": "deterministic",
+                        },
+                        "qc_status": "passed",
+                        "qc_findings": ["lipsync_source_retry_used"],
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_product_readiness_campaign(
+        settings,
+        [
+            FullDryRunCase(
+                slug="narrated_breakdown_blueprint",
+                title="Narrated Breakdown",
+                script="SCENE 1. NARRATOR: Pryvit.\n\nSCENE 2. HERO runs.\n\nSCENE 3. HERO: Pidsumok.",
+                category="narrated_breakdown",
+                style_preset="warm_documentary",
+                voice_cast_preset="narrator_guest",
+                music_preset="documentary_warmth",
+                short_archetype="narrated_breakdown",
+                expected_character_count_min=2,
+                expected_speaker_count_min=2,
+            )
+        ],
+        campaign_name="product_readiness_replace_test",
+        resume=True,
+        replace_existing_case_slugs=["narrated_breakdown_blueprint"],
+    )
+
+    assert len(created_payloads) == 1
+    assert report["replaced_case_slugs"] == ["narrated_breakdown_blueprint"]
+    assert report["skipped_case_slugs"] == []
+    assert report["aggregate"]["portrait_retry_free_runs"] == 1
+    assert report["aggregate"]["qc_finding_counts"] == {}
+    assert not existing_run_path.exists()
 
 
 def test_run_wan_budget_ladder_campaign_writes_profile_reports(tmp_path, monkeypatch) -> None:

@@ -31,6 +31,9 @@ def test_planner_builds_rich_planning_bundle() -> None:
     assert bundle.shot_plan["shots"]
     assert bundle.asset_strategy["shots"]
     assert bundle.continuity_bible["scene_states"]
+    assert bundle.product_preset["style_preset"] == "studio_illustrated"
+    assert bundle.story_bible["product_preset"]["short_archetype"] == "creator_hook"
+    assert bundle.character_bible["voice_cast_preset"] == "solo_host"
     assert bundle.story_bible["composition_language"]["caption_policy"]["default_subtitle_lane"] == "bottom"
     assert bundle.shot_plan["shots"][0]["composition"]["subtitle_lane"] == "bottom"
     assert bundle.asset_strategy["shots"][0]["layout_contract"]["safe_zones"]

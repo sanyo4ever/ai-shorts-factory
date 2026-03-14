@@ -54,12 +54,19 @@ def test_health_endpoints() -> None:
 
 def test_create_and_run_project() -> None:
     client = TestClient(create_app())
+    preset_catalog_response = client.get("/api/v1/projects/preset-catalog")
+    assert preset_catalog_response.status_code == 200
+    assert preset_catalog_response.json()["defaults"]["style_preset"] == "studio_illustrated"
     response = client.post(
         "/api/v1/projects",
         json={
             "title": "Short test",
             "script": "NARRATOR: Hero enters the room.\n\nHERO: Pryvit!\nFRIEND: Pryvit, yak spravy?",
             "language": "uk",
+            "style_preset": "broadcast_panel",
+            "voice_cast_preset": "duo_contrast",
+            "music_preset": "debate_tension",
+            "short_archetype": "dialogue_pivot",
         },
     )
     assert response.status_code == 200
@@ -76,8 +83,11 @@ def test_create_and_run_project() -> None:
     planning_response = client.get(f"/api/v1/projects/{project_id}/planning")
     assert planning_response.status_code == 200
     planning_payload = planning_response.json()
+    assert "product_preset" in planning_payload
+    assert planning_payload["product_preset"]["style_preset"] == "broadcast_panel"
     assert "story_bible" in planning_payload
     assert "asset_strategy" in planning_payload
+    assert planning_payload["story_bible"]["product_preset"]["voice_cast_preset"] == "duo_contrast"
     assert planning_payload["shot_plan"]["shots"][0]["composition"]["subtitle_lane"] in {"top", "bottom"}
     assert planning_payload["asset_strategy"]["shots"][0]["layout_contract"]["safe_zones"]
     jobs_response = client.get(f"/api/v1/projects/{project_id}/jobs")
@@ -170,6 +180,10 @@ def test_create_project_accepts_media_backend_overrides() -> None:
         json={
             "title": "Override backends",
             "script": "NARRATOR: Test.",
+            "style_preset": "neon_noir",
+            "voice_cast_preset": "narrator_guest",
+            "music_preset": "heroic_surge",
+            "short_archetype": "hero_teaser",
             "orchestrator_backend": "temporal",
             "visual_backend": "comfyui",
             "video_backend": "wan",
@@ -188,6 +202,8 @@ def test_create_project_accepts_media_backend_overrides() -> None:
     assert metadata["music_backend"] == "ace_step"
     assert metadata["lipsync_backend"] == "musetalk"
     assert metadata["subtitle_backend"] == "whisperx"
+    assert metadata["product_preset"]["style_preset"] == "neon_noir"
+    assert metadata["product_preset"]["short_archetype"] == "hero_teaser"
     assert metadata["temporal_workflow"]["status"] == "not_started"
 
 
