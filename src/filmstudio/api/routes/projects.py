@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 
-from filmstudio.domain.models import ProjectCreateRequest
+from filmstudio.domain.models import ProjectCreateRequest, SelectiveRerenderRequest
 from filmstudio.services.planner_service import PlannerService
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
@@ -38,6 +38,14 @@ def get_project(request: Request, project_id: str):
     return snapshot
 
 
+@router.get("/{project_id}/deliverables")
+def get_deliverables(request: Request, project_id: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return request.app.state.project_service.build_deliverables_view(snapshot)
+
+
 @router.post("/{project_id}/run")
 def run_project(request: Request, project_id: str):
     try:
@@ -45,6 +53,22 @@ def run_project(request: Request, project_id: str):
     except KeyError:
         raise HTTPException(status_code=404, detail="Project not found") from None
     return snapshot
+
+
+@router.post("/{project_id}/rerender")
+def rerender_project(request: Request, project_id: str, payload: SelectiveRerenderRequest):
+    try:
+        snapshot = request.app.state.project_service.prepare_selective_rerender(project_id, payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Project not found") from None
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    if not payload.run_immediately:
+        return snapshot
+    try:
+        return request.app.state.worker.run_project(project_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Project not found") from None
 
 
 @router.get("/{project_id}/scenes")

@@ -103,6 +103,7 @@ class LocalPipelineEngine:
             )
             raise
         finally:
+            self._finalize_rerender_scope(project_id)
             self._cleanup_project_services(project_id)
         return self.project_service.require_snapshot(project_id)
 
@@ -381,6 +382,26 @@ class LocalPipelineEngine:
                     "project_id": project_id,
                 },
             )
+
+    def _finalize_rerender_scope(self, project_id: str) -> None:
+        try:
+            snapshot = self.project_service.require_snapshot(project_id)
+        except KeyError:
+            return
+        scope = snapshot.project.metadata.pop("active_rerender_scope", None)
+        if not isinstance(scope, dict):
+            return
+        finalized_scope = {
+            **scope,
+            "finished_at": utc_now(),
+            "project_status": snapshot.project.status,
+        }
+        snapshot.project.metadata["last_rerender_scope"] = finalized_scope
+        history = list(snapshot.project.metadata.get("rerender_history") or [])
+        history.append(finalized_scope)
+        snapshot.project.metadata["rerender_history"] = history[-10:]
+        snapshot.project.metadata["rerender_requested"] = False
+        self.project_service.save_snapshot(snapshot)
 
     def _require_job(self, snapshot: ProjectSnapshot, kind: str):
         for job in snapshot.jobs:

@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 
 from filmstudio.services.comfyui_client import ComfyUIImageResult
-from filmstudio.domain.models import ArtifactRecord, DialogueLine, ProjectCreateRequest, new_id
+from filmstudio.domain.models import (
+    ArtifactRecord,
+    DialogueLine,
+    ProjectCreateRequest,
+    SelectiveRerenderRequest,
+    new_id,
+)
 from filmstudio.services.media_adapters import DeterministicMediaAdapters
 from filmstudio.services.media_adapters import StageExecutionResult
 from filmstudio.services.musetalk_runner import MuseTalkRunResult, MuseTalkSourceProbeResult
@@ -48,6 +54,8 @@ def test_local_pipeline_completes_and_emits_qc(tmp_path) -> None:
     assert any(artifact.kind == "subtitle_layout_manifest" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "subtitle_visibility_probe" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "final_render_manifest" for artifact in final_snapshot.artifacts)
+    assert any(artifact.kind == "deliverables_manifest" for artifact in final_snapshot.artifacts)
+    assert any(artifact.kind == "deliverables_package" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "product_preset" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "story_bible" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "asset_strategy" for artifact in final_snapshot.artifacts)
@@ -73,6 +81,15 @@ def test_local_pipeline_completes_and_emits_qc(tmp_path) -> None:
     assert final_snapshot.qc_reports[-1].metadata["subtitle_visibility_summary"]["available"] is True
     assert final_snapshot.qc_reports[-1].metadata["subtitle_visibility_summary"]["visible_count"] >= 1
     assert final_snapshot.qc_reports[-1].status == "passed"
+    deliverables_manifest_path = Path(
+        next(artifact.path for artifact in final_snapshot.artifacts if artifact.kind == "deliverables_manifest")
+    )
+    deliverables_manifest = json.loads(deliverables_manifest_path.read_text(encoding="utf-8"))
+    assert any(item["kind"] == "final_video" for item in deliverables_manifest["items"])
+    deliverables_package_path = Path(
+        next(artifact.path for artifact in final_snapshot.artifacts if artifact.kind == "deliverables_package")
+    )
+    assert deliverables_package_path.exists()
     gpu_attempts = [
         attempt
         for attempt in final_snapshot.job_attempts
@@ -81,6 +98,71 @@ def test_local_pipeline_completes_and_emits_qc(tmp_path) -> None:
     assert gpu_attempts
     assert all(attempt.metadata["gpu_lease"]["device_id"] == "gpu:0" for attempt in gpu_attempts)
     assert all(attempt.metadata["gpu_lease_release"]["status"] == "released" for attempt in gpu_attempts)
+
+
+def test_selective_rerender_rebuilds_only_targeted_shot_outputs(tmp_path) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="Selective rerender test",
+            script=(
+                "SCENE 1. HERO hovoryt do kamery.\nHERO: Pershyi shot.\n\n"
+                "SCENE 2. FRIEND hovoryt do kamery.\nFRIEND: Druhyi shot."
+            ),
+            language="uk",
+        )
+    )
+    engine = LocalPipelineEngine(
+        service,
+        DeterministicMediaAdapters(artifact_store),
+        AttemptLogStore(runtime_root / "logs"),
+        gpu_lease_store=GpuLeaseStore(runtime_root / "manifests" / "gpu_leases"),
+    )
+    first_snapshot = engine.run_project(snapshot.project.project_id)
+    target_shot_id = first_snapshot.scenes[0].shots[0].shot_id
+    untouched_shot_id = first_snapshot.scenes[1].shots[0].shot_id
+    original_target_video_count = sum(
+        1
+        for artifact in first_snapshot.artifacts
+        if artifact.kind == "shot_video" and artifact.metadata.get("shot_id") == target_shot_id
+    )
+    original_untouched_video_count = sum(
+        1
+        for artifact in first_snapshot.artifacts
+        if artifact.kind == "shot_video" and artifact.metadata.get("shot_id") == untouched_shot_id
+    )
+
+    service.prepare_selective_rerender(
+        first_snapshot.project.project_id,
+        SelectiveRerenderRequest(
+            start_stage="render_shots",
+            shot_ids=[target_shot_id],
+            reason="review_target_shot",
+            run_immediately=False,
+        ),
+    )
+    rerendered_snapshot = engine.run_project(first_snapshot.project.project_id)
+
+    assert rerendered_snapshot.project.status == "completed"
+    assert rerendered_snapshot.project.metadata["last_rerender_scope"]["shot_ids"] == [target_shot_id]
+    assert rerendered_snapshot.project.metadata["last_rerender_scope"]["start_stage"] == "render_shots"
+    assert rerendered_snapshot.project.metadata["rerender_history"]
+    assert sum(
+        1
+        for artifact in rerendered_snapshot.artifacts
+        if artifact.kind == "shot_video" and artifact.metadata.get("shot_id") == target_shot_id
+    ) == original_target_video_count + 1
+    assert sum(
+        1
+        for artifact in rerendered_snapshot.artifacts
+        if artifact.kind == "shot_video" and artifact.metadata.get("shot_id") == untouched_shot_id
+    ) == original_untouched_video_count
 
 
 def test_stage_service_requirements_follow_backend_profile(tmp_path) -> None:

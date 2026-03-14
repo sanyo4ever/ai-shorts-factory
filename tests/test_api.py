@@ -131,6 +131,54 @@ def test_create_and_run_project() -> None:
     assert "attempt_metadata" in attempt_manifest.json()
 
 
+def test_deliverables_and_selective_rerender_endpoints() -> None:
+    client = TestClient(create_app())
+    create_response = client.post(
+        "/api/v1/projects",
+        json={
+            "title": "Deliverables and rerender",
+            "script": (
+                "SCENE 1. HERO hovoryt do kamery.\n"
+                "HERO: Pershyi shot.\n\n"
+                "SCENE 2. FRIEND hovoryt do kamery.\n"
+                "FRIEND: Druhyi shot."
+            ),
+            "language": "uk",
+        },
+    )
+    assert create_response.status_code == 200
+    project_id = create_response.json()["project"]["project_id"]
+
+    run_response = client.post(f"/api/v1/projects/{project_id}/run")
+    assert run_response.status_code == 200
+    snapshot = run_response.json()
+    target_shot_id = snapshot["scenes"][0]["shots"][0]["shot_id"]
+
+    deliverables_response = client.get(f"/api/v1/projects/{project_id}/deliverables")
+    assert deliverables_response.status_code == 200
+    deliverables_payload = deliverables_response.json()
+    assert deliverables_payload["ready"] is True
+    assert deliverables_payload["named"]["final_video"]["exists"] is True
+    assert deliverables_payload["named"]["deliverables_manifest"]["exists"] is True
+    assert deliverables_payload["named"]["deliverables_package"]["exists"] is True
+
+    rerender_response = client.post(
+        f"/api/v1/projects/{project_id}/rerender",
+        json={
+            "start_stage": "render_shots",
+            "shot_ids": [target_shot_id],
+            "reason": "api_review",
+        },
+    )
+    assert rerender_response.status_code == 200
+    rerendered_snapshot = rerender_response.json()
+    assert rerendered_snapshot["project"]["status"] == "completed"
+    assert rerendered_snapshot["project"]["metadata"]["last_rerender_scope"]["shot_ids"] == [
+        target_shot_id
+    ]
+    assert rerendered_snapshot["project"]["metadata"]["last_rerender_scope"]["start_stage"] == "render_shots"
+
+
 def test_create_project_rejects_unknown_planner_backend() -> None:
     client = TestClient(create_app())
     response = client.post(

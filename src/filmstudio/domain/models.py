@@ -43,6 +43,17 @@ ShortArchetype = Literal[
     "countdown_list",
     "hero_teaser",
 ]
+RerenderStage = Literal[
+    "build_characters",
+    "generate_storyboards",
+    "synthesize_dialogue",
+    "generate_music",
+    "render_shots",
+    "apply_lipsync",
+    "generate_subtitles",
+    "compose_project",
+    "run_qc",
+]
 
 
 class ProductPresetContract(BaseModel):
@@ -208,6 +219,14 @@ class ProjectCreateRequest(BaseModel):
     music_backend: str | None = None
     lipsync_backend: str | None = None
     subtitle_backend: str | None = None
+
+
+class SelectiveRerenderRequest(BaseModel):
+    start_stage: RerenderStage = "generate_storyboards"
+    scene_ids: list[str] = Field(default_factory=list)
+    shot_ids: list[str] = Field(default_factory=list)
+    reason: str = "manual_review"
+    run_immediately: bool = True
 
 
 class ProjectRecord(BaseModel):

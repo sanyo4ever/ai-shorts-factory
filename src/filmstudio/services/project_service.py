@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 from filmstudio.domain.models import (
     ArtifactRecord,
@@ -11,6 +12,7 @@ from filmstudio.domain.models import (
     ProjectSnapshot,
     QCReportRecord,
     RecoveryPlanRecord,
+    SelectiveRerenderRequest,
     new_id,
     utc_now,
 )
@@ -256,6 +258,118 @@ class ProjectService:
     def save_snapshot(self, snapshot: ProjectSnapshot) -> ProjectSnapshot:
         snapshot.project.updated_at = utc_now()
         self.snapshot_store.save_snapshot(snapshot)
+        return snapshot
+
+    def build_deliverables_view(self, snapshot: ProjectSnapshot) -> dict[str, object]:
+        latest_by_kind: dict[str, ArtifactRecord] = {}
+        for artifact in snapshot.artifacts:
+            latest_by_kind[artifact.kind] = artifact
+        deliverable_order = [
+            "final_video",
+            "poster",
+            "subtitle_srt",
+            "subtitle_ass",
+            "final_render_manifest",
+            "scene_preview_sheet",
+            "project_archive",
+            "deliverables_manifest",
+            "deliverables_package",
+        ]
+        items: list[dict[str, object]] = []
+        named: dict[str, dict[str, object]] = {}
+        for kind in deliverable_order:
+            artifact = latest_by_kind.get(kind)
+            if artifact is None:
+                continue
+            item = {
+                "kind": kind,
+                "path": artifact.path,
+                "exists": Path(artifact.path).exists(),
+                "stage": artifact.stage,
+                "metadata": artifact.metadata,
+            }
+            items.append(item)
+            named[kind] = item
+        return {
+            "project_id": snapshot.project.project_id,
+            "status": snapshot.project.status,
+            "ready": all(
+                bool(named.get(kind, {}).get("exists"))
+                for kind in ("final_video", "poster", "deliverables_manifest", "deliverables_package")
+            ),
+            "items": items,
+            "named": named,
+        }
+
+    def prepare_selective_rerender(
+        self,
+        project_id: str,
+        payload: SelectiveRerenderRequest,
+    ) -> ProjectSnapshot:
+        snapshot = self.require_snapshot(project_id)
+        if payload.start_stage not in PIPELINE_STAGE_ORDER or payload.start_stage == "plan_script":
+            allowed = ", ".join(stage for stage in PIPELINE_STAGE_ORDER if stage != "plan_script")
+            raise RuntimeError(
+                f"Unsupported rerender start stage: {payload.start_stage}. Supported values: {allowed}."
+            )
+
+        shots_by_id = {
+            shot.shot_id: shot
+            for scene in snapshot.scenes
+            for shot in scene.shots
+        }
+        scenes_by_id = {scene.scene_id: scene for scene in snapshot.scenes}
+        requested_scene_ids = [scene_id for scene_id in payload.scene_ids if scene_id]
+        requested_shot_ids = [shot_id for shot_id in payload.shot_ids if shot_id]
+
+        unknown_scene_ids = sorted(scene_id for scene_id in requested_scene_ids if scene_id not in scenes_by_id)
+        if unknown_scene_ids:
+            raise RuntimeError(f"Unknown scene_ids for rerender: {', '.join(unknown_scene_ids)}.")
+        unknown_shot_ids = sorted(shot_id for shot_id in requested_shot_ids if shot_id not in shots_by_id)
+        if unknown_shot_ids:
+            raise RuntimeError(f"Unknown shot_ids for rerender: {', '.join(unknown_shot_ids)}.")
+
+        target_shot_ids = {
+            shot_id
+            for shot_id in requested_shot_ids
+        }
+        for scene_id in requested_scene_ids:
+            target_shot_ids.update(shot.shot_id for shot in scenes_by_id[scene_id].shots)
+        if not target_shot_ids:
+            raise RuntimeError("Selective rerender requires at least one scene_id or shot_id.")
+
+        target_scene_ids = {
+            shots_by_id[shot_id].scene_id
+            for shot_id in target_shot_ids
+        }
+        target_character_names = sorted(
+            {
+                character_name
+                for shot_id in target_shot_ids
+                for character_name in shots_by_id[shot_id].characters
+                if str(character_name).strip()
+            }
+        )
+        stage_index = PIPELINE_STAGE_ORDER.index(payload.start_stage)
+        for job in snapshot.jobs:
+            if PIPELINE_STAGE_ORDER.index(job.kind) < stage_index:
+                continue
+            job.status = "queued"
+            job.latest_attempt_id = None
+            job.updated_at = utc_now()
+        snapshot.project.status = "queued"
+        snapshot.project.metadata["active_rerender_scope"] = {
+            "request_id": new_id("rerender"),
+            "start_stage": payload.start_stage,
+            "scene_ids": sorted(target_scene_ids),
+            "shot_ids": sorted(target_shot_ids),
+            "character_names": target_character_names,
+            "reason": payload.reason,
+            "requested_at": utc_now(),
+            "run_immediately": payload.run_immediately,
+        }
+        snapshot.project.metadata["rerender_requested"] = True
+        self.save_snapshot(snapshot)
         return snapshot
 
     def build_temporal_progress_view(self, snapshot: ProjectSnapshot) -> dict[str, object]:

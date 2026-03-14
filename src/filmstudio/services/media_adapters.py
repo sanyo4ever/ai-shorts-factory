@@ -4,6 +4,7 @@ import json
 import math
 import subprocess
 import textwrap
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -315,6 +316,64 @@ class DeterministicMediaAdapters:
             "musetalk_use_float16": self.musetalk_use_float16,
         }
 
+    @staticmethod
+    def _active_rerender_scope(snapshot: ProjectSnapshot) -> dict[str, Any] | None:
+        scope = snapshot.project.metadata.get("active_rerender_scope")
+        if isinstance(scope, dict):
+            return dict(scope)
+        return None
+
+    def _rerender_target_shot_ids(self, snapshot: ProjectSnapshot) -> set[str]:
+        scope = self._active_rerender_scope(snapshot)
+        if scope is None:
+            return set()
+        return {
+            str(shot_id).strip()
+            for shot_id in scope.get("shot_ids", [])
+            if str(shot_id).strip()
+        }
+
+    def _rerender_target_character_names(self, snapshot: ProjectSnapshot) -> set[str]:
+        scope = self._active_rerender_scope(snapshot)
+        if scope is None:
+            return set()
+        return {
+            str(name).strip()
+            for name in scope.get("character_names", [])
+            if str(name).strip()
+        }
+
+    def _iter_target_shots(self, snapshot: ProjectSnapshot) -> list[ShotPlan]:
+        target_shot_ids = self._rerender_target_shot_ids(snapshot)
+        shots = [shot for scene in snapshot.scenes for shot in scene.shots]
+        if not target_shot_ids:
+            return shots
+        return [shot for shot in shots if shot.shot_id in target_shot_ids]
+
+    @staticmethod
+    def _retime_dialogue_entries(
+        entries: list[dict[str, Any]],
+        *,
+        planned_entries: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        order = {
+            str(entry.get("line_id")): index
+            for index, entry in enumerate(planned_entries)
+            if str(entry.get("line_id") or "").strip()
+        }
+        retimed: list[dict[str, Any]] = []
+        clock = 0.0
+        for entry in sorted(entries, key=lambda item: order.get(str(item.get("line_id")), len(order))):
+            duration_sec = float(entry.get("duration_sec", 0.0) or 0.0)
+            if duration_sec <= 0.0:
+                duration_sec = max(1.0, len(str(entry.get("text") or "").split()) * 0.45)
+            updated_entry = dict(entry)
+            updated_entry["start_sec"] = clock
+            updated_entry["end_sec"] = clock + duration_sec
+            retimed.append(updated_entry)
+            clock = updated_entry["end_sec"] + 0.2
+        return retimed
+
     def _render_orientation(self) -> str:
         return "portrait" if self.render_height >= self.render_width else "landscape"
 
@@ -348,7 +407,13 @@ class DeterministicMediaAdapters:
 
     def _build_characters_deterministic(self, snapshot: ProjectSnapshot) -> StageExecutionResult:
         result = StageExecutionResult()
-        for index, character in enumerate(snapshot.project.characters, start=1):
+        target_character_names = self._rerender_target_character_names(snapshot)
+        characters = (
+            [character for character in snapshot.project.characters if character.name in target_character_names]
+            if target_character_names
+            else list(snapshot.project.characters)
+        )
+        for index, character in enumerate(characters, start=1):
             profile_path = self.artifact_store.write_json(
                 snapshot.project.project_id,
                 f"characters/{character.character_id}/profile.json",
@@ -377,7 +442,7 @@ class DeterministicMediaAdapters:
                     ),
                 ]
             )
-        result.logs.append({"message": f"built {len(snapshot.project.characters)} character packages"})
+        result.logs.append({"message": f"built {len(characters)} character packages"})
         return result
 
     def generate_storyboards(self, snapshot: ProjectSnapshot) -> StageExecutionResult:
@@ -389,47 +454,55 @@ class DeterministicMediaAdapters:
 
     def _generate_storyboards_deterministic(self, snapshot: ProjectSnapshot) -> StageExecutionResult:
         result = StageExecutionResult()
-        seed = 11
-        for scene in snapshot.scenes:
-            for shot in scene.shots:
-                prompt_path = self.artifact_store.write_json(
-                    snapshot.project.project_id,
-                    f"shots/{shot.shot_id}/prompt.json",
-                    shot.model_dump(),
-                )
-                storyboard_path = write_ppm_image(
-                    self.artifact_store.project_dir(snapshot.project.project_id)
-                    / f"shots/{shot.shot_id}/storyboard.ppm",
-                    self.render_width,
-                    self.render_height,
-                    seed,
-                )
-                seed += 1
-                result.artifacts.extend(
-                    [
-                        ArtifactRecord(
-                            artifact_id=new_id("artifact"),
-                            kind="shot_prompt",
-                            path=str(prompt_path),
-                            stage="generate_storyboards",
-                            metadata={"shot_id": shot.shot_id},
-                        ),
-                        ArtifactRecord(
-                            artifact_id=new_id("artifact"),
-                            kind="storyboard",
-                            path=str(storyboard_path),
-                            stage="generate_storyboards",
-                            metadata={"shot_id": shot.shot_id},
-                        ),
-                    ]
-                )
+        for shot in self._iter_target_shots(snapshot):
+            prompt_path = self.artifact_store.write_json(
+                snapshot.project.project_id,
+                f"shots/{shot.shot_id}/prompt.json",
+                shot.model_dump(),
+            )
+            storyboard_seed = stable_visual_seed(
+                snapshot.project.project_id,
+                shot.shot_id,
+                "storyboard_deterministic",
+            )
+            storyboard_path = write_ppm_image(
+                self.artifact_store.project_dir(snapshot.project.project_id)
+                / f"shots/{shot.shot_id}/storyboard.ppm",
+                self.render_width,
+                self.render_height,
+                storyboard_seed,
+            )
+            result.artifacts.extend(
+                [
+                    ArtifactRecord(
+                        artifact_id=new_id("artifact"),
+                        kind="shot_prompt",
+                        path=str(prompt_path),
+                        stage="generate_storyboards",
+                        metadata={"shot_id": shot.shot_id},
+                    ),
+                    ArtifactRecord(
+                        artifact_id=new_id("artifact"),
+                        kind="storyboard",
+                        path=str(storyboard_path),
+                        stage="generate_storyboards",
+                        metadata={"shot_id": shot.shot_id},
+                    ),
+                ]
+            )
         result.logs.append({"message": "generated storyboard prompts and placeholder frames"})
         return result
 
     def _build_characters_comfyui(self, snapshot: ProjectSnapshot) -> StageExecutionResult:
         client = self._require_comfyui()
         result = StageExecutionResult()
-        for index, character in enumerate(snapshot.project.characters, start=1):
+        target_character_names = self._rerender_target_character_names(snapshot)
+        characters = (
+            [character for character in snapshot.project.characters if character.name in target_character_names]
+            if target_character_names
+            else list(snapshot.project.characters)
+        )
+        for index, character in enumerate(characters, start=1):
             profile_path = self.artifact_store.write_json(
                 snapshot.project.project_id,
                 f"characters/{character.character_id}/profile.json",
@@ -509,82 +582,82 @@ class DeterministicMediaAdapters:
     def _generate_storyboards_comfyui(self, snapshot: ProjectSnapshot) -> StageExecutionResult:
         client = self._require_comfyui()
         result = StageExecutionResult()
-        for scene in snapshot.scenes:
-            for shot in scene.shots:
-                prompt_payload = {
-                    **shot.model_dump(),
-                    "project_style": snapshot.project.style,
-                    "project_language": snapshot.project.language,
+        for shot in self._iter_target_shots(snapshot):
+            prompt_payload = {
+                **shot.model_dump(),
+                "project_style": snapshot.project.style,
+                "project_language": snapshot.project.language,
+            }
+            prompt_path = self.artifact_store.write_json(
+                snapshot.project.project_id,
+                f"shots/{shot.shot_id}/prompt.json",
+                prompt_payload,
+            )
+            positive_prompt, negative_prompt = self._storyboard_prompts(snapshot, shot)
+            workflow = build_storyboard_workflow(
+                checkpoint_name=self.comfyui_checkpoint_name,
+                positive_prompt=positive_prompt,
+                negative_prompt=negative_prompt,
+                filename_prefix=f"filmstudio/{snapshot.project.project_id}/shots/{shot.shot_id}/storyboard",
+                width=self.render_width,
+                height=self.render_height,
+                seed=stable_visual_seed(snapshot.project.project_id, shot.shot_id, "storyboard"),
+            )
+            image = client.generate_image(workflow)
+            storyboard_path = write_image_bytes(
+                self.artifact_store.project_dir(snapshot.project.project_id)
+                / f"shots/{shot.shot_id}/storyboard.png",
+                image.image_bytes,
+            )
+            manifest_path = self.artifact_store.write_json(
+                snapshot.project.project_id,
+                f"shots/{shot.shot_id}/storyboard_manifest.json",
+                {
+                    "backend": "comfyui",
+                    "shot_id": shot.shot_id,
+                    "scene_id": shot.scene_id,
+                    "prompt_id": image.prompt_id,
+                    "duration_sec": image.duration_sec,
+                    "filename": image.filename,
+                    "subfolder": image.subfolder,
+                    "workflow": image.workflow,
+                    "history": image.history,
+                },
+            )
+            result.artifacts.extend(
+                [
+                    ArtifactRecord(
+                        artifact_id=new_id("artifact"),
+                        kind="shot_prompt",
+                        path=str(prompt_path),
+                        stage="generate_storyboards",
+                        metadata={"shot_id": shot.shot_id},
+                    ),
+                    ArtifactRecord(
+                        artifact_id=new_id("artifact"),
+                        kind="storyboard",
+                        path=str(storyboard_path),
+                        stage="generate_storyboards",
+                        metadata={"backend": "comfyui", "shot_id": shot.shot_id},
+                    ),
+                    ArtifactRecord(
+                        artifact_id=new_id("artifact"),
+                        kind="storyboard_manifest",
+                        path=str(manifest_path),
+                        stage="generate_storyboards",
+                        metadata={"backend": "comfyui", "shot_id": shot.shot_id},
+                    ),
+                ]
+            )
+            result.logs.append(
+                {
+                    "message": f"generated storyboard {shot.shot_id} via comfyui",
+                    "shot_id": shot.shot_id,
+                    "prompt_id": image.prompt_id,
+                    "duration_sec": image.duration_sec,
+                    "visual_backend": "comfyui",
                 }
-                prompt_path = self.artifact_store.write_json(
-                    snapshot.project.project_id,
-                    f"shots/{shot.shot_id}/prompt.json",
-                    prompt_payload,
-                )
-                positive_prompt, negative_prompt = self._storyboard_prompts(snapshot, shot)
-                workflow = build_storyboard_workflow(
-                    checkpoint_name=self.comfyui_checkpoint_name,
-                    positive_prompt=positive_prompt,
-                    negative_prompt=negative_prompt,
-                    filename_prefix=f"filmstudio/{snapshot.project.project_id}/shots/{shot.shot_id}/storyboard",
-                    width=self.render_width,
-                    height=self.render_height,
-                    seed=stable_visual_seed(snapshot.project.project_id, shot.shot_id, "storyboard"),
-                )
-                image = client.generate_image(workflow)
-                storyboard_path = write_image_bytes(
-                    self.artifact_store.project_dir(snapshot.project.project_id)
-                    / f"shots/{shot.shot_id}/storyboard.png",
-                    image.image_bytes,
-                )
-                manifest_path = self.artifact_store.write_json(
-                    snapshot.project.project_id,
-                    f"shots/{shot.shot_id}/storyboard_manifest.json",
-                    {
-                        "backend": "comfyui",
-                        "shot_id": shot.shot_id,
-                        "scene_id": shot.scene_id,
-                        "prompt_id": image.prompt_id,
-                        "duration_sec": image.duration_sec,
-                        "filename": image.filename,
-                        "subfolder": image.subfolder,
-                        "workflow": image.workflow,
-                        "history": image.history,
-                    },
-                )
-                result.artifacts.extend(
-                    [
-                        ArtifactRecord(
-                            artifact_id=new_id("artifact"),
-                            kind="shot_prompt",
-                            path=str(prompt_path),
-                            stage="generate_storyboards",
-                        ),
-                        ArtifactRecord(
-                            artifact_id=new_id("artifact"),
-                            kind="storyboard",
-                            path=str(storyboard_path),
-                            stage="generate_storyboards",
-                            metadata={"backend": "comfyui", "shot_id": shot.shot_id},
-                        ),
-                        ArtifactRecord(
-                            artifact_id=new_id("artifact"),
-                            kind="storyboard_manifest",
-                            path=str(manifest_path),
-                            stage="generate_storyboards",
-                            metadata={"backend": "comfyui", "shot_id": shot.shot_id},
-                        ),
-                    ]
-                )
-                result.logs.append(
-                    {
-                        "message": f"generated storyboard {shot.shot_id} via comfyui",
-                        "shot_id": shot.shot_id,
-                        "prompt_id": image.prompt_id,
-                        "duration_sec": image.duration_sec,
-                        "visual_backend": "comfyui",
-                    }
-                )
+            )
         return result
 
     def _storyboard_prompts(
@@ -3139,8 +3212,63 @@ class DeterministicMediaAdapters:
     def synthesize_dialogue(self, snapshot: ProjectSnapshot) -> StageExecutionResult:
         result = StageExecutionResult()
         planned_entries = self._planned_dialogue_entries(snapshot)
-        timeline = self._synthesize_dialogue_entries(snapshot, planned_entries)
+        target_shot_ids = self._rerender_target_shot_ids(snapshot)
+        rendered_line_ids: set[str] = set()
+        if target_shot_ids:
+            existing_timeline = self._dialogue_timeline(snapshot)
+            existing_by_line_id = {
+                str(entry.get("line_id")): dict(entry)
+                for entry in existing_timeline
+                if isinstance(entry, dict) and str(entry.get("line_id") or "").strip()
+            }
+            target_entries = [entry for entry in planned_entries if entry["shot_id"] in target_shot_ids]
+            rendered_entries = self._synthesize_dialogue_entries(snapshot, target_entries)
+            rendered_by_line_id = {
+                str(entry.get("line_id")): entry
+                for entry in rendered_entries
+                if str(entry.get("line_id") or "").strip()
+            }
+            rendered_line_ids.update(rendered_by_line_id)
+            missing_entries: list[dict[str, Any]] = []
+            merged_entries: list[dict[str, Any]] = []
+            for planned_entry in planned_entries:
+                line_id = str(planned_entry["line_id"])
+                rendered_entry = rendered_by_line_id.get(line_id)
+                if rendered_entry is not None:
+                    merged_entries.append(rendered_entry)
+                    continue
+                existing_entry = existing_by_line_id.get(line_id)
+                if existing_entry is None or not Path(str(existing_entry.get("path") or "")).exists():
+                    missing_entries.append(planned_entry)
+                    continue
+                merged_entry = {
+                    **existing_entry,
+                    "scene_id": planned_entry["scene_id"],
+                    "shot_id": planned_entry["shot_id"],
+                    "character_name": planned_entry["character_name"],
+                    "text": planned_entry["text"],
+                    "line_id": planned_entry["line_id"],
+                }
+                merged_entries.append(merged_entry)
+            if missing_entries:
+                missing_rendered = self._synthesize_dialogue_entries(snapshot, missing_entries)
+                rendered_line_ids.update(
+                    str(entry.get("line_id"))
+                    for entry in missing_rendered
+                    if str(entry.get("line_id") or "").strip()
+                )
+                merged_entries.extend(missing_rendered)
+            timeline = self._retime_dialogue_entries(merged_entries, planned_entries=planned_entries)
+        else:
+            timeline = self._synthesize_dialogue_entries(snapshot, planned_entries)
+            rendered_line_ids = {
+                str(entry.get("line_id"))
+                for entry in timeline
+                if str(entry.get("line_id") or "").strip()
+            }
         for entry in timeline:
+            if rendered_line_ids and str(entry.get("line_id")) not in rendered_line_ids:
+                continue
             result.artifacts.append(
                 ArtifactRecord(
                     artifact_id=new_id("artifact"),
@@ -3194,6 +3322,8 @@ class DeterministicMediaAdapters:
             {
                 "message": f"synthesized {len(timeline)} dialogue lines",
                 "tts_backend": self.tts_backend,
+                "rendered_line_count": len(rendered_line_ids),
+                "selective_rerender": bool(target_shot_ids),
                 "normalization_applied_count": sum(
                     1 for entry in timeline if entry.get("text_normalization", {}).get("changed")
                 ),
@@ -3461,16 +3591,17 @@ class DeterministicMediaAdapters:
         self._require_binary(self.ffmpeg_binary, self.render_backend, "render_shots")
         self._require_binary(self.ffprobe_binary, self.qc_backend, "render_shots")
         result = StageExecutionResult()
-        seed = 101
-        for scene in snapshot.scenes:
-            for shot in scene.shots:
-                if shot.strategy == "hero_insert" and self.video_backend == "wan":
-                    shot_result = self._render_shot_wan(snapshot, shot)
-                else:
-                    shot_result = self._render_shot_ffmpeg(snapshot, shot, seed=seed)
-                    seed += 1
-                result.artifacts.extend(shot_result.artifacts)
-                result.logs.extend(shot_result.logs)
+        for shot in self._iter_target_shots(snapshot):
+            if shot.strategy == "hero_insert" and self.video_backend == "wan":
+                shot_result = self._render_shot_wan(snapshot, shot)
+            else:
+                shot_result = self._render_shot_ffmpeg(
+                    snapshot,
+                    shot,
+                    seed=stable_visual_seed(snapshot.project.project_id, shot.shot_id, "render_shot"),
+                )
+            result.artifacts.extend(shot_result.artifacts)
+            result.logs.extend(shot_result.logs)
         return result
 
     def _render_shot_ffmpeg(
@@ -3742,32 +3873,31 @@ class DeterministicMediaAdapters:
     def _apply_lipsync_deterministic(self, snapshot: ProjectSnapshot) -> StageExecutionResult:
         result = StageExecutionResult()
         dialogue_bus = self._find_artifact(snapshot, "dialogue_bus")
-        for scene in snapshot.scenes:
-            for shot in scene.shots:
-                if shot.strategy != "portrait_lipsync":
-                    continue
-                sync_path = self.artifact_store.write_json(
-                    snapshot.project.project_id,
-                    f"shots/{shot.shot_id}/lipsync_manifest.json",
-                    {
-                        "shot_id": shot.shot_id,
-                        "backend": "deterministic",
-                        "engine": "musetalk_stub",
-                        "dialogue_count": len(shot.dialogue),
-                        "strategy": shot.strategy,
-                        "composition": shot.composition.model_dump(),
-                        "dialogue_bus": dialogue_bus.path if dialogue_bus else None,
-                    },
+        for shot in self._iter_target_shots(snapshot):
+            if shot.strategy != "portrait_lipsync":
+                continue
+            sync_path = self.artifact_store.write_json(
+                snapshot.project.project_id,
+                f"shots/{shot.shot_id}/lipsync_manifest.json",
+                {
+                    "shot_id": shot.shot_id,
+                    "backend": "deterministic",
+                    "engine": "musetalk_stub",
+                    "dialogue_count": len(shot.dialogue),
+                    "strategy": shot.strategy,
+                    "composition": shot.composition.model_dump(),
+                    "dialogue_bus": dialogue_bus.path if dialogue_bus else None,
+                },
+            )
+            result.artifacts.append(
+                ArtifactRecord(
+                    artifact_id=new_id("artifact"),
+                    kind="lipsync_manifest",
+                    path=str(sync_path),
+                    stage="apply_lipsync",
+                    metadata={"shot_id": shot.shot_id, "backend": "deterministic"},
                 )
-                result.artifacts.append(
-                    ArtifactRecord(
-                        artifact_id=new_id("artifact"),
-                        kind="lipsync_manifest",
-                        path=str(sync_path),
-                        stage="apply_lipsync",
-                        metadata={"shot_id": shot.shot_id, "backend": "deterministic"},
-                    )
-                )
+            )
         result.logs.append(
             {
                 "message": "prepared deterministic lipsync manifests for dialogue closeups",
@@ -3789,239 +3919,246 @@ class DeterministicMediaAdapters:
         result = StageExecutionResult()
         successful_source_refs_by_character: dict[str, dict[str, Any]] = {}
 
-        for scene in snapshot.scenes:
-            for shot in scene.shots:
-                if shot.strategy != "portrait_lipsync":
-                    continue
-                primary_character = self._resolve_primary_character(snapshot, shot)
-                preferred_source_ref = successful_source_refs_by_character.get(
-                    primary_character["character_id"]
+        for shot in self._iter_target_shots(snapshot):
+            if shot.strategy != "portrait_lipsync":
+                continue
+            primary_character = self._resolve_primary_character(snapshot, shot)
+            preferred_source_ref = successful_source_refs_by_character.get(
+                primary_character["character_id"]
+            )
+
+            shot_entries = [entry for entry in timeline if entry.get("shot_id") == shot.shot_id]
+            if not shot_entries:
+                raise RuntimeError(f"MuseTalk shot {shot.shot_id} has no dialogue timeline entries.")
+
+            shot_audio_paths: list[Path] = []
+            for entry in shot_entries:
+                line_id = entry.get("line_id")
+                audio_path = dialogue_audio_by_line_id.get(line_id)
+                if audio_path is None or not audio_path.exists():
+                    raise RuntimeError(
+                        f"MuseTalk shot {shot.shot_id} is missing dialogue audio for line {line_id}."
+                    )
+                shot_audio_paths.append(audio_path)
+
+            shot_dir = project_dir / f"shots/{shot.shot_id}"
+            shot_audio_path = write_audio_bus_from_files(
+                shot_dir / "audio" / "musetalk_dialogue.wav",
+                shot_audio_paths,
+                gap_sec=0.2,
+            )
+            max_source_attempts = 3 if self.visual_backend == "comfyui" else 1
+            attempt_source_artifacts: list[ArtifactRecord] = []
+            attempt_source_logs: list[dict[str, Any]] = []
+            source_attempt_records: list[dict[str, Any]] = []
+            selected_musetalk_result: Any | None = None
+            selected_source_prep: dict[str, Any] | None = None
+            selected_source_face_probe: dict[str, Any] | None = None
+            selected_source_face_quality: dict[str, Any] | None = None
+            selected_source_face_occupancy: dict[str, Any] | None = None
+            selected_source_face_isolation: dict[str, Any] | None = None
+            selected_source_border_adjustment: dict[str, Any] | None = None
+            selected_source_detector_adjustment: dict[str, Any] | None = None
+            selected_source_occupancy_adjustment: dict[str, Any] | None = None
+            selected_source_face_probe_path: str | None = None
+            selected_source_face_probe_stdout_path: str | None = None
+            selected_source_face_probe_stderr_path: str | None = None
+            selected_source_face_probe_command: list[str] | None = None
+            selected_source_face_probe_duration_sec = 0.0
+            selected_output_face_probe: dict[str, Any] | None = None
+            selected_output_face_quality: dict[str, Any] | None = None
+            selected_output_face_isolation: dict[str, Any] | None = None
+            selected_output_face_samples: list[dict[str, Any]] | None = None
+            selected_output_face_sequence_quality: dict[str, Any] | None = None
+            selected_output_face_temporal_drift: dict[str, Any] | None = None
+            selected_source_vs_output_face_delta: dict[str, Any] | None = None
+            selected_output_face_primary_sample_label: str | None = None
+            selected_output_face_probe_path: str | None = None
+            selected_output_face_probe_stdout_path: str | None = None
+            selected_output_face_probe_stderr_path: str | None = None
+            selected_output_face_probe_command: list[str] | None = None
+            selected_output_face_probe_duration_sec = 0.0
+            selected_output_face_frame_path: str | None = None
+            selected_output_face_sample_time_sec = 0.0
+            selected_output_face_manifest_path: str | None = None
+            selected_output_isolation_adjustment: dict[str, Any] | None = None
+            selected_raw_probe: dict[str, Any] | None = None
+            selected_normalized_probe: dict[str, Any] | None = None
+            selected_normalize_command: list[str] | None = None
+            selected_normalize_duration_sec = 0.0
+            selected_normalized_output_path: Path | None = None
+            selected_attempt_index = 0
+            last_error: RuntimeError | None = None
+            musetalk_root = shot_dir / "musetalk"
+
+            for source_attempt_index in range(1, max_source_attempts + 1):
+                source_prep = self._prepare_musetalk_source(
+                    snapshot,
+                    shot,
+                    shot_dir=shot_dir,
+                    attempt_index=source_attempt_index,
+                    preferred_reference_source_path=(
+                        Path(preferred_source_ref["path"])
+                        if preferred_source_ref is not None
+                        and isinstance(preferred_source_ref.get("path"), str)
+                        else None
+                    ),
+                    preferred_reference_kind=(
+                        str(preferred_source_ref.get("kind"))
+                        if preferred_source_ref is not None and preferred_source_ref.get("kind")
+                        else None
+                    ),
+                    preferred_reference_shot_id=(
+                        str(preferred_source_ref.get("shot_id"))
+                        if preferred_source_ref is not None and preferred_source_ref.get("shot_id")
+                        else None
+                    ),
                 )
-
-                shot_entries = [entry for entry in timeline if entry.get("shot_id") == shot.shot_id]
-                if not shot_entries:
-                    raise RuntimeError(f"MuseTalk shot {shot.shot_id} has no dialogue timeline entries.")
-
-                shot_audio_paths: list[Path] = []
-                for entry in shot_entries:
-                    line_id = entry.get("line_id")
-                    audio_path = dialogue_audio_by_line_id.get(line_id)
-                    if audio_path is None or not audio_path.exists():
-                        raise RuntimeError(
-                            f"MuseTalk shot {shot.shot_id} is missing dialogue audio for line {line_id}."
-                        )
-                    shot_audio_paths.append(audio_path)
-
-                shot_dir = project_dir / f"shots/{shot.shot_id}"
-                shot_audio_path = write_audio_bus_from_files(
-                    shot_dir / "audio" / "musetalk_dialogue.wav",
-                    shot_audio_paths,
-                    gap_sec=0.2,
-                )
-                max_source_attempts = 3 if self.visual_backend == "comfyui" else 1
-                attempt_source_artifacts: list[ArtifactRecord] = []
-                attempt_source_logs: list[dict[str, Any]] = []
-                source_attempt_records: list[dict[str, Any]] = []
-                selected_musetalk_result: Any | None = None
-                selected_source_prep: dict[str, Any] | None = None
-                selected_source_face_probe: dict[str, Any] | None = None
-                selected_source_face_quality: dict[str, Any] | None = None
-                selected_source_face_occupancy: dict[str, Any] | None = None
-                selected_source_face_isolation: dict[str, Any] | None = None
-                selected_source_border_adjustment: dict[str, Any] | None = None
-                selected_source_detector_adjustment: dict[str, Any] | None = None
-                selected_source_occupancy_adjustment: dict[str, Any] | None = None
-                selected_source_face_probe_path: str | None = None
-                selected_source_face_probe_stdout_path: str | None = None
-                selected_source_face_probe_stderr_path: str | None = None
-                selected_source_face_probe_command: list[str] | None = None
-                selected_source_face_probe_duration_sec = 0.0
-                selected_output_face_probe: dict[str, Any] | None = None
-                selected_output_face_quality: dict[str, Any] | None = None
-                selected_output_face_isolation: dict[str, Any] | None = None
-                selected_output_face_samples: list[dict[str, Any]] | None = None
-                selected_output_face_sequence_quality: dict[str, Any] | None = None
-                selected_output_face_temporal_drift: dict[str, Any] | None = None
-                selected_source_vs_output_face_delta: dict[str, Any] | None = None
-                selected_output_face_primary_sample_label: str | None = None
-                selected_output_face_probe_path: str | None = None
-                selected_output_face_probe_stdout_path: str | None = None
-                selected_output_face_probe_stderr_path: str | None = None
-                selected_output_face_probe_command: list[str] | None = None
-                selected_output_face_probe_duration_sec = 0.0
-                selected_output_face_frame_path: str | None = None
-                selected_output_face_sample_time_sec = 0.0
-                selected_output_face_manifest_path: str | None = None
-                selected_output_isolation_adjustment: dict[str, Any] | None = None
-                selected_raw_probe: dict[str, Any] | None = None
-                selected_normalized_probe: dict[str, Any] | None = None
-                selected_normalize_command: list[str] | None = None
-                selected_normalize_duration_sec = 0.0
-                selected_normalized_output_path: Path | None = None
-                selected_attempt_index = 0
-                last_error: RuntimeError | None = None
-                musetalk_root = shot_dir / "musetalk"
-
-                for source_attempt_index in range(1, max_source_attempts + 1):
-                    source_prep = self._prepare_musetalk_source(
-                        snapshot,
+                prepared_source_path = Path(source_prep["prepared_source_path"])
+                prepare_command = source_prep["prepare_command"]
+                prepare_duration_sec = float(source_prep["prepare_duration_sec"])
+                source_artifact_kind = str(source_prep["source_artifact_kind"])
+                source_artifact_path = str(source_prep["source_artifact_path"])
+                source_manifest_path = source_prep["source_manifest_path"]
+                prompt_variant = source_prep["prompt_variant"]
+                source_probe = source_prep["source_probe"]
+                source_face_probe_payload: dict[str, Any] | None = None
+                source_face_quality: dict[str, Any] | None = None
+                source_face_occupancy: dict[str, Any] | None = None
+                source_face_isolation: dict[str, Any] | None = None
+                source_border_adjustment: dict[str, Any] | None = None
+                source_detector_adjustment: dict[str, Any] | None = None
+                source_occupancy_adjustment: dict[str, Any] | None = None
+                source_face_probe_path: str | None = None
+                source_face_probe_stdout_path: str | None = None
+                source_face_probe_stderr_path: str | None = None
+                source_face_probe_command: list[str] | None = None
+                source_face_probe_duration_sec = 0.0
+                source_inference_ready = False
+                output_isolation_adjustment: dict[str, Any] | None = None
+                attempt_source_artifacts.extend(source_prep["artifacts"])
+                attempt_source_logs.extend(source_prep["logs"])
+                attempt_record = {
+                    "attempt_index": source_attempt_index,
+                    "source_artifact_kind": source_artifact_kind,
+                    "source_artifact_path": source_artifact_path,
+                    "prepared_source_path": str(prepared_source_path),
+                    "source_manifest_path": source_manifest_path,
+                    "prompt_variant": prompt_variant,
+                    "positive_prompt": source_prep.get("positive_prompt"),
+                    "negative_prompt": source_prep.get("negative_prompt"),
+                    "source_input_mode": source_prep.get("source_input_mode"),
+                    "character_reference_path": source_prep.get("character_reference_path"),
+                    "character_generation_manifest_path": source_prep.get(
+                        "character_generation_manifest_path"
+                    ),
+                    "comfyui_input_dir": source_prep.get("comfyui_input_dir"),
+                    "comfyui_staged_reference_path": source_prep.get(
+                        "comfyui_staged_reference_path"
+                    ),
+                    "comfyui_input_image_name": source_prep.get("comfyui_input_image_name"),
+                    "source_probe": source_probe,
+                    "source_border_adjustment": source_prep.get("source_border_adjustment"),
+                    "status": "running",
+                }
+                try:
+                    source_face_probe_result = self._probe_musetalk_source_face(
                         shot,
                         shot_dir=shot_dir,
                         attempt_index=source_attempt_index,
-                        preferred_reference_source_path=(
-                            Path(preferred_source_ref["path"])
-                            if preferred_source_ref is not None
-                            and isinstance(preferred_source_ref.get("path"), str)
-                            else None
-                        ),
-                        preferred_reference_kind=(
-                            str(preferred_source_ref.get("kind"))
-                            if preferred_source_ref is not None and preferred_source_ref.get("kind")
-                            else None
-                        ),
-                        preferred_reference_shot_id=(
-                            str(preferred_source_ref.get("shot_id"))
-                            if preferred_source_ref is not None and preferred_source_ref.get("shot_id")
-                            else None
-                        ),
+                        prepared_source_path=prepared_source_path,
+                        source_manifest_path=source_manifest_path,
                     )
-                    prepared_source_path = Path(source_prep["prepared_source_path"])
-                    prepare_command = source_prep["prepare_command"]
-                    prepare_duration_sec = float(source_prep["prepare_duration_sec"])
-                    source_artifact_kind = str(source_prep["source_artifact_kind"])
-                    source_artifact_path = str(source_prep["source_artifact_path"])
-                    source_manifest_path = source_prep["source_manifest_path"]
-                    prompt_variant = source_prep["prompt_variant"]
-                    source_probe = source_prep["source_probe"]
-                    source_face_probe_payload: dict[str, Any] | None = None
-                    source_face_quality: dict[str, Any] | None = None
-                    source_face_occupancy: dict[str, Any] | None = None
-                    source_face_isolation: dict[str, Any] | None = None
-                    source_border_adjustment: dict[str, Any] | None = None
-                    source_detector_adjustment: dict[str, Any] | None = None
-                    source_occupancy_adjustment: dict[str, Any] | None = None
-                    source_face_probe_path: str | None = None
-                    source_face_probe_stdout_path: str | None = None
-                    source_face_probe_stderr_path: str | None = None
-                    source_face_probe_command: list[str] | None = None
-                    source_face_probe_duration_sec = 0.0
-                    source_inference_ready = False
-                    output_isolation_adjustment: dict[str, Any] | None = None
-                    attempt_source_artifacts.extend(source_prep["artifacts"])
-                    attempt_source_logs.extend(source_prep["logs"])
-                    attempt_record = {
-                        "attempt_index": source_attempt_index,
-                        "source_artifact_kind": source_artifact_kind,
-                        "source_artifact_path": source_artifact_path,
-                        "prepared_source_path": str(prepared_source_path),
-                        "source_manifest_path": source_manifest_path,
-                        "prompt_variant": prompt_variant,
-                        "positive_prompt": source_prep.get("positive_prompt"),
-                        "negative_prompt": source_prep.get("negative_prompt"),
-                        "source_input_mode": source_prep.get("source_input_mode"),
-                        "character_reference_path": source_prep.get("character_reference_path"),
-                        "character_generation_manifest_path": source_prep.get(
-                            "character_generation_manifest_path"
-                        ),
-                        "comfyui_input_dir": source_prep.get("comfyui_input_dir"),
-                        "comfyui_staged_reference_path": source_prep.get(
-                            "comfyui_staged_reference_path"
-                        ),
-                        "comfyui_input_image_name": source_prep.get("comfyui_input_image_name"),
-                        "source_probe": source_probe,
-                        "source_border_adjustment": source_prep.get("source_border_adjustment"),
-                        "status": "running",
-                    }
-                    try:
-                        source_face_probe_result = self._probe_musetalk_source_face(
-                            shot,
-                            shot_dir=shot_dir,
-                            attempt_index=source_attempt_index,
-                            prepared_source_path=prepared_source_path,
-                            source_manifest_path=source_manifest_path,
-                        )
-                    except RuntimeError as exc:
-                        last_error = exc
-                        attempt_record["status"] = "failed"
-                        attempt_record["error"] = str(exc)
-                        source_attempt_records.append(attempt_record)
-                        attempt_source_logs.append(
-                            {
-                                "message": f"MuseTalk source face preflight failed for {shot.shot_id}",
-                                "shot_id": shot.shot_id,
-                                "attempt_index": source_attempt_index,
-                                "prompt_variant": prompt_variant,
-                                "prepared_source_path": str(prepared_source_path),
-                                "error": str(exc),
-                            }
-                        )
-                        continue
-                    attempt_source_artifacts.extend(source_face_probe_result["artifacts"])
-                    attempt_source_logs.extend(source_face_probe_result["logs"])
-                    source_face_probe_payload = source_face_probe_result["source_face_probe"]
-                    source_face_probe_path = source_face_probe_result["source_face_probe_path"]
-                    source_face_probe_stdout_path = source_face_probe_result[
-                        "source_face_probe_stdout_path"
-                    ]
-                    source_face_probe_stderr_path = source_face_probe_result[
-                        "source_face_probe_stderr_path"
-                    ]
-                    source_face_probe_command = source_face_probe_result[
-                        "source_face_probe_command"
-                    ]
-                    source_face_probe_duration_sec = float(
-                        source_face_probe_result["source_face_probe_duration_sec"]
+                except RuntimeError as exc:
+                    last_error = exc
+                    attempt_record["status"] = "failed"
+                    attempt_record["error"] = str(exc)
+                    source_attempt_records.append(attempt_record)
+                    attempt_source_logs.append(
+                        {
+                            "message": f"MuseTalk source face preflight failed for {shot.shot_id}",
+                            "shot_id": shot.shot_id,
+                            "attempt_index": source_attempt_index,
+                            "prompt_variant": prompt_variant,
+                            "prepared_source_path": str(prepared_source_path),
+                            "error": str(exc),
+                        }
                     )
-                    source_face_quality = source_face_probe_result["source_face_quality"]
-                    source_face_occupancy = source_face_probe_result["source_face_occupancy"]
-                    source_face_isolation = source_face_probe_result["source_face_isolation"]
-                    source_inference_ready = bool(source_face_probe_result["source_inference_ready"])
-                    attempt_record["source_face_probe"] = source_face_probe_payload
-                    attempt_record["source_face_quality"] = source_face_quality
-                    attempt_record["source_face_occupancy"] = source_face_occupancy
-                    attempt_record["source_face_isolation"] = source_face_isolation
-                    attempt_record["source_face_probe_path"] = source_face_probe_path
-                    attempt_record["source_inference_ready"] = source_inference_ready
-                    source_preflight_recoverable = self._face_probe_can_recover_with_tightening(
-                        source_face_probe_payload
+                    continue
+                attempt_source_artifacts.extend(source_face_probe_result["artifacts"])
+                attempt_source_logs.extend(source_face_probe_result["logs"])
+                source_face_probe_payload = source_face_probe_result["source_face_probe"]
+                source_face_probe_path = source_face_probe_result["source_face_probe_path"]
+                source_face_probe_stdout_path = source_face_probe_result[
+                    "source_face_probe_stdout_path"
+                ]
+                source_face_probe_stderr_path = source_face_probe_result[
+                    "source_face_probe_stderr_path"
+                ]
+                source_face_probe_command = source_face_probe_result[
+                    "source_face_probe_command"
+                ]
+                source_face_probe_duration_sec = float(
+                    source_face_probe_result["source_face_probe_duration_sec"]
+                )
+                source_face_quality = source_face_probe_result["source_face_quality"]
+                source_face_occupancy = source_face_probe_result["source_face_occupancy"]
+                source_face_isolation = source_face_probe_result["source_face_isolation"]
+                source_inference_ready = bool(source_face_probe_result["source_inference_ready"])
+                attempt_record["source_face_probe"] = source_face_probe_payload
+                attempt_record["source_face_quality"] = source_face_quality
+                attempt_record["source_face_occupancy"] = source_face_occupancy
+                attempt_record["source_face_isolation"] = source_face_isolation
+                attempt_record["source_face_probe_path"] = source_face_probe_path
+                attempt_record["source_inference_ready"] = source_inference_ready
+                source_preflight_recoverable = self._face_probe_can_recover_with_tightening(
+                    source_face_probe_payload
+                )
+                attempt_record["source_preflight_recoverable"] = source_preflight_recoverable
+                if not self._face_probe_effective_pass(source_face_probe_payload) and not source_preflight_recoverable:
+                    failure_reasons = source_face_probe_payload.get("failure_reasons", [])
+                    error_message = (
+                        f"MuseTalk source face preflight rejected shot {shot.shot_id} "
+                        f"attempt {source_attempt_index}: "
+                        f"{', '.join(failure_reasons) or 'effective probe checks did not pass'}"
                     )
-                    attempt_record["source_preflight_recoverable"] = source_preflight_recoverable
-                    if not self._face_probe_effective_pass(source_face_probe_payload) and not source_preflight_recoverable:
-                        failure_reasons = source_face_probe_payload.get("failure_reasons", [])
-                        error_message = (
-                            f"MuseTalk source face preflight rejected shot {shot.shot_id} "
-                            f"attempt {source_attempt_index}: "
-                            f"{', '.join(failure_reasons) or 'effective probe checks did not pass'}"
-                        )
-                        last_error = RuntimeError(error_message)
-                        attempt_record["status"] = "failed"
-                        attempt_record["error"] = error_message
-                        source_attempt_records.append(attempt_record)
-                        attempt_source_logs.append(
-                            {
-                                "message": f"MuseTalk source face preflight rejected {shot.shot_id}",
-                                "shot_id": shot.shot_id,
-                                "attempt_index": source_attempt_index,
-                                "prompt_variant": prompt_variant,
-                                "prepared_source_path": str(prepared_source_path),
-                                "failure_reasons": failure_reasons,
-                                "warnings": source_face_probe_payload.get("warnings", []),
-                            }
-                        )
-                        continue
-                    if source_preflight_recoverable:
-                        attempt_source_logs.append(
-                            {
-                                "message": (
-                                    f"MuseTalk source face preflight entered recovery path for {shot.shot_id}"
-                                ),
-                                "shot_id": shot.shot_id,
-                                "attempt_index": source_attempt_index,
-                                "prompt_variant": prompt_variant,
-                                "prepared_source_path": str(prepared_source_path),
-                                "failure_reasons": source_face_probe_payload.get("failure_reasons", []),
-                            }
-                        )
+                    last_error = RuntimeError(error_message)
+                    attempt_record["status"] = "failed"
+                    attempt_record["error"] = error_message
+                    source_attempt_records.append(attempt_record)
+                    attempt_source_logs.append(
+                        {
+                            "message": f"MuseTalk source face preflight rejected {shot.shot_id}",
+                            "shot_id": shot.shot_id,
+                            "attempt_index": source_attempt_index,
+                            "prompt_variant": prompt_variant,
+                            "prepared_source_path": str(prepared_source_path),
+                            "failure_reasons": failure_reasons,
+                            "warnings": source_face_probe_payload.get("warnings", []),
+                        }
+                    )
+                    continue
+                if (
+                    source_preflight_recoverable
+                    or any(self._source_face_border_sides(source_face_probe_payload).values())
+                    or not source_inference_ready
+                    or self._is_rejected_face_quality(source_face_occupancy)
+                    or self._is_marginal_face_quality(source_face_occupancy)
+                    or self._is_rejected_face_quality(source_face_isolation)
+                    or self._is_marginal_face_quality(source_face_isolation)
+                ):
+                    attempt_source_logs.append(
+                        {
+                            "message": (
+                                f"MuseTalk source face preflight entered recovery path for {shot.shot_id}"
+                            ),
+                            "shot_id": shot.shot_id,
+                            "attempt_index": source_attempt_index,
+                            "prompt_variant": prompt_variant,
+                            "prepared_source_path": str(prepared_source_path),
+                            "failure_reasons": source_face_probe_payload.get("failure_reasons", []),
+                        }
+                    )
                     if any(self._source_face_border_sides(source_face_probe_payload).values()):
                         try:
                             border_relief = self._relieve_musetalk_source_borders(
@@ -4241,163 +4378,297 @@ class DeterministicMediaAdapters:
                         attempt_record["source_face_isolation"] = source_face_isolation
                         attempt_record["source_face_probe_path"] = source_face_probe_path
                         attempt_record["source_inference_ready"] = source_inference_ready
-                    if not source_inference_ready:
-                        error_message = (
-                            f"MuseTalk source inference-readiness rejected shot {shot.shot_id} "
-                            f"attempt {source_attempt_index}: face_detected remained false after source recovery"
-                        )
-                        last_error = RuntimeError(error_message)
-                        attempt_record["status"] = "failed"
-                        attempt_record["error"] = error_message
-                        source_attempt_records.append(attempt_record)
-                        attempt_source_logs.append(
-                            {
-                                "message": f"MuseTalk source inference-readiness rejected {shot.shot_id}",
-                                "shot_id": shot.shot_id,
-                                "attempt_index": source_attempt_index,
-                                "prepared_source_path": str(prepared_source_path),
-                                "source_detector_adjustment": source_detector_adjustment,
-                                "source_occupancy_adjustment": source_occupancy_adjustment,
-                            }
-                        )
-                        continue
-                    if self._is_rejected_face_quality(source_face_occupancy):
-                        quality_score = float(source_face_occupancy.get("score", 0.0) or 0.0)
-                        quality_status = str(source_face_occupancy.get("status", "reject"))
-                        error_message = (
-                            f"MuseTalk source face occupancy rejected shot {shot.shot_id} "
-                            f"attempt {source_attempt_index}: {quality_score:.2f} ({quality_status})"
-                        )
-                        last_error = RuntimeError(error_message)
-                        attempt_record["status"] = "failed"
-                        attempt_record["error"] = error_message
-                        source_attempt_records.append(attempt_record)
-                        attempt_source_logs.append(
-                            {
-                                "message": f"MuseTalk source face occupancy rejected {shot.shot_id}",
-                                "shot_id": shot.shot_id,
-                                "attempt_index": source_attempt_index,
-                                "prepared_source_path": str(prepared_source_path),
-                                "quality_status": quality_status,
-                                "quality_score": quality_score,
-                            }
-                        )
-                        continue
-                    if self._is_rejected_face_quality(source_face_isolation):
-                        quality_score = float(source_face_isolation.get("score", 0.0) or 0.0)
-                        quality_status = str(source_face_isolation.get("status", "reject"))
-                        error_message = (
-                            f"MuseTalk source face isolation rejected shot {shot.shot_id} "
-                            f"attempt {source_attempt_index}: {quality_score:.2f} ({quality_status})"
-                        )
-                        last_error = RuntimeError(error_message)
-                        attempt_record["status"] = "failed"
-                        attempt_record["error"] = error_message
-                        source_attempt_records.append(attempt_record)
-                        attempt_source_logs.append(
-                            {
-                                "message": f"MuseTalk source face isolation rejected {shot.shot_id}",
-                                "shot_id": shot.shot_id,
-                                "attempt_index": source_attempt_index,
-                                "prepared_source_path": str(prepared_source_path),
-                                "quality_status": quality_status,
-                                "quality_score": quality_score,
-                            }
-                        )
-                        continue
-                    attempt_result_root = (
-                        musetalk_root / f"attempt_{source_attempt_index:02d}"
-                        if max_source_attempts > 1
-                        else musetalk_root
+                if not source_inference_ready:
+                    error_message = (
+                        f"MuseTalk source inference-readiness rejected shot {shot.shot_id} "
+                        f"attempt {source_attempt_index}: face_detected remained false after source recovery"
                     )
-                    try:
-                        musetalk_result = run_musetalk_inference(
-                            MuseTalkRunConfig(
-                                python_binary=self.musetalk_python_binary,
-                                repo_path=self._require_musetalk_repo(),
-                                ffmpeg_binary=self.ffmpeg_binary,
-                                version=self.musetalk_version,
-                                batch_size=self.musetalk_batch_size,
-                                use_float16=self.musetalk_use_float16,
-                                timeout_sec=self.musetalk_timeout_sec,
-                            ),
-                            source_media_path=prepared_source_path,
-                            audio_path=shot_audio_path,
-                            result_root=attempt_result_root,
-                            result_name=f"{shot.shot_id}.mp4",
-                        )
-                    except RuntimeError as exc:
-                        last_error = exc
-                        attempt_record["status"] = "failed"
-                        attempt_record["error"] = str(exc)
-                        source_attempt_records.append(attempt_record)
-                        attempt_source_logs.append(
-                            {
-                                "message": f"MuseTalk source attempt {source_attempt_index} failed",
-                                "shot_id": shot.shot_id,
-                                "attempt_index": source_attempt_index,
-                                "source_artifact_kind": source_artifact_kind,
-                                "prompt_variant": prompt_variant,
-                                "prepared_source_path": str(prepared_source_path),
-                                "error": str(exc),
-                            }
-                        )
-                        continue
-                    raw_output_path = Path(musetalk_result.output_video_path)
-                    attempt_normalized_output_path = shot_dir / f"synced_attempt_{source_attempt_index:02d}.mp4"
-                    normalize_command = [
-                        resolve_binary(self.ffmpeg_binary) or self.ffmpeg_binary,
-                        "-y",
-                        "-i",
-                        str(raw_output_path),
-                        "-vf",
-                        f"{self._scale_pad_filter()},format=yuv420p",
-                        "-r",
-                        str(self.render_fps),
-                        "-c:v",
-                        "libx264",
-                        "-preset",
-                        "ultrafast",
-                        "-crf",
-                        "18",
-                        "-c:a",
-                        "aac",
-                        "-b:a",
-                        "192k",
-                        str(attempt_normalized_output_path),
-                    ]
-                    try:
-                        normalize_run = run_command(normalize_command, timeout_sec=self.command_timeout_sec)
-                        raw_probe = summarize_probe(ffprobe_media(self.ffprobe_binary, raw_output_path))
-                        normalized_probe = summarize_probe(
-                            ffprobe_media(self.ffprobe_binary, attempt_normalized_output_path)
-                        )
-                    except RuntimeError as exc:
-                        last_error = exc
-                        attempt_record["status"] = "failed"
-                        attempt_record["error"] = str(exc)
-                        attempt_record["musetalk_result_root"] = str(attempt_result_root)
-                        attempt_record["musetalk_output_path"] = str(raw_output_path)
-                        source_attempt_records.append(attempt_record)
-                        attempt_source_logs.append(
-                            {
-                                "message": f"MuseTalk normalization failed for {shot.shot_id}",
-                                "shot_id": shot.shot_id,
-                                "attempt_index": source_attempt_index,
-                                "prepared_source_path": str(prepared_source_path),
-                                "error": str(exc),
-                            }
-                        )
-                        continue
-
+                    last_error = RuntimeError(error_message)
+                    attempt_record["status"] = "failed"
+                    attempt_record["error"] = error_message
+                    source_attempt_records.append(attempt_record)
+                    attempt_source_logs.append(
+                        {
+                            "message": f"MuseTalk source inference-readiness rejected {shot.shot_id}",
+                            "shot_id": shot.shot_id,
+                            "attempt_index": source_attempt_index,
+                            "prepared_source_path": str(prepared_source_path),
+                            "source_detector_adjustment": source_detector_adjustment,
+                            "source_occupancy_adjustment": source_occupancy_adjustment,
+                        }
+                    )
+                    continue
+                if self._is_rejected_face_quality(source_face_occupancy):
+                    quality_score = float(source_face_occupancy.get("score", 0.0) or 0.0)
+                    quality_status = str(source_face_occupancy.get("status", "reject"))
+                    error_message = (
+                        f"MuseTalk source face occupancy rejected shot {shot.shot_id} "
+                        f"attempt {source_attempt_index}: {quality_score:.2f} ({quality_status})"
+                    )
+                    last_error = RuntimeError(error_message)
+                    attempt_record["status"] = "failed"
+                    attempt_record["error"] = error_message
+                    source_attempt_records.append(attempt_record)
+                    attempt_source_logs.append(
+                        {
+                            "message": f"MuseTalk source face occupancy rejected {shot.shot_id}",
+                            "shot_id": shot.shot_id,
+                            "attempt_index": source_attempt_index,
+                            "prepared_source_path": str(prepared_source_path),
+                            "quality_status": quality_status,
+                            "quality_score": quality_score,
+                        }
+                    )
+                    continue
+                if self._is_rejected_face_quality(source_face_isolation):
+                    quality_score = float(source_face_isolation.get("score", 0.0) or 0.0)
+                    quality_status = str(source_face_isolation.get("status", "reject"))
+                    error_message = (
+                        f"MuseTalk source face isolation rejected shot {shot.shot_id} "
+                        f"attempt {source_attempt_index}: {quality_score:.2f} ({quality_status})"
+                    )
+                    last_error = RuntimeError(error_message)
+                    attempt_record["status"] = "failed"
+                    attempt_record["error"] = error_message
+                    source_attempt_records.append(attempt_record)
+                    attempt_source_logs.append(
+                        {
+                            "message": f"MuseTalk source face isolation rejected {shot.shot_id}",
+                            "shot_id": shot.shot_id,
+                            "attempt_index": source_attempt_index,
+                            "prepared_source_path": str(prepared_source_path),
+                            "quality_status": quality_status,
+                            "quality_score": quality_score,
+                        }
+                    )
+                    continue
+                attempt_result_root = (
+                    musetalk_root / f"attempt_{source_attempt_index:02d}"
+                    if max_source_attempts > 1
+                    else musetalk_root
+                )
+                try:
+                    musetalk_result = run_musetalk_inference(
+                        MuseTalkRunConfig(
+                            python_binary=self.musetalk_python_binary,
+                            repo_path=self._require_musetalk_repo(),
+                            ffmpeg_binary=self.ffmpeg_binary,
+                            version=self.musetalk_version,
+                            batch_size=self.musetalk_batch_size,
+                            use_float16=self.musetalk_use_float16,
+                            timeout_sec=self.musetalk_timeout_sec,
+                        ),
+                        source_media_path=prepared_source_path,
+                        audio_path=shot_audio_path,
+                        result_root=attempt_result_root,
+                        result_name=f"{shot.shot_id}.mp4",
+                    )
+                except RuntimeError as exc:
+                    last_error = exc
+                    attempt_record["status"] = "failed"
+                    attempt_record["error"] = str(exc)
+                    source_attempt_records.append(attempt_record)
+                    attempt_source_logs.append(
+                        {
+                            "message": f"MuseTalk source attempt {source_attempt_index} failed",
+                            "shot_id": shot.shot_id,
+                            "attempt_index": source_attempt_index,
+                            "source_artifact_kind": source_artifact_kind,
+                            "prompt_variant": prompt_variant,
+                            "prepared_source_path": str(prepared_source_path),
+                            "error": str(exc),
+                        }
+                    )
+                    continue
+                raw_output_path = Path(musetalk_result.output_video_path)
+                attempt_normalized_output_path = shot_dir / f"synced_attempt_{source_attempt_index:02d}.mp4"
+                normalize_command = [
+                    resolve_binary(self.ffmpeg_binary) or self.ffmpeg_binary,
+                    "-y",
+                    "-i",
+                    str(raw_output_path),
+                    "-vf",
+                    f"{self._scale_pad_filter()},format=yuv420p",
+                    "-r",
+                    str(self.render_fps),
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "ultrafast",
+                    "-crf",
+                    "18",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                    str(attempt_normalized_output_path),
+                ]
+                try:
+                    normalize_run = run_command(normalize_command, timeout_sec=self.command_timeout_sec)
+                    raw_probe = summarize_probe(ffprobe_media(self.ffprobe_binary, raw_output_path))
+                    normalized_probe = summarize_probe(
+                        ffprobe_media(self.ffprobe_binary, attempt_normalized_output_path)
+                    )
+                except RuntimeError as exc:
+                    last_error = exc
+                    attempt_record["status"] = "failed"
+                    attempt_record["error"] = str(exc)
                     attempt_record["musetalk_result_root"] = str(attempt_result_root)
                     attempt_record["musetalk_output_path"] = str(raw_output_path)
-                    attempt_record["normalized_output_path"] = str(attempt_normalized_output_path)
-                    attempt_record["normalize_command"] = normalize_command
-                    attempt_record["normalize_duration_sec"] = normalize_run.duration_sec
-                    attempt_record["raw_probe"] = raw_probe
-                    attempt_record["normalized_probe"] = normalized_probe
+                    source_attempt_records.append(attempt_record)
+                    attempt_source_logs.append(
+                        {
+                            "message": f"MuseTalk normalization failed for {shot.shot_id}",
+                            "shot_id": shot.shot_id,
+                            "attempt_index": source_attempt_index,
+                            "prepared_source_path": str(prepared_source_path),
+                            "error": str(exc),
+                        }
+                    )
+                    continue
 
+                attempt_record["musetalk_result_root"] = str(attempt_result_root)
+                attempt_record["musetalk_output_path"] = str(raw_output_path)
+                attempt_record["normalized_output_path"] = str(attempt_normalized_output_path)
+                attempt_record["normalize_command"] = normalize_command
+                attempt_record["normalize_duration_sec"] = normalize_run.duration_sec
+                attempt_record["raw_probe"] = raw_probe
+                attempt_record["normalized_probe"] = normalized_probe
+
+                try:
+                    output_face_probe_result = self._probe_musetalk_output_face(
+                        shot,
+                        project_id=snapshot.project.project_id,
+                        shot_dir=shot_dir,
+                        attempt_index=source_attempt_index,
+                        normalized_output_path=attempt_normalized_output_path,
+                        normalized_probe=normalized_probe,
+                    )
+                except RuntimeError as exc:
+                    last_error = exc
+                    attempt_record["status"] = "failed"
+                    attempt_record["error"] = str(exc)
+                    source_attempt_records.append(attempt_record)
+                    attempt_source_logs.append(
+                        {
+                            "message": f"MuseTalk output-face probe failed for {shot.shot_id}",
+                            "shot_id": shot.shot_id,
+                            "attempt_index": source_attempt_index,
+                            "normalized_output_path": str(attempt_normalized_output_path),
+                            "error": str(exc),
+                        }
+                    )
+                    continue
+
+                attempt_source_artifacts.extend(output_face_probe_result["artifacts"])
+                attempt_source_logs.extend(output_face_probe_result["logs"])
+                output_face_probe_payload = output_face_probe_result["output_face_probe"]
+                output_face_quality = output_face_probe_result["output_face_quality"]
+                output_face_isolation = output_face_probe_result["output_face_isolation"]
+                output_face_samples = output_face_probe_result["output_face_samples"]
+                output_face_sequence_quality = output_face_probe_result[
+                    "output_face_sequence_quality"
+                ]
+                output_face_temporal_drift = output_face_probe_result[
+                    "output_face_temporal_drift"
+                ]
+                output_face_primary_sample_label = output_face_probe_result[
+                    "output_face_primary_sample_label"
+                ]
+                source_vs_output_face_delta = self._summarize_source_vs_output_face_delta(
+                    source_face_probe=source_face_probe_payload,
+                    output_face_samples=output_face_samples,
+                    output_face_primary_sample_label=output_face_primary_sample_label,
+                )
+                output_face_probe_path = output_face_probe_result["output_face_probe_path"]
+                output_face_probe_stdout_path = output_face_probe_result[
+                    "output_face_probe_stdout_path"
+                ]
+                output_face_probe_stderr_path = output_face_probe_result[
+                    "output_face_probe_stderr_path"
+                ]
+                output_face_probe_command = output_face_probe_result["output_face_probe_command"]
+                output_face_probe_duration_sec = float(
+                    output_face_probe_result["output_face_probe_duration_sec"]
+                )
+                output_face_frame_path = output_face_probe_result["output_face_frame_path"]
+                output_face_sample_time_sec = float(
+                    output_face_probe_result["output_face_sample_time_sec"]
+                )
+                output_face_manifest_path = output_face_probe_result["output_face_manifest_path"]
+                attempt_record["output_face_probe"] = output_face_probe_payload
+                attempt_record["output_face_quality"] = output_face_quality
+                attempt_record["output_face_isolation"] = output_face_isolation
+                attempt_record["output_face_samples"] = output_face_samples
+                attempt_record["output_face_sequence_quality"] = output_face_sequence_quality
+                attempt_record["output_face_temporal_drift"] = output_face_temporal_drift
+                attempt_record["source_vs_output_face_delta"] = source_vs_output_face_delta
+                attempt_record["output_face_primary_sample_label"] = output_face_primary_sample_label
+                attempt_record["output_face_probe_path"] = output_face_probe_path
+                attempt_record["output_face_manifest_path"] = output_face_manifest_path
+                attempt_record["output_isolation_adjustment"] = output_isolation_adjustment
+
+                if not self._face_probe_effective_pass(output_face_probe_payload):
+                    failure_reasons = output_face_probe_payload.get("failure_reasons", [])
+                    error_message = (
+                        f"MuseTalk output face preflight rejected shot {shot.shot_id} "
+                        f"attempt {source_attempt_index}: "
+                        f"{', '.join(failure_reasons) or 'effective probe checks did not pass'}"
+                    )
+                    last_error = RuntimeError(error_message)
+                    attempt_record["status"] = "failed"
+                    attempt_record["error"] = error_message
+                    source_attempt_records.append(attempt_record)
+                    attempt_source_logs.append(
+                        {
+                            "message": f"MuseTalk output-face preflight rejected {shot.shot_id}",
+                            "shot_id": shot.shot_id,
+                            "attempt_index": source_attempt_index,
+                            "normalized_output_path": str(attempt_normalized_output_path),
+                            "failure_reasons": failure_reasons,
+                            "warnings": output_face_probe_payload.get("warnings", []),
+                        }
+                    )
+                    continue
+                should_tighten_output_isolation = self._is_rejected_face_quality(
+                    output_face_isolation
+                ) or self._is_marginal_face_quality(output_face_isolation)
+                if should_tighten_output_isolation:
+                    try:
+                        output_isolation_tightening = self._tighten_musetalk_output_isolation(
+                            shot,
+                            attempt_index=source_attempt_index,
+                            normalized_output_path=attempt_normalized_output_path,
+                            output_face_probe=output_face_probe_payload,
+                            output_face_isolation=output_face_isolation,
+                        )
+                    except RuntimeError as exc:
+                        last_error = exc
+                        attempt_record["status"] = "failed"
+                        attempt_record["error"] = str(exc)
+                        source_attempt_records.append(attempt_record)
+                        attempt_source_logs.append(
+                            {
+                                "message": f"MuseTalk output-isolation tightening failed for {shot.shot_id}",
+                                "shot_id": shot.shot_id,
+                                "attempt_index": source_attempt_index,
+                                "normalized_output_path": str(attempt_normalized_output_path),
+                                "error": str(exc),
+                            }
+                        )
+                        continue
+                    attempt_source_artifacts.extend(output_isolation_tightening["artifacts"])
+                    attempt_source_logs.extend(output_isolation_tightening["logs"])
+                    output_isolation_adjustment = output_isolation_tightening[
+                        "output_isolation_adjustment"
+                    ]
+                    attempt_normalized_output_path = Path(
+                        output_isolation_tightening["normalized_output_path"]
+                    )
+                    normalized_probe = output_isolation_tightening["normalized_probe"]
+                    attempt_record["normalized_output_path"] = str(attempt_normalized_output_path)
+                    attempt_record["normalized_probe"] = normalized_probe
+                    attempt_record["output_isolation_adjustment"] = output_isolation_adjustment
                     try:
                         output_face_probe_result = self._probe_musetalk_output_face(
                             shot,
@@ -4406,6 +4677,7 @@ class DeterministicMediaAdapters:
                             attempt_index=source_attempt_index,
                             normalized_output_path=attempt_normalized_output_path,
                             normalized_probe=normalized_probe,
+                            probe_variant="isolated",
                         )
                     except RuntimeError as exc:
                         last_error = exc
@@ -4414,7 +4686,10 @@ class DeterministicMediaAdapters:
                         source_attempt_records.append(attempt_record)
                         attempt_source_logs.append(
                             {
-                                "message": f"MuseTalk output-face probe failed for {shot.shot_id}",
+                                "message": (
+                                    f"MuseTalk output-face probe failed after isolation tightening for "
+                                    f"{shot.shot_id}"
+                                ),
                                 "shot_id": shot.shot_id,
                                 "attempt_index": source_attempt_index,
                                 "normalized_output_path": str(attempt_normalized_output_path),
@@ -4422,7 +4697,6 @@ class DeterministicMediaAdapters:
                             }
                         )
                         continue
-
                     attempt_source_artifacts.extend(output_face_probe_result["artifacts"])
                     attempt_source_logs.extend(output_face_probe_result["logs"])
                     output_face_probe_payload = output_face_probe_result["output_face_probe"]
@@ -4450,7 +4724,9 @@ class DeterministicMediaAdapters:
                     output_face_probe_stderr_path = output_face_probe_result[
                         "output_face_probe_stderr_path"
                     ]
-                    output_face_probe_command = output_face_probe_result["output_face_probe_command"]
+                    output_face_probe_command = output_face_probe_result[
+                        "output_face_probe_command"
+                    ]
                     output_face_probe_duration_sec = float(
                         output_face_probe_result["output_face_probe_duration_sec"]
                     )
@@ -4466,501 +4742,362 @@ class DeterministicMediaAdapters:
                     attempt_record["output_face_sequence_quality"] = output_face_sequence_quality
                     attempt_record["output_face_temporal_drift"] = output_face_temporal_drift
                     attempt_record["source_vs_output_face_delta"] = source_vs_output_face_delta
-                    attempt_record["output_face_primary_sample_label"] = output_face_primary_sample_label
+                    attempt_record["output_face_primary_sample_label"] = (
+                        output_face_primary_sample_label
+                    )
                     attempt_record["output_face_probe_path"] = output_face_probe_path
                     attempt_record["output_face_manifest_path"] = output_face_manifest_path
-                    attempt_record["output_isolation_adjustment"] = output_isolation_adjustment
 
-                    if not self._face_probe_effective_pass(output_face_probe_payload):
-                        failure_reasons = output_face_probe_payload.get("failure_reasons", [])
-                        error_message = (
-                            f"MuseTalk output face preflight rejected shot {shot.shot_id} "
-                            f"attempt {source_attempt_index}: "
-                            f"{', '.join(failure_reasons) or 'effective probe checks did not pass'}"
-                        )
-                        last_error = RuntimeError(error_message)
-                        attempt_record["status"] = "failed"
-                        attempt_record["error"] = error_message
-                        source_attempt_records.append(attempt_record)
-                        attempt_source_logs.append(
-                            {
-                                "message": f"MuseTalk output-face preflight rejected {shot.shot_id}",
-                                "shot_id": shot.shot_id,
-                                "attempt_index": source_attempt_index,
-                                "normalized_output_path": str(attempt_normalized_output_path),
-                                "failure_reasons": failure_reasons,
-                                "warnings": output_face_probe_payload.get("warnings", []),
-                            }
-                        )
-                        continue
-                    should_tighten_output_isolation = self._is_rejected_face_quality(
-                        output_face_isolation
-                    ) or self._is_marginal_face_quality(output_face_isolation)
-                    if should_tighten_output_isolation:
-                        try:
-                            output_isolation_tightening = self._tighten_musetalk_output_isolation(
-                                shot,
-                                attempt_index=source_attempt_index,
-                                normalized_output_path=attempt_normalized_output_path,
-                                output_face_probe=output_face_probe_payload,
-                                output_face_isolation=output_face_isolation,
-                            )
-                        except RuntimeError as exc:
-                            last_error = exc
-                            attempt_record["status"] = "failed"
-                            attempt_record["error"] = str(exc)
-                            source_attempt_records.append(attempt_record)
-                            attempt_source_logs.append(
-                                {
-                                    "message": f"MuseTalk output-isolation tightening failed for {shot.shot_id}",
-                                    "shot_id": shot.shot_id,
-                                    "attempt_index": source_attempt_index,
-                                    "normalized_output_path": str(attempt_normalized_output_path),
-                                    "error": str(exc),
-                                }
-                            )
-                            continue
-                        attempt_source_artifacts.extend(output_isolation_tightening["artifacts"])
-                        attempt_source_logs.extend(output_isolation_tightening["logs"])
-                        output_isolation_adjustment = output_isolation_tightening[
-                            "output_isolation_adjustment"
-                        ]
-                        attempt_normalized_output_path = Path(
-                            output_isolation_tightening["normalized_output_path"]
-                        )
-                        normalized_probe = output_isolation_tightening["normalized_probe"]
-                        attempt_record["normalized_output_path"] = str(attempt_normalized_output_path)
-                        attempt_record["normalized_probe"] = normalized_probe
-                        attempt_record["output_isolation_adjustment"] = output_isolation_adjustment
-                        try:
-                            output_face_probe_result = self._probe_musetalk_output_face(
-                                shot,
-                                project_id=snapshot.project.project_id,
-                                shot_dir=shot_dir,
-                                attempt_index=source_attempt_index,
-                                normalized_output_path=attempt_normalized_output_path,
-                                normalized_probe=normalized_probe,
-                                probe_variant="isolated",
-                            )
-                        except RuntimeError as exc:
-                            last_error = exc
-                            attempt_record["status"] = "failed"
-                            attempt_record["error"] = str(exc)
-                            source_attempt_records.append(attempt_record)
-                            attempt_source_logs.append(
-                                {
-                                    "message": (
-                                        f"MuseTalk output-face probe failed after isolation tightening for "
-                                        f"{shot.shot_id}"
-                                    ),
-                                    "shot_id": shot.shot_id,
-                                    "attempt_index": source_attempt_index,
-                                    "normalized_output_path": str(attempt_normalized_output_path),
-                                    "error": str(exc),
-                                }
-                            )
-                            continue
-                        attempt_source_artifacts.extend(output_face_probe_result["artifacts"])
-                        attempt_source_logs.extend(output_face_probe_result["logs"])
-                        output_face_probe_payload = output_face_probe_result["output_face_probe"]
-                        output_face_quality = output_face_probe_result["output_face_quality"]
-                        output_face_isolation = output_face_probe_result["output_face_isolation"]
-                        output_face_samples = output_face_probe_result["output_face_samples"]
-                        output_face_sequence_quality = output_face_probe_result[
-                            "output_face_sequence_quality"
-                        ]
-                        output_face_temporal_drift = output_face_probe_result[
-                            "output_face_temporal_drift"
-                        ]
-                        output_face_primary_sample_label = output_face_probe_result[
-                            "output_face_primary_sample_label"
-                        ]
-                        source_vs_output_face_delta = self._summarize_source_vs_output_face_delta(
-                            source_face_probe=source_face_probe_payload,
-                            output_face_samples=output_face_samples,
-                            output_face_primary_sample_label=output_face_primary_sample_label,
-                        )
-                        output_face_probe_path = output_face_probe_result["output_face_probe_path"]
-                        output_face_probe_stdout_path = output_face_probe_result[
-                            "output_face_probe_stdout_path"
-                        ]
-                        output_face_probe_stderr_path = output_face_probe_result[
-                            "output_face_probe_stderr_path"
-                        ]
-                        output_face_probe_command = output_face_probe_result[
-                            "output_face_probe_command"
-                        ]
-                        output_face_probe_duration_sec = float(
-                            output_face_probe_result["output_face_probe_duration_sec"]
-                        )
-                        output_face_frame_path = output_face_probe_result["output_face_frame_path"]
-                        output_face_sample_time_sec = float(
-                            output_face_probe_result["output_face_sample_time_sec"]
-                        )
-                        output_face_manifest_path = output_face_probe_result["output_face_manifest_path"]
-                        attempt_record["output_face_probe"] = output_face_probe_payload
-                        attempt_record["output_face_quality"] = output_face_quality
-                        attempt_record["output_face_isolation"] = output_face_isolation
-                        attempt_record["output_face_samples"] = output_face_samples
-                        attempt_record["output_face_sequence_quality"] = output_face_sequence_quality
-                        attempt_record["output_face_temporal_drift"] = output_face_temporal_drift
-                        attempt_record["source_vs_output_face_delta"] = source_vs_output_face_delta
-                        attempt_record["output_face_primary_sample_label"] = (
-                            output_face_primary_sample_label
-                        )
-                        attempt_record["output_face_probe_path"] = output_face_probe_path
-                        attempt_record["output_face_manifest_path"] = output_face_manifest_path
-
-                    if self._is_rejected_face_quality(output_face_sequence_quality):
-                        quality_score = float(output_face_sequence_quality.get("score", 0.0) or 0.0)
-                        quality_status = str(output_face_sequence_quality.get("status", "reject"))
-                        error_message = (
-                            f"MuseTalk output face sequence quality rejected shot {shot.shot_id} "
-                            f"attempt {source_attempt_index}: {quality_score:.2f} ({quality_status})"
-                        )
-                        last_error = RuntimeError(error_message)
-                        attempt_record["status"] = "failed"
-                        attempt_record["error"] = error_message
-                        source_attempt_records.append(attempt_record)
-                        attempt_source_logs.append(
-                            {
-                                "message": f"MuseTalk output-face sequence quality rejected {shot.shot_id}",
-                                "shot_id": shot.shot_id,
-                                "attempt_index": source_attempt_index,
-                                "normalized_output_path": str(attempt_normalized_output_path),
-                                "primary_sample_label": output_face_primary_sample_label,
-                                "quality_status": quality_status,
-                                "quality_score": quality_score,
-                            }
-                        )
-                        continue
-
-                    if self._is_rejected_face_quality(output_face_temporal_drift):
-                        quality_score = float(output_face_temporal_drift.get("score", 0.0) or 0.0)
-                        quality_status = str(output_face_temporal_drift.get("status", "reject"))
-                        error_message = (
-                            f"MuseTalk output face temporal drift rejected shot {shot.shot_id} "
-                            f"attempt {source_attempt_index}: {quality_score:.2f} ({quality_status})"
-                        )
-                        last_error = RuntimeError(error_message)
-                        attempt_record["status"] = "failed"
-                        attempt_record["error"] = error_message
-                        source_attempt_records.append(attempt_record)
-                        attempt_source_logs.append(
-                            {
-                                "message": f"MuseTalk output-face temporal drift rejected {shot.shot_id}",
-                                "shot_id": shot.shot_id,
-                                "attempt_index": source_attempt_index,
-                                "normalized_output_path": str(attempt_normalized_output_path),
-                                "quality_status": quality_status,
-                                "quality_score": quality_score,
-                                "dominant_metric": output_face_temporal_drift.get("dominant_metric"),
-                            }
-                        )
-                        continue
-                    if self._is_rejected_face_quality(output_face_isolation):
-                        quality_score = float(output_face_isolation.get("score", 0.0) or 0.0)
-                        quality_status = str(output_face_isolation.get("status", "reject"))
-                        error_message = (
-                            f"MuseTalk output face isolation rejected shot {shot.shot_id} "
-                            f"attempt {source_attempt_index}: {quality_score:.2f} ({quality_status})"
-                        )
-                        last_error = RuntimeError(error_message)
-                        attempt_record["status"] = "failed"
-                        attempt_record["error"] = error_message
-                        source_attempt_records.append(attempt_record)
-                        attempt_source_logs.append(
-                            {
-                                "message": f"MuseTalk output-face isolation rejected {shot.shot_id}",
-                                "shot_id": shot.shot_id,
-                                "attempt_index": source_attempt_index,
-                                "normalized_output_path": str(attempt_normalized_output_path),
-                                "quality_status": quality_status,
-                                "quality_score": quality_score,
-                            }
-                        )
-                        continue
-
-                    attempt_record["status"] = "success"
+                if self._is_rejected_face_quality(output_face_sequence_quality):
+                    quality_score = float(output_face_sequence_quality.get("score", 0.0) or 0.0)
+                    quality_status = str(output_face_sequence_quality.get("status", "reject"))
+                    error_message = (
+                        f"MuseTalk output face sequence quality rejected shot {shot.shot_id} "
+                        f"attempt {source_attempt_index}: {quality_score:.2f} ({quality_status})"
+                    )
+                    last_error = RuntimeError(error_message)
+                    attempt_record["status"] = "failed"
+                    attempt_record["error"] = error_message
                     source_attempt_records.append(attempt_record)
-                    selected_musetalk_result = musetalk_result
-                    selected_source_prep = source_prep
-                    selected_source_face_probe = source_face_probe_payload
-                    selected_source_face_quality = source_face_quality
-                    selected_source_face_occupancy = source_face_occupancy
-                    selected_source_face_isolation = source_face_isolation
-                    selected_source_border_adjustment = source_border_adjustment
-                    selected_source_detector_adjustment = source_detector_adjustment
-                    selected_source_occupancy_adjustment = source_occupancy_adjustment
-                    selected_source_face_probe_path = source_face_probe_path
-                    selected_source_face_probe_stdout_path = source_face_probe_stdout_path
-                    selected_source_face_probe_stderr_path = source_face_probe_stderr_path
-                    selected_source_face_probe_command = source_face_probe_command
-                    selected_source_face_probe_duration_sec = source_face_probe_duration_sec
-                    selected_output_face_probe = output_face_probe_payload
-                    selected_output_face_quality = output_face_quality
-                    selected_output_face_isolation = output_face_isolation
-                    selected_output_face_samples = output_face_samples
-                    selected_output_face_sequence_quality = output_face_sequence_quality
-                    selected_output_face_temporal_drift = output_face_temporal_drift
-                    selected_source_vs_output_face_delta = source_vs_output_face_delta
-                    selected_output_face_primary_sample_label = output_face_primary_sample_label
-                    selected_output_face_probe_path = output_face_probe_path
-                    selected_output_face_probe_stdout_path = output_face_probe_stdout_path
-                    selected_output_face_probe_stderr_path = output_face_probe_stderr_path
-                    selected_output_face_probe_command = output_face_probe_command
-                    selected_output_face_probe_duration_sec = output_face_probe_duration_sec
-                    selected_output_face_frame_path = output_face_frame_path
-                    selected_output_face_sample_time_sec = output_face_sample_time_sec
-                    selected_output_face_manifest_path = output_face_manifest_path
-                    selected_output_isolation_adjustment = output_isolation_adjustment
-                    selected_raw_probe = raw_probe
-                    selected_normalized_probe = normalized_probe
-                    selected_normalize_command = normalize_command
-                    selected_normalize_duration_sec = normalize_run.duration_sec
-                    selected_normalized_output_path = attempt_normalized_output_path
-                    selected_attempt_index = source_attempt_index
-                    if primary_character["character_id"]:
-                        successful_source_refs_by_character[primary_character["character_id"]] = {
-                            "path": str(prepared_source_path),
-                            "kind": "prior_successful_lipsync_source",
+                    attempt_source_logs.append(
+                        {
+                            "message": f"MuseTalk output-face sequence quality rejected {shot.shot_id}",
                             "shot_id": shot.shot_id,
                             "attempt_index": source_attempt_index,
+                            "normalized_output_path": str(attempt_normalized_output_path),
+                            "primary_sample_label": output_face_primary_sample_label,
+                            "quality_status": quality_status,
+                            "quality_score": quality_score,
                         }
-                    break
-
-                if (
-                    selected_musetalk_result is None
-                    or selected_source_prep is None
-                    or selected_source_face_probe is None
-                    or selected_source_face_quality is None
-                    or selected_source_face_occupancy is None
-                    or selected_source_face_isolation is None
-                    or selected_output_face_probe is None
-                    or selected_output_face_quality is None
-                    or selected_output_face_isolation is None
-                    or selected_output_face_samples is None
-                    or selected_output_face_sequence_quality is None
-                    or selected_output_face_temporal_drift is None
-                    or selected_source_vs_output_face_delta is None
-                    or selected_output_face_primary_sample_label is None
-                    or selected_raw_probe is None
-                    or selected_normalized_probe is None
-                    or selected_normalize_command is None
-                    or selected_normalized_output_path is None
-                ):
-                    raise last_error or RuntimeError(
-                        f"MuseTalk source attempts exhausted for shot {shot.shot_id}."
                     )
+                    continue
 
-                musetalk_result = selected_musetalk_result
-                prepared_source_path = Path(selected_source_prep["prepared_source_path"])
-                prepare_command = selected_source_prep["prepare_command"]
-                prepare_duration_sec = float(selected_source_prep["prepare_duration_sec"])
-                source_artifact_kind = str(selected_source_prep["source_artifact_kind"])
-                source_artifact_path = str(selected_source_prep["source_artifact_path"])
-                source_input_mode = str(selected_source_prep["source_input_mode"])
-                positive_prompt = selected_source_prep.get("positive_prompt")
-                negative_prompt = selected_source_prep.get("negative_prompt")
-                character_reference_path = selected_source_prep.get("character_reference_path")
-                character_generation_manifest_path = selected_source_prep.get(
-                    "character_generation_manifest_path"
-                )
-                comfyui_input_dir = selected_source_prep.get("comfyui_input_dir")
-                comfyui_staged_reference_path = selected_source_prep.get("comfyui_staged_reference_path")
-                comfyui_input_image_name = selected_source_prep.get("comfyui_input_image_name")
-                source_probe = selected_source_prep["source_probe"]
-                stable_source_path = shot_dir / "musetalk_source.png"
-                if prepared_source_path != stable_source_path:
-                    stable_source_path.write_bytes(prepared_source_path.read_bytes())
-                    prepared_source_path = stable_source_path
+                if self._is_rejected_face_quality(output_face_temporal_drift):
+                    quality_score = float(output_face_temporal_drift.get("score", 0.0) or 0.0)
+                    quality_status = str(output_face_temporal_drift.get("status", "reject"))
+                    error_message = (
+                        f"MuseTalk output face temporal drift rejected shot {shot.shot_id} "
+                        f"attempt {source_attempt_index}: {quality_score:.2f} ({quality_status})"
+                    )
+                    last_error = RuntimeError(error_message)
+                    attempt_record["status"] = "failed"
+                    attempt_record["error"] = error_message
+                    source_attempt_records.append(attempt_record)
+                    attempt_source_logs.append(
+                        {
+                            "message": f"MuseTalk output-face temporal drift rejected {shot.shot_id}",
+                            "shot_id": shot.shot_id,
+                            "attempt_index": source_attempt_index,
+                            "normalized_output_path": str(attempt_normalized_output_path),
+                            "quality_status": quality_status,
+                            "quality_score": quality_score,
+                            "dominant_metric": output_face_temporal_drift.get("dominant_metric"),
+                        }
+                    )
+                    continue
+                if self._is_rejected_face_quality(output_face_isolation):
+                    quality_score = float(output_face_isolation.get("score", 0.0) or 0.0)
+                    quality_status = str(output_face_isolation.get("status", "reject"))
+                    error_message = (
+                        f"MuseTalk output face isolation rejected shot {shot.shot_id} "
+                        f"attempt {source_attempt_index}: {quality_score:.2f} ({quality_status})"
+                    )
+                    last_error = RuntimeError(error_message)
+                    attempt_record["status"] = "failed"
+                    attempt_record["error"] = error_message
+                    source_attempt_records.append(attempt_record)
+                    attempt_source_logs.append(
+                        {
+                            "message": f"MuseTalk output-face isolation rejected {shot.shot_id}",
+                            "shot_id": shot.shot_id,
+                            "attempt_index": source_attempt_index,
+                            "normalized_output_path": str(attempt_normalized_output_path),
+                            "quality_status": quality_status,
+                            "quality_score": quality_score,
+                        }
+                    )
+                    continue
 
-                normalized_output_path = shot_dir / "synced.mp4"
-                if selected_normalized_output_path != normalized_output_path:
-                    normalized_output_path.write_bytes(selected_normalized_output_path.read_bytes())
-                normalize_command = selected_normalize_command
-                raw_probe = selected_raw_probe
-                normalized_probe = selected_normalized_probe
-
-                manifest_path = self.artifact_store.write_json(
-                    snapshot.project.project_id,
-                    f"shots/{shot.shot_id}/lipsync_manifest.json",
-                    {
-                        "backend": "musetalk",
+                attempt_record["status"] = "success"
+                source_attempt_records.append(attempt_record)
+                selected_musetalk_result = musetalk_result
+                selected_source_prep = source_prep
+                selected_source_face_probe = source_face_probe_payload
+                selected_source_face_quality = source_face_quality
+                selected_source_face_occupancy = source_face_occupancy
+                selected_source_face_isolation = source_face_isolation
+                selected_source_border_adjustment = source_border_adjustment
+                selected_source_detector_adjustment = source_detector_adjustment
+                selected_source_occupancy_adjustment = source_occupancy_adjustment
+                selected_source_face_probe_path = source_face_probe_path
+                selected_source_face_probe_stdout_path = source_face_probe_stdout_path
+                selected_source_face_probe_stderr_path = source_face_probe_stderr_path
+                selected_source_face_probe_command = source_face_probe_command
+                selected_source_face_probe_duration_sec = source_face_probe_duration_sec
+                selected_output_face_probe = output_face_probe_payload
+                selected_output_face_quality = output_face_quality
+                selected_output_face_isolation = output_face_isolation
+                selected_output_face_samples = output_face_samples
+                selected_output_face_sequence_quality = output_face_sequence_quality
+                selected_output_face_temporal_drift = output_face_temporal_drift
+                selected_source_vs_output_face_delta = source_vs_output_face_delta
+                selected_output_face_primary_sample_label = output_face_primary_sample_label
+                selected_output_face_probe_path = output_face_probe_path
+                selected_output_face_probe_stdout_path = output_face_probe_stdout_path
+                selected_output_face_probe_stderr_path = output_face_probe_stderr_path
+                selected_output_face_probe_command = output_face_probe_command
+                selected_output_face_probe_duration_sec = output_face_probe_duration_sec
+                selected_output_face_frame_path = output_face_frame_path
+                selected_output_face_sample_time_sec = output_face_sample_time_sec
+                selected_output_face_manifest_path = output_face_manifest_path
+                selected_output_isolation_adjustment = output_isolation_adjustment
+                selected_raw_probe = raw_probe
+                selected_normalized_probe = normalized_probe
+                selected_normalize_command = normalize_command
+                selected_normalize_duration_sec = normalize_run.duration_sec
+                selected_normalized_output_path = attempt_normalized_output_path
+                selected_attempt_index = source_attempt_index
+                if primary_character["character_id"]:
+                    successful_source_refs_by_character[primary_character["character_id"]] = {
+                        "path": str(prepared_source_path),
+                        "kind": "prior_successful_lipsync_source",
                         "shot_id": shot.shot_id,
-                        "strategy": shot.strategy,
-                        "composition": shot.composition.model_dump(),
-                        "source_artifact_kind": source_artifact_kind,
-                        "source_artifact_path": source_artifact_path,
-                        "source_input_mode": source_input_mode,
-                        "character_reference_path": character_reference_path,
-                        "character_generation_manifest_path": character_generation_manifest_path,
-                        "comfyui_input_dir": comfyui_input_dir,
-                        "comfyui_staged_reference_path": comfyui_staged_reference_path,
-                        "comfyui_input_image_name": comfyui_input_image_name,
-                        "prepared_source_path": str(prepared_source_path),
-                        "source_attempt_index": selected_attempt_index,
-                        "source_attempt_count": len(source_attempt_records),
-                        "source_attempt_limit": max_source_attempts,
-                        "positive_prompt": positive_prompt,
-                        "negative_prompt": negative_prompt,
-                        "source_probe": source_probe,
-                        "source_face_probe": selected_source_face_probe,
-                        "source_inference_ready": self._source_face_inference_ready(
-                            selected_source_face_probe
-                        ),
-                        "source_face_quality": selected_source_face_quality,
-                        "source_face_occupancy": selected_source_face_occupancy,
-                        "source_face_isolation": selected_source_face_isolation,
-                        "source_border_adjustment": selected_source_border_adjustment,
-                        "source_detector_adjustment": selected_source_detector_adjustment,
-                        "source_occupancy_adjustment": selected_source_occupancy_adjustment,
-                        "source_face_probe_path": selected_source_face_probe_path,
-                        "source_face_probe_stdout_path": selected_source_face_probe_stdout_path,
-                        "source_face_probe_stderr_path": selected_source_face_probe_stderr_path,
-                        "source_face_probe_command": selected_source_face_probe_command,
-                        "source_face_probe_duration_sec": selected_source_face_probe_duration_sec,
-                        "output_face_probe": selected_output_face_probe,
-                        "output_face_quality": selected_output_face_quality,
-                        "output_face_isolation": selected_output_face_isolation,
-                        "output_face_samples": selected_output_face_samples,
-                        "output_face_sample_count": len(selected_output_face_samples),
-                        "output_face_primary_sample_label": selected_output_face_primary_sample_label,
-                        "output_face_sequence_quality": selected_output_face_sequence_quality,
-                        "output_face_temporal_drift": selected_output_face_temporal_drift,
-                        "source_vs_output_face_delta": selected_source_vs_output_face_delta,
-                        "output_face_probe_path": selected_output_face_probe_path,
-                        "output_face_probe_stdout_path": selected_output_face_probe_stdout_path,
-                        "output_face_probe_stderr_path": selected_output_face_probe_stderr_path,
-                        "output_face_probe_command": selected_output_face_probe_command,
-                        "output_face_probe_duration_sec": selected_output_face_probe_duration_sec,
-                        "output_face_frame_path": selected_output_face_frame_path,
-                        "output_face_sample_time_sec": selected_output_face_sample_time_sec,
-                        "output_face_manifest_path": selected_output_face_manifest_path,
-                        "output_isolation_adjustment": selected_output_isolation_adjustment,
-                        "source_attempts": source_attempt_records,
-                        "audio_path": str(shot_audio_path),
-                        "dialogue_line_ids": [entry.get("line_id") for entry in shot_entries],
-                        "task_config_path": str(musetalk_result.task_config_path),
-                        "stdout_path": str(musetalk_result.stdout_path),
-                        "stderr_path": str(musetalk_result.stderr_path),
-                        "raw_output_path": str(musetalk_result.output_video_path),
-                        "normalized_output_path": str(normalized_output_path),
-                        "musetalk_command": musetalk_result.command,
-                        "musetalk_duration_sec": musetalk_result.duration_sec,
-                        "prepare_command": prepare_command,
-                        "prepare_duration_sec": prepare_duration_sec,
-                        "normalize_command": normalize_command,
-                        "normalize_duration_sec": selected_normalize_duration_sec,
-                        "raw_probe": raw_probe,
-                        "normalized_probe": normalized_probe,
-                    },
-                )
-                result.artifacts.extend(
-                    attempt_source_artifacts
-                    + [
-                        ArtifactRecord(
-                            artifact_id=new_id("artifact"),
-                            kind="lipsync_source_image",
-                            path=str(prepared_source_path),
-                            stage="apply_lipsync",
-                            metadata={"shot_id": shot.shot_id, "backend": "musetalk"},
-                        ),
-                        ArtifactRecord(
-                            artifact_id=new_id("artifact"),
-                            kind="lipsync_audio_input",
-                            path=str(shot_audio_path),
-                            stage="apply_lipsync",
-                            metadata={"shot_id": shot.shot_id, "backend": "musetalk"},
-                        ),
-                        ArtifactRecord(
-                            artifact_id=new_id("artifact"),
-                            kind="lipsync_task_config",
-                            path=str(musetalk_result.task_config_path),
-                            stage="apply_lipsync",
-                            metadata={"shot_id": shot.shot_id, "backend": "musetalk"},
-                        ),
-                        ArtifactRecord(
-                            artifact_id=new_id("artifact"),
-                            kind="lipsync_stdout",
-                            path=str(musetalk_result.stdout_path),
-                            stage="apply_lipsync",
-                            metadata={"shot_id": shot.shot_id, "backend": "musetalk"},
-                        ),
-                        ArtifactRecord(
-                            artifact_id=new_id("artifact"),
-                            kind="lipsync_stderr",
-                            path=str(musetalk_result.stderr_path),
-                            stage="apply_lipsync",
-                            metadata={"shot_id": shot.shot_id, "backend": "musetalk"},
-                        ),
-                        ArtifactRecord(
-                            artifact_id=new_id("artifact"),
-                            kind="shot_lipsync_raw_video",
-                            path=str(musetalk_result.output_video_path),
-                            stage="apply_lipsync",
-                            metadata={"shot_id": shot.shot_id, "backend": "musetalk", **raw_probe},
-                        ),
-                        ArtifactRecord(
-                            artifact_id=new_id("artifact"),
-                            kind="shot_lipsync_video",
-                            path=str(normalized_output_path),
-                            stage="apply_lipsync",
-                            metadata={"shot_id": shot.shot_id, "backend": "musetalk", **normalized_probe},
-                        ),
-                        ArtifactRecord(
-                            artifact_id=new_id("artifact"),
-                            kind="lipsync_manifest",
-                            path=str(manifest_path),
-                            stage="apply_lipsync",
-                            metadata={"shot_id": shot.shot_id, "backend": "musetalk"},
-                        ),
-                    ]
-                )
-                result.logs.extend(attempt_source_logs)
-                result.logs.append(
-                    {
-                        "message": f"applied MuseTalk lipsync for {shot.shot_id}",
-                        "shot_id": shot.shot_id,
-                        "source_artifact_kind": source_artifact_kind,
-                        "source_input_mode": source_input_mode,
-                        "source_attempt_index": selected_attempt_index,
-                        "source_face_quality_status": selected_source_face_quality.get("status"),
-                        "source_face_quality_score": selected_source_face_quality.get("score"),
-                        "source_face_occupancy_status": selected_source_face_occupancy.get("status"),
-                        "source_face_occupancy_score": selected_source_face_occupancy.get("score"),
-                        "source_face_isolation_status": selected_source_face_isolation.get("status"),
-                        "source_face_isolation_score": selected_source_face_isolation.get("score"),
-                        "source_inference_ready": self._source_face_inference_ready(
-                            selected_source_face_probe
-                        ),
-                        "output_face_quality_status": selected_output_face_quality.get("status"),
-                        "output_face_quality_score": selected_output_face_quality.get("score"),
-                        "output_face_isolation_status": selected_output_face_isolation.get("status"),
-                        "output_face_isolation_score": selected_output_face_isolation.get("score"),
-                        "output_face_sequence_quality_status": selected_output_face_sequence_quality.get(
-                            "status"
-                        ),
-                        "output_face_sequence_quality_score": selected_output_face_sequence_quality.get(
-                            "score"
-                        ),
-                        "output_face_temporal_drift_status": selected_output_face_temporal_drift.get(
-                            "status"
-                        ),
-                        "output_face_temporal_drift_score": selected_output_face_temporal_drift.get(
-                            "score"
-                        ),
-                        "source_vs_output_face_delta_status": selected_source_vs_output_face_delta.get(
-                            "status"
-                        ),
-                        "source_vs_output_face_delta_score": selected_source_vs_output_face_delta.get(
-                            "score"
-                        ),
-                        "musetalk_duration_sec": musetalk_result.duration_sec,
-                        "normalize_duration_sec": selected_normalize_duration_sec,
-                        "lipsync_backend": "musetalk",
+                        "attempt_index": source_attempt_index,
                     }
+                break
+
+            if (
+                selected_musetalk_result is None
+                or selected_source_prep is None
+                or selected_source_face_probe is None
+                or selected_source_face_quality is None
+                or selected_source_face_occupancy is None
+                or selected_source_face_isolation is None
+                or selected_output_face_probe is None
+                or selected_output_face_quality is None
+                or selected_output_face_isolation is None
+                or selected_output_face_samples is None
+                or selected_output_face_sequence_quality is None
+                or selected_output_face_temporal_drift is None
+                or selected_source_vs_output_face_delta is None
+                or selected_output_face_primary_sample_label is None
+                or selected_raw_probe is None
+                or selected_normalized_probe is None
+                or selected_normalize_command is None
+                or selected_normalized_output_path is None
+            ):
+                raise last_error or RuntimeError(
+                    f"MuseTalk source attempts exhausted for shot {shot.shot_id}."
                 )
+
+            musetalk_result = selected_musetalk_result
+            prepared_source_path = Path(selected_source_prep["prepared_source_path"])
+            prepare_command = selected_source_prep["prepare_command"]
+            prepare_duration_sec = float(selected_source_prep["prepare_duration_sec"])
+            source_artifact_kind = str(selected_source_prep["source_artifact_kind"])
+            source_artifact_path = str(selected_source_prep["source_artifact_path"])
+            source_input_mode = str(selected_source_prep["source_input_mode"])
+            positive_prompt = selected_source_prep.get("positive_prompt")
+            negative_prompt = selected_source_prep.get("negative_prompt")
+            character_reference_path = selected_source_prep.get("character_reference_path")
+            character_generation_manifest_path = selected_source_prep.get(
+                "character_generation_manifest_path"
+            )
+            comfyui_input_dir = selected_source_prep.get("comfyui_input_dir")
+            comfyui_staged_reference_path = selected_source_prep.get("comfyui_staged_reference_path")
+            comfyui_input_image_name = selected_source_prep.get("comfyui_input_image_name")
+            source_probe = selected_source_prep["source_probe"]
+            stable_source_path = shot_dir / "musetalk_source.png"
+            if prepared_source_path != stable_source_path:
+                stable_source_path.write_bytes(prepared_source_path.read_bytes())
+                prepared_source_path = stable_source_path
+
+            normalized_output_path = shot_dir / "synced.mp4"
+            if selected_normalized_output_path != normalized_output_path:
+                normalized_output_path.write_bytes(selected_normalized_output_path.read_bytes())
+            normalize_command = selected_normalize_command
+            raw_probe = selected_raw_probe
+            normalized_probe = selected_normalized_probe
+
+            manifest_path = self.artifact_store.write_json(
+                snapshot.project.project_id,
+                f"shots/{shot.shot_id}/lipsync_manifest.json",
+                {
+                    "backend": "musetalk",
+                    "shot_id": shot.shot_id,
+                    "strategy": shot.strategy,
+                    "composition": shot.composition.model_dump(),
+                    "source_artifact_kind": source_artifact_kind,
+                    "source_artifact_path": source_artifact_path,
+                    "source_input_mode": source_input_mode,
+                    "character_reference_path": character_reference_path,
+                    "character_generation_manifest_path": character_generation_manifest_path,
+                    "comfyui_input_dir": comfyui_input_dir,
+                    "comfyui_staged_reference_path": comfyui_staged_reference_path,
+                    "comfyui_input_image_name": comfyui_input_image_name,
+                    "prepared_source_path": str(prepared_source_path),
+                    "source_attempt_index": selected_attempt_index,
+                    "source_attempt_count": len(source_attempt_records),
+                    "source_attempt_limit": max_source_attempts,
+                    "positive_prompt": positive_prompt,
+                    "negative_prompt": negative_prompt,
+                    "source_probe": source_probe,
+                    "source_face_probe": selected_source_face_probe,
+                    "source_inference_ready": self._source_face_inference_ready(
+                        selected_source_face_probe
+                    ),
+                    "source_face_quality": selected_source_face_quality,
+                    "source_face_occupancy": selected_source_face_occupancy,
+                    "source_face_isolation": selected_source_face_isolation,
+                    "source_border_adjustment": selected_source_border_adjustment,
+                    "source_detector_adjustment": selected_source_detector_adjustment,
+                    "source_occupancy_adjustment": selected_source_occupancy_adjustment,
+                    "source_face_probe_path": selected_source_face_probe_path,
+                    "source_face_probe_stdout_path": selected_source_face_probe_stdout_path,
+                    "source_face_probe_stderr_path": selected_source_face_probe_stderr_path,
+                    "source_face_probe_command": selected_source_face_probe_command,
+                    "source_face_probe_duration_sec": selected_source_face_probe_duration_sec,
+                    "output_face_probe": selected_output_face_probe,
+                    "output_face_quality": selected_output_face_quality,
+                    "output_face_isolation": selected_output_face_isolation,
+                    "output_face_samples": selected_output_face_samples,
+                    "output_face_sample_count": len(selected_output_face_samples),
+                    "output_face_primary_sample_label": selected_output_face_primary_sample_label,
+                    "output_face_sequence_quality": selected_output_face_sequence_quality,
+                    "output_face_temporal_drift": selected_output_face_temporal_drift,
+                    "source_vs_output_face_delta": selected_source_vs_output_face_delta,
+                    "output_face_probe_path": selected_output_face_probe_path,
+                    "output_face_probe_stdout_path": selected_output_face_probe_stdout_path,
+                    "output_face_probe_stderr_path": selected_output_face_probe_stderr_path,
+                    "output_face_probe_command": selected_output_face_probe_command,
+                    "output_face_probe_duration_sec": selected_output_face_probe_duration_sec,
+                    "output_face_frame_path": selected_output_face_frame_path,
+                    "output_face_sample_time_sec": selected_output_face_sample_time_sec,
+                    "output_face_manifest_path": selected_output_face_manifest_path,
+                    "output_isolation_adjustment": selected_output_isolation_adjustment,
+                    "source_attempts": source_attempt_records,
+                    "audio_path": str(shot_audio_path),
+                    "dialogue_line_ids": [entry.get("line_id") for entry in shot_entries],
+                    "task_config_path": str(musetalk_result.task_config_path),
+                    "stdout_path": str(musetalk_result.stdout_path),
+                    "stderr_path": str(musetalk_result.stderr_path),
+                    "raw_output_path": str(musetalk_result.output_video_path),
+                    "normalized_output_path": str(normalized_output_path),
+                    "musetalk_command": musetalk_result.command,
+                    "musetalk_duration_sec": musetalk_result.duration_sec,
+                    "prepare_command": prepare_command,
+                    "prepare_duration_sec": prepare_duration_sec,
+                    "normalize_command": normalize_command,
+                    "normalize_duration_sec": selected_normalize_duration_sec,
+                    "raw_probe": raw_probe,
+                    "normalized_probe": normalized_probe,
+                },
+            )
+            result.artifacts.extend(
+                attempt_source_artifacts
+                + [
+                    ArtifactRecord(
+                        artifact_id=new_id("artifact"),
+                        kind="lipsync_source_image",
+                        path=str(prepared_source_path),
+                        stage="apply_lipsync",
+                        metadata={"shot_id": shot.shot_id, "backend": "musetalk"},
+                    ),
+                    ArtifactRecord(
+                        artifact_id=new_id("artifact"),
+                        kind="lipsync_audio_input",
+                        path=str(shot_audio_path),
+                        stage="apply_lipsync",
+                        metadata={"shot_id": shot.shot_id, "backend": "musetalk"},
+                    ),
+                    ArtifactRecord(
+                        artifact_id=new_id("artifact"),
+                        kind="lipsync_task_config",
+                        path=str(musetalk_result.task_config_path),
+                        stage="apply_lipsync",
+                        metadata={"shot_id": shot.shot_id, "backend": "musetalk"},
+                    ),
+                    ArtifactRecord(
+                        artifact_id=new_id("artifact"),
+                        kind="lipsync_stdout",
+                        path=str(musetalk_result.stdout_path),
+                        stage="apply_lipsync",
+                        metadata={"shot_id": shot.shot_id, "backend": "musetalk"},
+                    ),
+                    ArtifactRecord(
+                        artifact_id=new_id("artifact"),
+                        kind="lipsync_stderr",
+                        path=str(musetalk_result.stderr_path),
+                        stage="apply_lipsync",
+                        metadata={"shot_id": shot.shot_id, "backend": "musetalk"},
+                    ),
+                    ArtifactRecord(
+                        artifact_id=new_id("artifact"),
+                        kind="shot_lipsync_raw_video",
+                        path=str(musetalk_result.output_video_path),
+                        stage="apply_lipsync",
+                        metadata={"shot_id": shot.shot_id, "backend": "musetalk", **raw_probe},
+                    ),
+                    ArtifactRecord(
+                        artifact_id=new_id("artifact"),
+                        kind="shot_lipsync_video",
+                        path=str(normalized_output_path),
+                        stage="apply_lipsync",
+                        metadata={"shot_id": shot.shot_id, "backend": "musetalk", **normalized_probe},
+                    ),
+                    ArtifactRecord(
+                        artifact_id=new_id("artifact"),
+                        kind="lipsync_manifest",
+                        path=str(manifest_path),
+                        stage="apply_lipsync",
+                        metadata={"shot_id": shot.shot_id, "backend": "musetalk"},
+                    ),
+                ]
+            )
+            result.logs.extend(attempt_source_logs)
+            result.logs.append(
+                {
+                    "message": f"applied MuseTalk lipsync for {shot.shot_id}",
+                    "shot_id": shot.shot_id,
+                    "source_artifact_kind": source_artifact_kind,
+                    "source_input_mode": source_input_mode,
+                    "source_attempt_index": selected_attempt_index,
+                    "source_face_quality_status": selected_source_face_quality.get("status"),
+                    "source_face_quality_score": selected_source_face_quality.get("score"),
+                    "source_face_occupancy_status": selected_source_face_occupancy.get("status"),
+                    "source_face_occupancy_score": selected_source_face_occupancy.get("score"),
+                    "source_face_isolation_status": selected_source_face_isolation.get("status"),
+                    "source_face_isolation_score": selected_source_face_isolation.get("score"),
+                    "source_inference_ready": self._source_face_inference_ready(
+                        selected_source_face_probe
+                    ),
+                    "output_face_quality_status": selected_output_face_quality.get("status"),
+                    "output_face_quality_score": selected_output_face_quality.get("score"),
+                    "output_face_isolation_status": selected_output_face_isolation.get("status"),
+                    "output_face_isolation_score": selected_output_face_isolation.get("score"),
+                    "output_face_sequence_quality_status": selected_output_face_sequence_quality.get(
+                        "status"
+                    ),
+                    "output_face_sequence_quality_score": selected_output_face_sequence_quality.get(
+                        "score"
+                    ),
+                    "output_face_temporal_drift_status": selected_output_face_temporal_drift.get(
+                        "status"
+                    ),
+                    "output_face_temporal_drift_score": selected_output_face_temporal_drift.get(
+                        "score"
+                    ),
+                    "source_vs_output_face_delta_status": selected_source_vs_output_face_delta.get(
+                        "status"
+                    ),
+                    "source_vs_output_face_delta_score": selected_source_vs_output_face_delta.get(
+                        "score"
+                    ),
+                    "musetalk_duration_sec": musetalk_result.duration_sec,
+                    "normalize_duration_sec": selected_normalize_duration_sec,
+                    "lipsync_backend": "musetalk",
+                }
+            )
         result.logs.append(
             {
                 "message": "applied MuseTalk lipsync for portrait dialogue shots",
@@ -5376,6 +5513,83 @@ class DeterministicMediaAdapters:
                 ],
             },
         )
+        deliverable_files = [
+            {
+                "kind": "final_video",
+                "path": str(final_path),
+                "archive_path": "deliverables/final/final.mp4",
+            },
+            {
+                "kind": "poster",
+                "path": str(poster_path),
+                "archive_path": "deliverables/marketing/poster.png",
+            },
+            {
+                "kind": "subtitle_srt",
+                "path": subtitle_srt.path,
+                "archive_path": "deliverables/subtitles/full.srt",
+            },
+            {
+                "kind": "subtitle_ass",
+                "path": subtitle_ass.path if subtitle_ass is not None else None,
+                "archive_path": "deliverables/subtitles/full.ass",
+            },
+            {
+                "kind": "scene_preview_sheet",
+                "path": str(preview_sheet_path),
+                "archive_path": "deliverables/previews/scene_preview_sheet.json",
+            },
+            {
+                "kind": "project_archive",
+                "path": str(archive_path),
+                "archive_path": "deliverables/archive/project_archive.json",
+            },
+            {
+                "kind": "final_render_manifest",
+                "path": str(final_manifest_path),
+                "archive_path": "deliverables/manifests/final_render_manifest.json",
+            },
+        ]
+        deliverables_manifest_payload = {
+            "project_id": project_id,
+            "title": snapshot.project.title,
+            "status": "packaged",
+            "render_profile": {
+                "width": self.render_width,
+                "height": self.render_height,
+                "fps": self.render_fps,
+                "orientation": self._render_orientation(),
+                "aspect_ratio": self._render_aspect_ratio_label(),
+            },
+            "items": [
+                {
+                    **item,
+                    "exists": bool(item["path"]) and Path(str(item["path"])).exists(),
+                }
+                for item in deliverable_files
+                if item["path"]
+            ],
+        }
+        deliverables_manifest_path = self.artifact_store.write_json(
+            project_id,
+            "renders/deliverables_manifest.json",
+            deliverables_manifest_payload,
+        )
+        deliverables_package_path = project_dir / "renders/deliverables_package.zip"
+        with zipfile.ZipFile(
+            deliverables_package_path,
+            mode="w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as archive_zip:
+            archive_zip.write(deliverables_manifest_path, arcname="deliverables/manifests/deliverables_manifest.json")
+            for item in deliverable_files:
+                source_path = item["path"]
+                if not source_path:
+                    continue
+                source = Path(str(source_path))
+                if not source.exists():
+                    continue
+                archive_zip.write(source, arcname=str(item["archive_path"]))
         return StageExecutionResult(
             artifacts=[
                 ArtifactRecord(
@@ -5427,6 +5641,18 @@ class DeterministicMediaAdapters:
                     path=str(preview_sheet_path),
                     stage="compose_project",
                 ),
+                ArtifactRecord(
+                    artifact_id=new_id("artifact"),
+                    kind="deliverables_manifest",
+                    path=str(deliverables_manifest_path),
+                    stage="compose_project",
+                ),
+                ArtifactRecord(
+                    artifact_id=new_id("artifact"),
+                    kind="deliverables_package",
+                    path=str(deliverables_package_path),
+                    stage="compose_project",
+                ),
             ],
             logs=[
                 {
@@ -5448,6 +5674,11 @@ class DeterministicMediaAdapters:
                     "message": "extracted poster",
                     "command": " ".join(poster_command),
                     "duration_sec": poster_run.duration_sec,
+                },
+                {
+                    "message": "packaged deliverables",
+                    "package_path": str(deliverables_package_path),
+                    "deliverable_count": len(deliverables_manifest_payload["items"]),
                 },
             ],
         )
@@ -5471,6 +5702,10 @@ class DeterministicMediaAdapters:
             "final_video",
             "final_render_manifest",
             "poster",
+            "scene_preview_sheet",
+            "project_archive",
+            "deliverables_manifest",
+            "deliverables_package",
         }
         available_by_kind: dict[str, list[ArtifactRecord]] = {}
         for artifact in snapshot.artifacts:
@@ -5600,6 +5835,47 @@ class DeterministicMediaAdapters:
                         message="Final render manifest does not confirm subtitle burn-in.",
                     )
                 )
+
+        deliverables_manifest_artifact = self._find_artifact(snapshot, "deliverables_manifest")
+        if deliverables_manifest_artifact is not None:
+            deliverables_manifest = json.loads(
+                Path(deliverables_manifest_artifact.path).read_text(encoding="utf-8")
+            )
+            items = deliverables_manifest.get("items", [])
+            if not isinstance(items, list) or not items:
+                findings.append(
+                    QCFindingRecord(
+                        code="deliverables_manifest_empty",
+                        severity="error",
+                        message="Deliverables manifest is missing packaged items.",
+                    )
+                )
+            else:
+                missing_deliverables = [
+                    str(item.get("kind") or "unknown")
+                    for item in items
+                    if isinstance(item, dict) and not bool(item.get("exists"))
+                ]
+                if missing_deliverables:
+                    findings.append(
+                        QCFindingRecord(
+                            code="deliverables_missing",
+                            severity="error",
+                            message=(
+                                "Deliverables manifest contains missing items: "
+                                + ", ".join(sorted(missing_deliverables))
+                            ),
+                        )
+                    )
+        deliverables_package_artifact = self._find_artifact(snapshot, "deliverables_package")
+        if deliverables_package_artifact is not None and not Path(deliverables_package_artifact.path).exists():
+            findings.append(
+                QCFindingRecord(
+                    code="deliverables_package_missing",
+                    severity="error",
+                    message="Deliverables package zip was not created.",
+                )
+            )
 
         subtitle_visibility_summary: dict[str, Any] = {}
         if subtitle_layout_artifact is not None and subtitle_layout_summary:

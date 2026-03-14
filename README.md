@@ -44,6 +44,8 @@ The current codebase restores:
 - dedicated subtitle-lane campaign tooling for `hero_insert` top-lane verification, with per-run lane summaries and aggregate visibility reports
 - dedicated product-readiness campaign tooling for broader real-script verification across multiple vertical-short categories, with case-level topology expectations and aggregate readiness metrics
 - a public preset catalog endpoint plus preset-aware product-readiness reporting for release-gate coverage
+- a deliverables packaging layer that now emits `deliverables_manifest.json` and `deliverables_package.zip` next to the final render outputs
+- a selective rerender loop that can restart a project from a chosen stage for selected scenes or shots instead of rerunning the whole project from intake
 - real `FFmpeg` shot composition and final portrait render assembly with a default `720x1280` master profile
 - `ffprobe`-backed QC on the produced media artifacts
 - filesystem-backed GPU lease tracking for single-GPU scheduling visibility
@@ -157,7 +159,35 @@ Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/projects/preset
 
 - final video: `runtime/artifacts/<project_id>/renders/final.mp4`
 - subtitles: `runtime/artifacts/<project_id>/subtitles/`
+- deliverables package: `runtime/artifacts/<project_id>/renders/deliverables_package.zip`
+- deliverables manifest: `runtime/artifacts/<project_id>/renders/deliverables_manifest.json`
 - manifests and logs: `runtime/artifacts/<project_id>/` and `runtime/logs/<project_id>/`
+
+You can also inspect the packaged outputs directly through the API:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/projects/<project_id>/deliverables"
+```
+
+That endpoint returns the latest resolved paths for `final_video`, `poster`, subtitle files, the final render manifest, the scene preview sheet, the project archive, and the packaged deliverables zip.
+
+If a review only needs one scene or one shot to be regenerated, the control plane now supports selective rerender from a chosen stage:
+
+```powershell
+$body = @{
+  start_stage = "render_shots"
+  shot_ids = @("<shot_id>")
+  reason = "manual_review"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://127.0.0.1:8000/api/v1/projects/<project_id>/rerender" `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+The rerender request rewinds only the selected downstream stages, runs the project again, and persists both `last_rerender_scope` and bounded `rerender_history` in project metadata for operator review.
 
 This path is the best starting point for anyone cloning the repo for the first time because it exercises the real control plane, worker, manifests, and final render flow without requiring every optional backend to be bootstrapped first.
 
