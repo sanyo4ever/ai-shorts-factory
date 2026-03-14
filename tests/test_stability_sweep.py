@@ -107,7 +107,46 @@ def test_extract_portrait_shot_summary_counts_recoverable_attempts(tmp_path) -> 
     assert summary["source_border_adjustment_applied"] is True
     assert summary["source_occupancy_adjustment_applied"] is True
     assert summary["source_face_probe_warnings"] == ["multiple_faces_detected"]
+    assert summary["source_face_probe_raw_warnings"] == ["multiple_faces_detected"]
     assert summary["first_attempt_success"] is False
+
+
+def test_extract_portrait_shot_summary_prefers_effective_warnings(tmp_path) -> None:
+    manifest_path = tmp_path / "lipsync_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "shot_id": "shot_effective",
+                "source_attempt_count": 1,
+                "source_attempt_index": 1,
+                "source_attempts": [{}],
+                "source_face_probe": {
+                    "warnings": ["multiple_faces_detected"],
+                    "effective_warnings": [],
+                },
+                "output_face_probe": {
+                    "warnings": ["multiple_faces_detected"],
+                    "effective_warnings": [],
+                },
+                "source_face_quality": {"status": "excellent"},
+                "source_face_occupancy": {"status": "excellent"},
+                "source_face_isolation": {"status": "good"},
+                "output_face_quality": {"status": "excellent"},
+                "output_face_isolation": {"status": "good"},
+                "output_face_sequence_quality": {"status": "excellent"},
+                "output_face_temporal_drift": {"status": "excellent"},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    summary = extract_portrait_shot_summary(manifest_path)
+
+    assert summary["source_face_probe_raw_warnings"] == ["multiple_faces_detected"]
+    assert summary["output_face_probe_raw_warnings"] == ["multiple_faces_detected"]
+    assert summary["source_face_probe_warnings"] == []
+    assert summary["output_face_probe_warnings"] == []
 
 
 def test_summarize_project_run_reads_manifest_and_latest_qc(tmp_path) -> None:

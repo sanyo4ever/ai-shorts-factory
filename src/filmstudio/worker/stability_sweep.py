@@ -494,6 +494,12 @@ def extract_portrait_shot_summary(manifest_path: Path) -> dict[str, Any]:
     )
     source_face_probe = payload.get("source_face_probe") if isinstance(payload.get("source_face_probe"), dict) else {}
     output_face_probe = payload.get("output_face_probe") if isinstance(payload.get("output_face_probe"), dict) else {}
+    source_warning_codes = source_face_probe.get("effective_warnings")
+    if not isinstance(source_warning_codes, list):
+        source_warning_codes = source_face_probe.get("warnings", [])
+    output_warning_codes = output_face_probe.get("effective_warnings")
+    if not isinstance(output_warning_codes, list):
+        output_warning_codes = output_face_probe.get("warnings", [])
     return {
         "shot_id": str(payload.get("shot_id") or manifest_path.parent.name),
         "manifest_path": str(manifest_path),
@@ -513,12 +519,14 @@ def extract_portrait_shot_summary(manifest_path: Path) -> dict[str, Any]:
             isinstance(payload.get("source_occupancy_adjustment"), dict)
             and payload["source_occupancy_adjustment"].get("applied")
         ),
-        "source_face_probe_warnings": [
+        "source_face_probe_raw_warnings": [
             str(code) for code in source_face_probe.get("warnings", []) if isinstance(code, str)
         ],
-        "output_face_probe_warnings": [
+        "output_face_probe_raw_warnings": [
             str(code) for code in output_face_probe.get("warnings", []) if isinstance(code, str)
         ],
+        "source_face_probe_warnings": [str(code) for code in source_warning_codes if isinstance(code, str)],
+        "output_face_probe_warnings": [str(code) for code in output_warning_codes if isinstance(code, str)],
         "source_face_quality_status": (payload.get("source_face_quality") or {}).get("status"),
         "source_face_occupancy_status": (payload.get("source_face_occupancy") or {}).get("status"),
         "source_face_isolation_status": (payload.get("source_face_isolation") or {}).get("status"),

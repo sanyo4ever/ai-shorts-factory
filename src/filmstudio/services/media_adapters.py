@@ -687,16 +687,18 @@ class DeterministicMediaAdapters:
             {
                 "label": "studio_headshot",
                 "positive_prompt": (
-                    f"studio headshot of {name}, single human subject, straight front view, centered face, "
+                    f"studio headshot of {name}, one person only, single human subject, straight front view, "
+                    f"front-facing head and shoulders, large centered face filling the frame, both eyes visible, "
                     f"direct gaze into camera, symmetrical face, mouth closed, face dominant in frame, "
-                    f"little headroom, shoulders cropped low, clear jawline, neutral background, "
+                    f"minimal headroom, shoulders near lower frame edge, clear jawline, neutral background, "
                     f"realistic illustration, {lane_hint}, shot purpose: {shot.purpose}, {visual_hint}"
                 ),
                 "negative_prompt": (
-                    "multiple people, crowd, collage, profile view, side profile, looking sideways, "
+                    "multiple people, crowd, collage, extra faces, duplicate person, split face, "
+                    "profile view, side profile, side view, three-quarter view, looking sideways, "
                     "tilted head, mouth open, tiny face, distant camera, wide framing, torso visible, "
-                    "extreme close-up, cropped chin, cropped forehead, content inside the subtitle lane, "
-                    "blurry, watermark, text"
+                    "extreme close-up, cropped chin, cropped forehead, hands covering face, sunglasses, "
+                    "content inside the subtitle lane, blurry, watermark, text"
                 ),
             },
             {
@@ -1061,9 +1063,19 @@ class DeterministicMediaAdapters:
             ),
         )
         face_probe_payload = probe_result.payload
-        source_face_quality = self._summarize_source_face_quality(face_probe_payload)
-        source_face_occupancy = self._summarize_musetalk_source_occupancy(face_probe_payload)
         source_face_isolation = self._summarize_face_isolation(face_probe_payload)
+        self._annotate_effective_face_probe_warnings(
+            face_probe_payload,
+            face_isolation_summary=source_face_isolation,
+        )
+        source_face_occupancy = self._summarize_musetalk_source_occupancy(face_probe_payload)
+        self._annotate_effective_face_probe_warnings(
+            face_probe_payload,
+            face_isolation_summary=source_face_isolation,
+            face_occupancy_summary=source_face_occupancy,
+            occupancy_adjustment=source_occupancy_adjustment,
+        )
+        source_face_quality = self._summarize_source_face_quality(face_probe_payload)
         effective_pass = self._face_probe_effective_pass(face_probe_payload)
         source_inference_ready = self._source_face_inference_ready(face_probe_payload)
         face_probe_payload["effective_pass"] = effective_pass
@@ -1123,6 +1135,8 @@ class DeterministicMediaAdapters:
                     "source_inference_ready": source_inference_ready,
                     "failure_reasons": face_probe_payload.get("failure_reasons", []),
                     "warnings": face_probe_payload.get("warnings", []),
+                    "effective_warnings": face_probe_payload.get("effective_warnings", []),
+                    "resolved_warnings": face_probe_payload.get("resolved_warnings", []),
                     "quality_status": source_face_quality.get("status"),
                     "quality_score": source_face_quality.get("score"),
                     "occupancy_status": source_face_occupancy.get("status"),
@@ -1182,8 +1196,12 @@ class DeterministicMediaAdapters:
                 result_root=sample_root,
             )
             output_face_probe = probe_result.payload
-            output_face_quality = self._summarize_source_face_quality(output_face_probe)
             output_face_isolation = self._summarize_face_isolation(output_face_probe)
+            self._annotate_effective_face_probe_warnings(
+                output_face_probe,
+                face_isolation_summary=output_face_isolation,
+            )
+            output_face_quality = self._summarize_source_face_quality(output_face_probe)
             output_face_probe["effective_pass"] = self._face_probe_effective_pass(output_face_probe)
             output_face_probe["quality_summary"] = output_face_quality
             output_face_probe["face_isolation_summary"] = output_face_isolation
@@ -1418,6 +1436,128 @@ class DeterministicMediaAdapters:
         quality_score = float(summary.get("score", 0.0) or 0.0)
         quality_status = str(summary.get("status", "reject"))
         return quality_status == "marginal" or quality_score < warn_below
+
+    @classmethod
+    def _multiple_faces_warning_resolved(cls, face_isolation_summary: dict[str, Any] | None) -> bool:
+        if not isinstance(face_isolation_summary, dict):
+            return False
+        if not bool(face_isolation_summary.get("recommended_for_inference")):
+            return False
+        if cls._is_rejected_face_quality(face_isolation_summary) or cls._is_marginal_face_quality(
+            face_isolation_summary
+        ):
+            return False
+        secondary_face_count = int(face_isolation_summary.get("secondary_face_count", 0) or 0)
+        if secondary_face_count > 1:
+            return False
+        dominant_secondary = (
+            face_isolation_summary.get("dominant_secondary")
+            if isinstance(face_isolation_summary.get("dominant_secondary"), dict)
+            else None
+        )
+        if dominant_secondary is None:
+            return secondary_face_count == 0
+        dominant_effective_ratio = float(dominant_secondary.get("effective_ratio", 0.0) or 0.0)
+        return dominant_effective_ratio <= 0.22
+
+    @classmethod
+    def _border_touch_warnings_resolved(
+        cls,
+        face_probe_payload: dict[str, Any],
+        *,
+        face_occupancy_summary: dict[str, Any] | None = None,
+        occupancy_adjustment: dict[str, Any] | None = None,
+    ) -> set[str]:
+        if not isinstance(face_occupancy_summary, dict):
+            return set()
+        if not isinstance(occupancy_adjustment, dict) or not occupancy_adjustment.get("applied"):
+            return set()
+        if cls._is_rejected_face_quality(face_occupancy_summary) or cls._is_marginal_face_quality(
+            face_occupancy_summary
+        ):
+            return set()
+        selected_bbox = cls._source_face_bbox(face_probe_payload)
+        image_metrics = cls._face_probe_metrics(face_probe_payload)
+        if cls._box_area(selected_bbox) <= 0.0:
+            return set()
+        touches_top = selected_bbox[1] <= 1.0
+        touches_bottom = selected_bbox[3] >= (image_metrics["image_height"] - 1.0)
+        touches_left = selected_bbox[0] <= 1.0
+        touches_right = selected_bbox[2] >= (image_metrics["image_width"] - 1.0)
+        if (
+            touches_top
+            and touches_bottom
+            and not touches_left
+            and not touches_right
+            and image_metrics["bbox_height_ratio"] >= 0.92
+        ):
+            return {
+                "face_bbox_touches_upper_or_left_border",
+                "face_bbox_touches_lower_or_right_border",
+            }
+        return set()
+
+    @classmethod
+    def _effective_face_probe_warnings(
+        cls,
+        face_probe_payload: dict[str, Any],
+        *,
+        face_isolation_summary: dict[str, Any] | None = None,
+        face_occupancy_summary: dict[str, Any] | None = None,
+        occupancy_adjustment: dict[str, Any] | None = None,
+    ) -> list[str]:
+        raw_warnings = [
+            str(code) for code in face_probe_payload.get("warnings", []) if isinstance(code, str)
+        ]
+        resolved_border_warnings = cls._border_touch_warnings_resolved(
+            face_probe_payload,
+            face_occupancy_summary=face_occupancy_summary,
+            occupancy_adjustment=occupancy_adjustment,
+        )
+        effective_warnings: list[str] = []
+        for warning_code in raw_warnings:
+            if (
+                warning_code == "multiple_faces_detected"
+                and cls._multiple_faces_warning_resolved(face_isolation_summary)
+            ):
+                continue
+            if warning_code in resolved_border_warnings:
+                continue
+            effective_warnings.append(warning_code)
+        return effective_warnings
+
+    @classmethod
+    def _annotate_effective_face_probe_warnings(
+        cls,
+        face_probe_payload: dict[str, Any],
+        *,
+        face_isolation_summary: dict[str, Any] | None = None,
+        face_occupancy_summary: dict[str, Any] | None = None,
+        occupancy_adjustment: dict[str, Any] | None = None,
+    ) -> None:
+        raw_warnings = [
+            str(code) for code in face_probe_payload.get("warnings", []) if isinstance(code, str)
+        ]
+        effective_warnings = cls._effective_face_probe_warnings(
+            face_probe_payload,
+            face_isolation_summary=face_isolation_summary,
+            face_occupancy_summary=face_occupancy_summary,
+            occupancy_adjustment=occupancy_adjustment,
+        )
+        face_probe_payload["raw_warnings"] = raw_warnings
+        face_probe_payload["effective_warnings"] = effective_warnings
+        face_probe_payload["resolved_warnings"] = [
+            warning_code for warning_code in raw_warnings if warning_code not in effective_warnings
+        ]
+
+    @staticmethod
+    def _face_probe_warning_codes(face_probe_payload: dict[str, Any]) -> list[str]:
+        warning_codes = face_probe_payload.get("effective_warnings")
+        if not isinstance(warning_codes, list):
+            warning_codes = face_probe_payload.get("warnings")
+        if not isinstance(warning_codes, list):
+            warning_codes = []
+        return [str(code) for code in warning_codes if isinstance(code, str)]
 
     @staticmethod
     def _face_probe_effective_pass(face_probe_payload: dict[str, Any]) -> bool:
@@ -1673,7 +1813,7 @@ class DeterministicMediaAdapters:
             reasons.append("face_height_below_target")
         if metrics["eye_distance_px"] < 100.0:
             reasons.append("eye_distance_below_target")
-        if metrics["detected_face_count"] > 1.0:
+        if "multiple_faces_detected" in cls._face_probe_warning_codes(face_probe_payload):
             penalties += 0.04
             reasons.append("multiple_faces_detected")
         raw_score = (0.38 * area_score) + (0.18 * width_score) + (0.18 * height_score) + (0.26 * eye_score)
@@ -2902,7 +3042,7 @@ class DeterministicMediaAdapters:
             "face_bbox_touches_upper_or_left_border": 0.06,
             "face_bbox_touches_lower_or_right_border": 0.06,
         }
-        for warning_code in face_probe_payload.get("warnings", []):
+        for warning_code in cls._face_probe_warning_codes(face_probe_payload):
             penalty = warning_penalties.get(str(warning_code), 0.0)
             if penalty > 0:
                 penalties += penalty
@@ -5618,7 +5758,7 @@ class DeterministicMediaAdapters:
                                     ),
                                 )
                             )
-                        for warning_code in selected_source_face_probe.get("warnings", []):
+                        for warning_code in self._face_probe_warning_codes(selected_source_face_probe):
                             if (
                                 warning_code == "multiple_faces_detected"
                                 and isinstance(selected_source_face_isolation, dict)
@@ -5841,7 +5981,7 @@ class DeterministicMediaAdapters:
                                     ),
                                 )
                             )
-                        for warning_code in selected_output_face_probe.get("warnings", []):
+                        for warning_code in self._face_probe_warning_codes(selected_output_face_probe):
                             if (
                                 warning_code == "multiple_faces_detected"
                                 and isinstance(selected_output_face_isolation, dict)

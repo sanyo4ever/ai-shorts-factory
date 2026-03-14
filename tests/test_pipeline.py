@@ -117,6 +117,116 @@ def test_stage_service_requirements_follow_backend_profile(tmp_path) -> None:
     assert engine._required_managed_services(snapshot, "generate_subtitles") == []
 
 
+def test_face_probe_effective_warnings_suppress_resolved_multiple_faces() -> None:
+    face_probe_payload = {
+        "passed": True,
+        "warnings": ["multiple_faces_detected"],
+        "image_width": 768,
+        "image_height": 768,
+        "detected_face_count": 2,
+        "detections": [
+            [257.3333, 37.3334, 687.3333, 727.3333, 0.9999],
+            [5.2081, 432.3095, 207.5654, 723.7325, 0.9999],
+        ],
+        "selected_bbox": [257.3333, 37.3334, 687.3333, 727.3333],
+        "checks": {
+            "face_detected": True,
+            "landmarks_detected": True,
+            "semantic_layout_ok": True,
+            "face_size_ok": True,
+        },
+        "metrics": {
+            "bbox_width_px": 430.0,
+            "bbox_height_px": 690.0,
+            "bbox_area_ratio": 0.503,
+            "eye_distance_px": 211.8306,
+            "eye_tilt_ratio": 0.0121,
+            "nose_center_offset_ratio": 0.0039,
+        },
+    }
+
+    isolation = DeterministicMediaAdapters._summarize_face_isolation(face_probe_payload)
+    DeterministicMediaAdapters._annotate_effective_face_probe_warnings(
+        face_probe_payload,
+        face_isolation_summary=isolation,
+    )
+    quality = DeterministicMediaAdapters._summarize_source_face_quality(face_probe_payload)
+    occupancy = DeterministicMediaAdapters._summarize_musetalk_source_occupancy(face_probe_payload)
+
+    assert isolation["status"] == "good"
+    assert isolation["recommended_for_inference"] is True
+    assert face_probe_payload["raw_warnings"] == ["multiple_faces_detected"]
+    assert face_probe_payload["effective_warnings"] == []
+    assert face_probe_payload["resolved_warnings"] == ["multiple_faces_detected"]
+    assert quality["status"] == "excellent"
+    assert quality["component_scores"]["penalties"] == 0.0
+    assert occupancy["status"] == "excellent"
+    assert occupancy["component_scores"]["penalties"] == 0.0
+
+
+def test_face_probe_effective_warnings_suppress_resolved_vertical_border_touch() -> None:
+    face_probe_payload = {
+        "passed": True,
+        "warnings": [
+            "multiple_faces_detected",
+            "face_bbox_touches_upper_or_left_border",
+            "face_bbox_touches_lower_or_right_border",
+        ],
+        "image_width": 768,
+        "image_height": 768,
+        "detected_face_count": 2,
+        "detections": [
+            [130.0899, 0.0, 483.2064, 502.4477, 0.9910],
+            [375.6209, 20.5270, 710.3246, 564.3844, 0.6207],
+        ],
+        "selected_bbox": [97.3333, 0.0, 644.0, 768.0],
+        "checks": {
+            "face_detected": True,
+            "landmarks_detected": True,
+            "semantic_layout_ok": True,
+            "face_size_ok": True,
+        },
+        "metrics": {
+            "bbox_width_px": 546.6667,
+            "bbox_height_px": 768.0,
+            "bbox_area_ratio": 0.7118,
+            "eye_distance_px": 261.7663,
+            "eye_tilt_ratio": 0.0094,
+            "nose_center_offset_ratio": 0.0457,
+        },
+    }
+
+    isolation = DeterministicMediaAdapters._summarize_face_isolation(face_probe_payload)
+    DeterministicMediaAdapters._annotate_effective_face_probe_warnings(
+        face_probe_payload,
+        face_isolation_summary=isolation,
+    )
+    occupancy = DeterministicMediaAdapters._summarize_musetalk_source_occupancy(face_probe_payload)
+    DeterministicMediaAdapters._annotate_effective_face_probe_warnings(
+        face_probe_payload,
+        face_isolation_summary=isolation,
+        face_occupancy_summary=occupancy,
+        occupancy_adjustment={"applied": True},
+    )
+    quality = DeterministicMediaAdapters._summarize_source_face_quality(face_probe_payload)
+
+    assert isolation["status"] == "excellent"
+    assert occupancy["status"] == "excellent"
+    assert face_probe_payload["raw_warnings"] == [
+        "multiple_faces_detected",
+        "face_bbox_touches_upper_or_left_border",
+        "face_bbox_touches_lower_or_right_border",
+    ]
+    assert face_probe_payload["effective_warnings"] == []
+    assert face_probe_payload["resolved_warnings"] == [
+        "multiple_faces_detected",
+        "face_bbox_touches_upper_or_left_border",
+        "face_bbox_touches_lower_or_right_border",
+    ]
+    assert quality["status"] == "excellent"
+    assert quality["component_scores"]["penalties"] == 0.0
+
+
 def test_render_shots_uses_wan_for_hero_insert(tmp_path, monkeypatch) -> None:
     runtime_root = tmp_path / "runtime"
     artifact_store = ArtifactStore(runtime_root / "artifacts")
