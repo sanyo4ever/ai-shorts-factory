@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 
-from filmstudio.domain.models import ProjectCreateRequest, SelectiveRerenderRequest
+from filmstudio.domain.models import ProjectCreateRequest, ReviewUpdateRequest, SelectiveRerenderRequest
 from filmstudio.services.planner_service import PlannerService
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
@@ -46,6 +46,14 @@ def get_deliverables(request: Request, project_id: str):
     return request.app.state.project_service.build_deliverables_view(snapshot)
 
 
+@router.get("/{project_id}/review")
+def get_review(request: Request, project_id: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return request.app.state.project_service.build_review_view(snapshot)
+
+
 @router.post("/{project_id}/run")
 def run_project(request: Request, project_id: str):
     try:
@@ -69,6 +77,48 @@ def rerender_project(request: Request, project_id: str, payload: SelectiveRerend
         return request.app.state.worker.run_project(project_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Project not found") from None
+
+
+@router.post("/{project_id}/shots/{shot_id}/review")
+def review_shot(
+    request: Request,
+    project_id: str,
+    shot_id: str,
+    payload: ReviewUpdateRequest,
+):
+    try:
+        snapshot = request.app.state.project_service.apply_shot_review(project_id, shot_id, payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Project or shot not found") from None
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    if payload.request_rerender and payload.run_immediately:
+        try:
+            snapshot = request.app.state.worker.run_project(project_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Project not found") from None
+    return request.app.state.project_service.build_review_view(snapshot)
+
+
+@router.post("/{project_id}/scenes/{scene_id}/review")
+def review_scene(
+    request: Request,
+    project_id: str,
+    scene_id: str,
+    payload: ReviewUpdateRequest,
+):
+    try:
+        snapshot = request.app.state.project_service.apply_scene_review(project_id, scene_id, payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Project or scene not found") from None
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    if payload.request_rerender and payload.run_immediately:
+        try:
+            snapshot = request.app.state.worker.run_project(project_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Project not found") from None
+    return request.app.state.project_service.build_review_view(snapshot)
 
 
 @router.get("/{project_id}/scenes")

@@ -43,6 +43,8 @@ ShortArchetype = Literal[
     "countdown_list",
     "hero_teaser",
 ]
+ReviewStatus = Literal["pending_review", "approved", "needs_rerender"]
+ReviewTargetKind = Literal["scene", "shot"]
 RerenderStage = Literal[
     "build_characters",
     "generate_storyboards",
@@ -110,6 +112,18 @@ def default_vertical_composition() -> VerticalCompositionPlan:
     )
 
 
+class ReviewState(BaseModel):
+    status: ReviewStatus = "pending_review"
+    updated_at: str = Field(default_factory=utc_now)
+    reviewer: str | None = None
+    note: str | None = None
+    reason: str | None = None
+    output_revision: int = 0
+    approved_revision: int | None = None
+    canonical_artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    last_review_id: str | None = None
+
+
 class ShotPlan(BaseModel):
     shot_id: str
     scene_id: str
@@ -122,6 +136,7 @@ class ShotPlan(BaseModel):
     dialogue: list[DialogueLine] = Field(default_factory=list)
     prompt_seed: str
     composition: VerticalCompositionPlan = Field(default_factory=default_vertical_composition)
+    review: ReviewState = Field(default_factory=ReviewState)
 
 
 class ScenePlan(BaseModel):
@@ -131,6 +146,7 @@ class ScenePlan(BaseModel):
     summary: str
     duration_sec: int
     shots: list[ShotPlan] = Field(default_factory=list)
+    review: ReviewState = Field(default_factory=ReviewState)
 
 
 class ArtifactRecord(BaseModel):
@@ -199,6 +215,24 @@ class RecoveryPlanRecord(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ReviewRecord(BaseModel):
+    review_id: str
+    target_kind: ReviewTargetKind
+    target_id: str
+    scene_id: str | None = None
+    shot_id: str | None = None
+    status: ReviewStatus
+    previous_status: ReviewStatus | None = None
+    created_at: str = Field(default_factory=utc_now)
+    reviewer: str = "operator"
+    note: str | None = None
+    reason: str | None = None
+    output_revision: int | None = None
+    approved_revision: int | None = None
+    canonical_artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class ProjectCreateRequest(BaseModel):
     title: str
     script: str
@@ -227,6 +261,16 @@ class SelectiveRerenderRequest(BaseModel):
     shot_ids: list[str] = Field(default_factory=list)
     reason: str = "manual_review"
     run_immediately: bool = True
+
+
+class ReviewUpdateRequest(BaseModel):
+    status: ReviewStatus
+    note: str = ""
+    reason: str = ""
+    reviewer: str = "operator"
+    request_rerender: bool = False
+    start_stage: RerenderStage = "render_shots"
+    run_immediately: bool = False
 
 
 class ProjectRecord(BaseModel):
@@ -261,6 +305,7 @@ class ProjectSnapshot(BaseModel):
     artifacts: list[ArtifactRecord] = Field(default_factory=list)
     qc_reports: list[QCReportRecord] = Field(default_factory=list)
     recovery_plans: list[RecoveryPlanRecord] = Field(default_factory=list)
+    review_records: list[ReviewRecord] = Field(default_factory=list)
 
 
 class ServiceStatus(BaseModel):

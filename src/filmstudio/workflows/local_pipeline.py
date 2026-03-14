@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import logging
 from contextlib import nullcontext
 from typing import Callable
@@ -44,6 +45,7 @@ class LocalPipelineEngine:
         }
 
     def run_project(self, project_id: str) -> ProjectSnapshot:
+        run_started_at = utc_now()
         snapshot = self.project_service.require_snapshot(project_id)
         snapshot.project.status = "running"
         self.project_service.save_snapshot(snapshot)
@@ -103,7 +105,9 @@ class LocalPipelineEngine:
             )
             raise
         finally:
+            self._advance_review_output_revisions(project_id, run_started_at)
             self._finalize_rerender_scope(project_id)
+            self._refresh_review_outputs(project_id)
             self._cleanup_project_services(project_id)
         return self.project_service.require_snapshot(project_id)
 
@@ -402,6 +406,50 @@ class LocalPipelineEngine:
         snapshot.project.metadata["rerender_history"] = history[-10:]
         snapshot.project.metadata["rerender_requested"] = False
         self.project_service.save_snapshot(snapshot)
+
+    def _advance_review_output_revisions(self, project_id: str, run_started_at: str) -> None:
+        try:
+            snapshot = self.project_service.require_snapshot(project_id)
+        except KeyError:
+            return
+        changed_shot_ids = {
+            str(artifact.metadata.get("shot_id"))
+            for artifact in snapshot.artifacts
+            if artifact.kind in {"shot_video", "shot_lipsync_video"}
+            and artifact.metadata.get("shot_id")
+            and self._artifact_created_after(artifact.created_at, run_started_at)
+        }
+        if not changed_shot_ids:
+            return
+        changed_scene_ids: set[str] = set()
+        for scene in snapshot.scenes:
+            for shot in scene.shots:
+                if shot.shot_id not in changed_shot_ids:
+                    continue
+                shot.review.status = "pending_review"
+                shot.review.updated_at = utc_now()
+                shot.review.reviewer = None
+                shot.review.note = None
+                shot.review.reason = "new_output_revision"
+                shot.review.output_revision += 1
+                shot.review.approved_revision = None
+                shot.review.canonical_artifacts = []
+                shot.review.last_review_id = None
+                changed_scene_ids.add(scene.scene_id)
+        if changed_scene_ids:
+            self.project_service._sync_scene_review_states(snapshot, scene_ids=changed_scene_ids)
+        self.project_service.save_snapshot(snapshot)
+
+    def _refresh_review_outputs(self, project_id: str) -> None:
+        try:
+            snapshot = self.project_service.require_snapshot(project_id)
+        except KeyError:
+            return
+        self.project_service.refresh_review_artifacts(snapshot)
+
+    @staticmethod
+    def _artifact_created_after(created_at: str, threshold: str) -> bool:
+        return datetime.fromisoformat(created_at) >= datetime.fromisoformat(threshold)
 
     def _require_job(self, snapshot: ProjectSnapshot, kind: str):
         for job in snapshot.jobs:

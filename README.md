@@ -46,6 +46,7 @@ The current codebase restores:
 - a public preset catalog endpoint plus preset-aware product-readiness reporting for release-gate coverage
 - a deliverables packaging layer that now emits `deliverables_manifest.json` and `deliverables_package.zip` next to the final render outputs
 - a selective rerender loop that can restart a project from a chosen stage for selected scenes or shots instead of rerunning the whole project from intake
+- a review loop with scene or shot approval, `needs_rerender` state, revision-aware invalidation after new outputs, and a canonical `review_manifest.json` that is also packaged into deliverables
 - real `FFmpeg` shot composition and final portrait render assembly with a default `720x1280` master profile
 - `ffprobe`-backed QC on the produced media artifacts
 - filesystem-backed GPU lease tracking for single-GPU scheduling visibility
@@ -159,6 +160,7 @@ Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/projects/preset
 
 - final video: `runtime/artifacts/<project_id>/renders/final.mp4`
 - subtitles: `runtime/artifacts/<project_id>/subtitles/`
+- review manifest: `runtime/artifacts/<project_id>/renders/review_manifest.json`
 - deliverables package: `runtime/artifacts/<project_id>/renders/deliverables_package.zip`
 - deliverables manifest: `runtime/artifacts/<project_id>/renders/deliverables_manifest.json`
 - manifests and logs: `runtime/artifacts/<project_id>/` and `runtime/logs/<project_id>/`
@@ -169,7 +171,7 @@ You can also inspect the packaged outputs directly through the API:
 Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/projects/<project_id>/deliverables"
 ```
 
-That endpoint returns the latest resolved paths for `final_video`, `poster`, subtitle files, the final render manifest, the scene preview sheet, the project archive, and the packaged deliverables zip.
+That endpoint returns the latest resolved paths for `final_video`, `poster`, subtitle files, the final render manifest, the scene preview sheet, the project archive, the current `review_manifest`, and the packaged deliverables zip.
 
 If a review only needs one scene or one shot to be regenerated, the control plane now supports selective rerender from a chosen stage:
 
@@ -188,6 +190,28 @@ Invoke-RestMethod `
 ```
 
 The rerender request rewinds only the selected downstream stages, runs the project again, and persists both `last_rerender_scope` and bounded `rerender_history` in project metadata for operator review.
+
+You can inspect or update review state directly through the control plane:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/projects/<project_id>/review"
+```
+
+```powershell
+$body = @{
+  status = "approved"
+  note = "shot is good to ship"
+  reviewer = "operator"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://127.0.0.1:8000/api/v1/projects/<project_id>/shots/<shot_id>/review" `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+`needs_rerender` review actions can also stage a downstream rerender automatically through `request_rerender=true`, and the review loop keeps approved shots out of scene-level rerenders unless they are explicitly targeted again.
 
 This path is the best starting point for anyone cloning the repo for the first time because it exercises the real control plane, worker, manifests, and final render flow without requiring every optional backend to be bootstrapped first.
 
@@ -370,6 +394,9 @@ set FILMSTUDIO_GPU_LEASE_WAIT_TIMEOUT_SEC=300.0
 - `GET /api/v1/projects/{project_id}/job-attempts/{attempt_id}/manifest`
 - `GET /api/v1/projects/{project_id}/artifacts`
 - `POST /api/v1/projects/{project_id}/run`
+- `GET /api/v1/projects/{project_id}/review`
+- `POST /api/v1/projects/{project_id}/shots/{shot_id}/review`
+- `POST /api/v1/projects/{project_id}/scenes/{scene_id}/review`
 - `GET /api/v1/projects/{project_id}/qc-reports`
 - `GET /api/v1/projects/{project_id}/recovery-plans`
 

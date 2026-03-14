@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -12,12 +13,16 @@ from filmstudio.domain.models import (
     ProjectSnapshot,
     QCReportRecord,
     RecoveryPlanRecord,
+    ReviewRecord,
+    ReviewState,
+    ReviewUpdateRequest,
     SelectiveRerenderRequest,
     new_id,
     utc_now,
 )
 from filmstudio.domain.service_contracts import PIPELINE_STAGE_ORDER, STAGE_QUEUE_MAP
 from filmstudio.services.planner_service import PlannerService, PlanningBundle
+from filmstudio.services.review_manifest import build_review_manifest, build_review_summary
 from filmstudio.storage.artifact_store import ArtifactStore
 from filmstudio.storage.sqlite_store import SqliteSnapshotStore
 
@@ -260,11 +265,9 @@ class ProjectService:
         self.snapshot_store.save_snapshot(snapshot)
         return snapshot
 
-    def build_deliverables_view(self, snapshot: ProjectSnapshot) -> dict[str, object]:
-        latest_by_kind: dict[str, ArtifactRecord] = {}
-        for artifact in snapshot.artifacts:
-            latest_by_kind[artifact.kind] = artifact
-        deliverable_order = [
+    @staticmethod
+    def _deliverable_order() -> list[str]:
+        return [
             "final_video",
             "poster",
             "subtitle_srt",
@@ -272,12 +275,23 @@ class ProjectService:
             "final_render_manifest",
             "scene_preview_sheet",
             "project_archive",
+            "review_manifest",
             "deliverables_manifest",
             "deliverables_package",
         ]
+
+    @staticmethod
+    def _latest_artifacts_by_kind(snapshot: ProjectSnapshot) -> dict[str, ArtifactRecord]:
+        latest_by_kind: dict[str, ArtifactRecord] = {}
+        for artifact in snapshot.artifacts:
+            latest_by_kind[artifact.kind] = artifact
+        return latest_by_kind
+
+    def build_deliverables_view(self, snapshot: ProjectSnapshot) -> dict[str, object]:
+        latest_by_kind = self._latest_artifacts_by_kind(snapshot)
         items: list[dict[str, object]] = []
         named: dict[str, dict[str, object]] = {}
-        for kind in deliverable_order:
+        for kind in self._deliverable_order():
             artifact = latest_by_kind.get(kind)
             if artifact is None:
                 continue
@@ -295,11 +309,418 @@ class ProjectService:
             "status": snapshot.project.status,
             "ready": all(
                 bool(named.get(kind, {}).get("exists"))
-                for kind in ("final_video", "poster", "deliverables_manifest", "deliverables_package")
+                for kind in (
+                    "final_video",
+                    "poster",
+                    "review_manifest",
+                    "deliverables_manifest",
+                    "deliverables_package",
+                )
             ),
             "items": items,
             "named": named,
+            "review_summary": build_review_summary(snapshot),
         }
+
+    def build_review_view(self, snapshot: ProjectSnapshot) -> dict[str, object]:
+        return build_review_manifest(snapshot)
+
+    def apply_shot_review(
+        self,
+        project_id: str,
+        shot_id: str,
+        payload: ReviewUpdateRequest,
+    ) -> ProjectSnapshot:
+        snapshot = self.require_snapshot(project_id)
+        scene, shot = self._find_scene_and_shot(snapshot, shot_id)
+        review_id = new_id("review")
+        previous_status = shot.review.status
+        shot.review = self._updated_review_state(
+            shot.review,
+            review_id=review_id,
+            status=payload.status,
+            reviewer=payload.reviewer,
+            note=payload.note,
+            reason=payload.reason,
+            canonical_artifacts=(
+                self._canonical_shot_artifacts(snapshot, shot_id)
+                if payload.status == "approved"
+                else []
+            ),
+        )
+        snapshot.review_records.append(
+            ReviewRecord(
+                review_id=review_id,
+                target_kind="shot",
+                target_id=shot_id,
+                scene_id=scene.scene_id,
+                shot_id=shot_id,
+                status=payload.status,
+                previous_status=previous_status,
+                reviewer=payload.reviewer,
+                note=payload.note.strip() or None,
+                reason=payload.reason.strip() or payload.status,
+                output_revision=shot.review.output_revision,
+                approved_revision=shot.review.approved_revision,
+                canonical_artifacts=list(shot.review.canonical_artifacts),
+            )
+        )
+        self._sync_scene_review_states(snapshot, scene_ids={scene.scene_id})
+        snapshot = self.save_snapshot(snapshot)
+        if payload.request_rerender:
+            if payload.status != "needs_rerender":
+                raise RuntimeError("request_rerender requires status='needs_rerender'.")
+            snapshot = self.prepare_selective_rerender(
+                project_id,
+                SelectiveRerenderRequest(
+                    start_stage=payload.start_stage,
+                    shot_ids=[shot_id],
+                    reason=payload.reason.strip() or "review_needs_rerender",
+                    run_immediately=payload.run_immediately,
+                ),
+            )
+        return self.refresh_review_artifacts(snapshot)
+
+    def apply_scene_review(
+        self,
+        project_id: str,
+        scene_id: str,
+        payload: ReviewUpdateRequest,
+    ) -> ProjectSnapshot:
+        snapshot = self.require_snapshot(project_id)
+        scene = self._find_scene(snapshot, scene_id)
+        review_id = new_id("review")
+        previous_status = scene.review.status
+        for shot in scene.shots:
+            shot.review = self._updated_review_state(
+                shot.review,
+                review_id=review_id,
+                status=payload.status,
+                reviewer=payload.reviewer,
+                note=payload.note,
+                reason=payload.reason,
+                canonical_artifacts=(
+                    self._canonical_shot_artifacts(snapshot, shot.shot_id)
+                    if payload.status == "approved"
+                    else []
+                ),
+            )
+        scene.review = self._updated_review_state(
+            scene.review,
+            review_id=review_id,
+            status=payload.status,
+            reviewer=payload.reviewer,
+            note=payload.note,
+            reason=payload.reason,
+            canonical_artifacts=(
+                self._canonical_scene_artifacts(snapshot, scene_id)
+                if payload.status == "approved"
+                else []
+            ),
+            output_revision=max((shot.review.output_revision for shot in scene.shots), default=0),
+        )
+        snapshot.review_records.append(
+            ReviewRecord(
+                review_id=review_id,
+                target_kind="scene",
+                target_id=scene_id,
+                scene_id=scene_id,
+                status=payload.status,
+                previous_status=previous_status,
+                reviewer=payload.reviewer,
+                note=payload.note.strip() or None,
+                reason=payload.reason.strip() or payload.status,
+                output_revision=scene.review.output_revision,
+                approved_revision=scene.review.approved_revision,
+                canonical_artifacts=list(scene.review.canonical_artifacts),
+                metadata={"shot_ids": [shot.shot_id for shot in scene.shots]},
+            )
+        )
+        self._sync_scene_review_states(snapshot, scene_ids={scene_id}, preserve_explicit_scene_state=True)
+        snapshot = self.save_snapshot(snapshot)
+        if payload.request_rerender:
+            if payload.status != "needs_rerender":
+                raise RuntimeError("request_rerender requires status='needs_rerender'.")
+            snapshot = self.prepare_selective_rerender(
+                project_id,
+                SelectiveRerenderRequest(
+                    start_stage=payload.start_stage,
+                    scene_ids=[scene_id],
+                    reason=payload.reason.strip() or "review_needs_rerender",
+                    run_immediately=payload.run_immediately,
+                ),
+            )
+        return self.refresh_review_artifacts(snapshot)
+
+    def refresh_review_artifacts(self, snapshot: ProjectSnapshot) -> ProjectSnapshot:
+        review_manifest_payload = build_review_manifest(snapshot)
+        review_manifest_path = self.artifact_store.write_json(
+            snapshot.project.project_id,
+            "renders/review_manifest.json",
+            review_manifest_payload,
+        )
+        snapshot.artifacts.append(
+            ArtifactRecord(
+                artifact_id=new_id("artifact"),
+                kind="review_manifest",
+                path=str(review_manifest_path),
+                stage="review_loop",
+                metadata={"summary": review_manifest_payload["summary"]},
+            )
+        )
+
+        latest_by_kind = self._latest_artifacts_by_kind(snapshot)
+        required_for_package = {
+            "final_video",
+            "poster",
+            "subtitle_srt",
+            "scene_preview_sheet",
+            "project_archive",
+            "final_render_manifest",
+        }
+        if not required_for_package.issubset(latest_by_kind):
+            return self.save_snapshot(snapshot)
+
+        subtitle_ass_artifact = latest_by_kind.get("subtitle_ass")
+        deliverable_files = [
+            {
+                "kind": "final_video",
+                "path": latest_by_kind["final_video"].path,
+                "archive_path": "deliverables/final/final.mp4",
+            },
+            {
+                "kind": "poster",
+                "path": latest_by_kind["poster"].path,
+                "archive_path": "deliverables/marketing/poster.png",
+            },
+            {
+                "kind": "subtitle_srt",
+                "path": latest_by_kind["subtitle_srt"].path,
+                "archive_path": "deliverables/subtitles/full.srt",
+            },
+            {
+                "kind": "subtitle_ass",
+                "path": subtitle_ass_artifact.path if subtitle_ass_artifact is not None else None,
+                "archive_path": "deliverables/subtitles/full.ass",
+            },
+            {
+                "kind": "scene_preview_sheet",
+                "path": latest_by_kind["scene_preview_sheet"].path,
+                "archive_path": "deliverables/previews/scene_preview_sheet.json",
+            },
+            {
+                "kind": "project_archive",
+                "path": latest_by_kind["project_archive"].path,
+                "archive_path": "deliverables/archive/project_archive.json",
+            },
+            {
+                "kind": "final_render_manifest",
+                "path": latest_by_kind["final_render_manifest"].path,
+                "archive_path": "deliverables/manifests/final_render_manifest.json",
+            },
+            {
+                "kind": "review_manifest",
+                "path": str(review_manifest_path),
+                "archive_path": "deliverables/reviews/review_manifest.json",
+            },
+        ]
+        render_profile = dict(snapshot.project.metadata.get("render_profile") or {})
+        deliverables_manifest_payload = {
+            "project_id": snapshot.project.project_id,
+            "title": snapshot.project.title,
+            "status": "packaged",
+            "render_profile": render_profile,
+            "review_summary": review_manifest_payload["summary"],
+            "items": [
+                {
+                    **item,
+                    "exists": bool(item["path"]) and Path(str(item["path"])).exists(),
+                }
+                for item in deliverable_files
+                if item["path"]
+            ],
+        }
+        deliverables_manifest_path = self.artifact_store.write_json(
+            snapshot.project.project_id,
+            "renders/deliverables_manifest.json",
+            deliverables_manifest_payload,
+        )
+        deliverables_package_path = self.artifact_store.project_dir(snapshot.project.project_id) / (
+            "renders/deliverables_package.zip"
+        )
+        with zipfile.ZipFile(
+            deliverables_package_path,
+            mode="w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as archive_zip:
+            archive_zip.write(
+                deliverables_manifest_path,
+                arcname="deliverables/manifests/deliverables_manifest.json",
+            )
+            for item in deliverable_files:
+                source_path = item["path"]
+                if not source_path:
+                    continue
+                source = Path(str(source_path))
+                if not source.exists():
+                    continue
+                archive_zip.write(source, arcname=str(item["archive_path"]))
+        snapshot.artifacts.extend(
+            [
+                ArtifactRecord(
+                    artifact_id=new_id("artifact"),
+                    kind="deliverables_manifest",
+                    path=str(deliverables_manifest_path),
+                    stage="review_loop",
+                    metadata={"review_summary": review_manifest_payload["summary"]},
+                ),
+                ArtifactRecord(
+                    artifact_id=new_id("artifact"),
+                    kind="deliverables_package",
+                    path=str(deliverables_package_path),
+                    stage="review_loop",
+                    metadata={"includes_review_manifest": True},
+                ),
+            ]
+        )
+        return self.save_snapshot(snapshot)
+
+    @staticmethod
+    def _find_scene(snapshot: ProjectSnapshot, scene_id: str):
+        for scene in snapshot.scenes:
+            if scene.scene_id == scene_id:
+                return scene
+        raise KeyError(scene_id)
+
+    @classmethod
+    def _find_scene_and_shot(cls, snapshot: ProjectSnapshot, shot_id: str):
+        for scene in snapshot.scenes:
+            for shot in scene.shots:
+                if shot.shot_id == shot_id:
+                    return scene, shot
+        raise KeyError(shot_id)
+
+    @staticmethod
+    def _updated_review_state(
+        state: ReviewState,
+        *,
+        review_id: str,
+        status: str,
+        reviewer: str,
+        note: str,
+        reason: str,
+        canonical_artifacts: list[dict[str, object]],
+        output_revision: int | None = None,
+    ) -> ReviewState:
+        next_output_revision = state.output_revision if output_revision is None else output_revision
+        next_state = ReviewState(
+            status=status,
+            updated_at=utc_now(),
+            reviewer=reviewer.strip() or None,
+            note=note.strip() or None,
+            reason=reason.strip() or status,
+            output_revision=next_output_revision,
+            approved_revision=(
+                next_output_revision
+                if status == "approved"
+                else None
+            ),
+            canonical_artifacts=list(canonical_artifacts),
+            last_review_id=review_id,
+        )
+        return next_state
+
+    def _sync_scene_review_states(
+        self,
+        snapshot: ProjectSnapshot,
+        *,
+        scene_ids: set[str] | None = None,
+        preserve_explicit_scene_state: bool = False,
+    ) -> None:
+        target_scene_ids = scene_ids or {scene.scene_id for scene in snapshot.scenes}
+        for scene in snapshot.scenes:
+            if scene.scene_id not in target_scene_ids:
+                continue
+            shot_statuses = {shot.review.status for shot in scene.shots}
+            if not shot_statuses:
+                continue
+            if shot_statuses == {"approved"}:
+                derived_status = "approved"
+            elif "needs_rerender" in shot_statuses:
+                derived_status = "needs_rerender"
+            else:
+                derived_status = "pending_review"
+            canonical_artifacts = (
+                self._canonical_scene_artifacts(snapshot, scene.scene_id)
+                if derived_status == "approved"
+                else []
+            )
+            note = scene.review.note or ""
+            reason = scene.review.reason or "aggregated_from_shots"
+            reviewer = scene.review.reviewer or "operator"
+            if preserve_explicit_scene_state and scene.review.status == derived_status:
+                canonical_artifacts = (
+                    list(scene.review.canonical_artifacts)
+                    if derived_status == "approved"
+                    else []
+                )
+            scene.review = self._updated_review_state(
+                scene.review,
+                review_id=scene.review.last_review_id or new_id("review"),
+                status=derived_status,
+                reviewer=reviewer,
+                note=note,
+                reason=reason,
+                canonical_artifacts=canonical_artifacts,
+                output_revision=max((shot.review.output_revision for shot in scene.shots), default=0),
+            )
+
+    @staticmethod
+    def _latest_shot_artifact(
+        snapshot: ProjectSnapshot,
+        *,
+        kind: str,
+        shot_id: str,
+    ) -> ArtifactRecord | None:
+        for artifact in reversed(snapshot.artifacts):
+            if artifact.kind == kind and artifact.metadata.get("shot_id") == shot_id:
+                return artifact
+        return None
+
+    def _canonical_shot_artifacts(
+        self,
+        snapshot: ProjectSnapshot,
+        shot_id: str,
+    ) -> list[dict[str, object]]:
+        artifacts: list[dict[str, object]] = []
+        preferred_video = self._latest_shot_artifact(snapshot, kind="shot_lipsync_video", shot_id=shot_id)
+        if preferred_video is None:
+            preferred_video = self._latest_shot_artifact(snapshot, kind="shot_video", shot_id=shot_id)
+        render_manifest = self._latest_shot_artifact(snapshot, kind="shot_render_manifest", shot_id=shot_id)
+        lipsync_manifest = self._latest_shot_artifact(snapshot, kind="lipsync_manifest", shot_id=shot_id)
+        for artifact in (preferred_video, render_manifest, lipsync_manifest):
+            if artifact is None:
+                continue
+            artifacts.append(
+                {
+                    "kind": artifact.kind,
+                    "path": artifact.path,
+                    "stage": artifact.stage,
+                    "metadata": artifact.metadata,
+                }
+            )
+        return artifacts
+
+    def _canonical_scene_artifacts(
+        self,
+        snapshot: ProjectSnapshot,
+        scene_id: str,
+    ) -> list[dict[str, object]]:
+        scene = self._find_scene(snapshot, scene_id)
+        scene_artifacts: list[dict[str, object]] = []
+        for shot in scene.shots:
+            scene_artifacts.extend(self._canonical_shot_artifacts(snapshot, shot.shot_id))
+        return scene_artifacts
 
     def prepare_selective_rerender(
         self,
@@ -334,9 +755,15 @@ class ProjectService:
             for shot_id in requested_shot_ids
         }
         for scene_id in requested_scene_ids:
-            target_shot_ids.update(shot.shot_id for shot in scenes_by_id[scene_id].shots)
+            target_shot_ids.update(
+                shot.shot_id
+                for shot in scenes_by_id[scene_id].shots
+                if shot.review.status != "approved" or shot.shot_id in target_shot_ids
+            )
         if not target_shot_ids:
-            raise RuntimeError("Selective rerender requires at least one scene_id or shot_id.")
+            raise RuntimeError(
+                "Selective rerender has no remaining targets after excluding approved shots."
+            )
 
         target_scene_ids = {
             shots_by_id[shot_id].scene_id

@@ -159,6 +159,7 @@ def test_deliverables_and_selective_rerender_endpoints() -> None:
     deliverables_payload = deliverables_response.json()
     assert deliverables_payload["ready"] is True
     assert deliverables_payload["named"]["final_video"]["exists"] is True
+    assert deliverables_payload["named"]["review_manifest"]["exists"] is True
     assert deliverables_payload["named"]["deliverables_manifest"]["exists"] is True
     assert deliverables_payload["named"]["deliverables_package"]["exists"] is True
 
@@ -177,6 +178,68 @@ def test_deliverables_and_selective_rerender_endpoints() -> None:
         target_shot_id
     ]
     assert rerendered_snapshot["project"]["metadata"]["last_rerender_scope"]["start_stage"] == "render_shots"
+
+
+def test_review_endpoints_apply_state_and_stage_rerender() -> None:
+    client = TestClient(create_app())
+    create_response = client.post(
+        "/api/v1/projects",
+        json={
+            "title": "Review endpoints",
+            "script": "SCENE 1. HERO hovoryt.\nHERO: Pershyi shot.\n\nSCENE 2. FRIEND hovoryt.\nFRIEND: Druhyi shot.",
+            "language": "uk",
+        },
+    )
+    assert create_response.status_code == 200
+    project_id = create_response.json()["project"]["project_id"]
+    run_response = client.post(f"/api/v1/projects/{project_id}/run")
+    assert run_response.status_code == 200
+    snapshot = run_response.json()
+    shot_id = snapshot["scenes"][0]["shots"][0]["shot_id"]
+    scene_id = snapshot["scenes"][0]["scene_id"]
+
+    review_response = client.get(f"/api/v1/projects/{project_id}/review")
+    assert review_response.status_code == 200
+    review_payload = review_response.json()
+    assert review_payload["summary"]["pending_review_shot_count"] >= 1
+
+    approve_response = client.post(
+        f"/api/v1/projects/{project_id}/shots/{shot_id}/review",
+        json={
+            "status": "approved",
+            "note": "shot approved",
+            "reviewer": "qa",
+        },
+    )
+    assert approve_response.status_code == 200
+    approved_payload = approve_response.json()
+    approved_shot = next(
+        shot
+        for scene in approved_payload["scenes"]
+        for shot in scene["shots"]
+        if shot["shot_id"] == shot_id
+    )
+    assert approved_shot["review"]["status"] == "approved"
+    assert approved_shot["review"]["reviewer"] == "qa"
+
+    rerender_stage_response = client.post(
+        f"/api/v1/projects/{project_id}/scenes/{scene_id}/review",
+        json={
+            "status": "needs_rerender",
+            "note": "scene needs rework",
+            "request_rerender": True,
+            "run_immediately": False,
+            "start_stage": "render_shots",
+        },
+    )
+    assert rerender_stage_response.status_code == 200
+    staged_payload = rerender_stage_response.json()
+    assert staged_payload["summary"]["needs_rerender_scene_count"] >= 1
+
+    project_response = client.get(f"/api/v1/projects/{project_id}")
+    assert project_response.status_code == 200
+    project_payload = project_response.json()
+    assert project_payload["project"]["metadata"]["active_rerender_scope"]["scene_ids"] == [scene_id]
 
 
 def test_create_project_rejects_unknown_planner_backend() -> None:

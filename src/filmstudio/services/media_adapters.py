@@ -60,6 +60,7 @@ from filmstudio.services.runtime_support import (
     run_command,
     summarize_probe,
 )
+from filmstudio.services.review_manifest import build_review_manifest, build_review_summary
 from filmstudio.storage.artifact_store import ArtifactStore
 
 
@@ -5513,6 +5514,12 @@ class DeterministicMediaAdapters:
                 ],
             },
         )
+        review_manifest_payload = build_review_manifest(snapshot)
+        review_manifest_path = self.artifact_store.write_json(
+            project_id,
+            "renders/review_manifest.json",
+            review_manifest_payload,
+        )
         deliverable_files = [
             {
                 "kind": "final_video",
@@ -5545,6 +5552,11 @@ class DeterministicMediaAdapters:
                 "archive_path": "deliverables/archive/project_archive.json",
             },
             {
+                "kind": "review_manifest",
+                "path": str(review_manifest_path),
+                "archive_path": "deliverables/reviews/review_manifest.json",
+            },
+            {
                 "kind": "final_render_manifest",
                 "path": str(final_manifest_path),
                 "archive_path": "deliverables/manifests/final_render_manifest.json",
@@ -5561,6 +5573,7 @@ class DeterministicMediaAdapters:
                 "orientation": self._render_orientation(),
                 "aspect_ratio": self._render_aspect_ratio_label(),
             },
+            "review_summary": build_review_summary(snapshot),
             "items": [
                 {
                     **item,
@@ -5643,6 +5656,13 @@ class DeterministicMediaAdapters:
                 ),
                 ArtifactRecord(
                     artifact_id=new_id("artifact"),
+                    kind="review_manifest",
+                    path=str(review_manifest_path),
+                    stage="compose_project",
+                    metadata={"summary": review_manifest_payload["summary"]},
+                ),
+                ArtifactRecord(
+                    artifact_id=new_id("artifact"),
                     kind="deliverables_manifest",
                     path=str(deliverables_manifest_path),
                     stage="compose_project",
@@ -5704,6 +5724,7 @@ class DeterministicMediaAdapters:
             "poster",
             "scene_preview_sheet",
             "project_archive",
+            "review_manifest",
             "deliverables_manifest",
             "deliverables_package",
         }
@@ -5876,6 +5897,19 @@ class DeterministicMediaAdapters:
                     message="Deliverables package zip was not created.",
                 )
             )
+
+        review_manifest_artifact = self._find_artifact(snapshot, "review_manifest")
+        if review_manifest_artifact is not None:
+            review_manifest = json.loads(Path(review_manifest_artifact.path).read_text(encoding="utf-8"))
+            review_summary = review_manifest.get("summary", {})
+            if not review_summary or int(review_summary.get("shot_count", 0) or 0) <= 0:
+                findings.append(
+                    QCFindingRecord(
+                        code="review_manifest_empty",
+                        severity="error",
+                        message="Review manifest does not describe any reviewed shots.",
+                    )
+                )
 
         subtitle_visibility_summary: dict[str, Any] = {}
         if subtitle_layout_artifact is not None and subtitle_layout_summary:

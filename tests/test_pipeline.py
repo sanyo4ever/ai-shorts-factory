@@ -1,5 +1,6 @@
 import json
 import sys
+import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from filmstudio.domain.models import (
     DialogueLine,
     ProjectCreateRequest,
     SelectiveRerenderRequest,
+    ReviewUpdateRequest,
     new_id,
 )
 from filmstudio.services.media_adapters import DeterministicMediaAdapters
@@ -54,6 +56,7 @@ def test_local_pipeline_completes_and_emits_qc(tmp_path) -> None:
     assert any(artifact.kind == "subtitle_layout_manifest" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "subtitle_visibility_probe" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "final_render_manifest" for artifact in final_snapshot.artifacts)
+    assert any(artifact.kind == "review_manifest" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "deliverables_manifest" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "deliverables_package" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "product_preset" for artifact in final_snapshot.artifacts)
@@ -163,6 +166,145 @@ def test_selective_rerender_rebuilds_only_targeted_shot_outputs(tmp_path) -> Non
         for artifact in rerendered_snapshot.artifacts
         if artifact.kind == "shot_video" and artifact.metadata.get("shot_id") == untouched_shot_id
     ) == original_untouched_video_count
+
+
+def test_review_manifest_is_packaged_in_deliverables(tmp_path) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="Review manifest package",
+            script="HERO: Pryvit!\nFRIEND: Vitayu!",
+            language="uk",
+        )
+    )
+    engine = LocalPipelineEngine(
+        service,
+        DeterministicMediaAdapters(artifact_store),
+        AttemptLogStore(runtime_root / "logs"),
+        gpu_lease_store=GpuLeaseStore(runtime_root / "manifests" / "gpu_leases"),
+    )
+    final_snapshot = engine.run_project(snapshot.project.project_id)
+    package_path = Path(
+        next(artifact.path for artifact in final_snapshot.artifacts if artifact.kind == "deliverables_package")
+    )
+    assert package_path.exists()
+    with zipfile.ZipFile(package_path) as archive_zip:
+        assert "deliverables/reviews/review_manifest.json" in archive_zip.namelist()
+        review_manifest = json.loads(
+            archive_zip.read("deliverables/reviews/review_manifest.json").decode("utf-8")
+        )
+    assert review_manifest["summary"]["pending_review_shot_count"] >= 1
+
+
+def test_prepare_selective_rerender_skips_approved_scene_shots(tmp_path) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="Approved shots are skipped",
+            script=(
+                "SCENE 1. HERO hovoryt do kamery.\nHERO: Pershyi shot.\n\n"
+                "SCENE 2. FRIEND hovoryt do kamery.\nFRIEND: Druhyi shot."
+            ),
+            language="uk",
+        )
+    )
+    first_scene = snapshot.scenes[0]
+    second_scene = snapshot.scenes[1]
+    second_shot = second_scene.shots[0]
+    second_shot.scene_id = first_scene.scene_id
+    first_scene.shots.append(second_shot)
+    snapshot.scenes = [first_scene]
+    service.save_snapshot(snapshot)
+
+    first_shot_id = first_scene.shots[0].shot_id
+    second_shot_id = first_scene.shots[1].shot_id
+    service.apply_shot_review(
+        snapshot.project.project_id,
+        first_shot_id,
+        ReviewUpdateRequest(status="approved", note="lock this shot"),
+    )
+    rerender_snapshot = service.prepare_selective_rerender(
+        snapshot.project.project_id,
+        SelectiveRerenderRequest(
+            start_stage="render_shots",
+            scene_ids=[first_scene.scene_id],
+            reason="scene_refresh",
+            run_immediately=False,
+        ),
+    )
+    assert rerender_snapshot.project.metadata["active_rerender_scope"]["shot_ids"] == [second_shot_id]
+
+
+def test_rerendered_shot_returns_to_pending_review_with_new_output_revision(tmp_path) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="Review revision invalidation",
+            script="SCENE 1. HERO hovoryt.\nHERO: Pershyi shot.\n\nSCENE 2. FRIEND hovoryt.\nFRIEND: Druhyi shot.",
+            language="uk",
+        )
+    )
+    engine = LocalPipelineEngine(
+        service,
+        DeterministicMediaAdapters(artifact_store),
+        AttemptLogStore(runtime_root / "logs"),
+        gpu_lease_store=GpuLeaseStore(runtime_root / "manifests" / "gpu_leases"),
+    )
+    first_snapshot = engine.run_project(snapshot.project.project_id)
+    shot_id = first_snapshot.scenes[0].shots[0].shot_id
+    service.apply_shot_review(
+        first_snapshot.project.project_id,
+        shot_id,
+        ReviewUpdateRequest(status="approved", note="approved before rerender"),
+    )
+    approved_snapshot = service.require_snapshot(first_snapshot.project.project_id)
+    approved_shot = next(
+        shot
+        for scene in approved_snapshot.scenes
+        for shot in scene.shots
+        if shot.shot_id == shot_id
+    )
+    previous_revision = approved_shot.review.output_revision
+
+    service.prepare_selective_rerender(
+        approved_snapshot.project.project_id,
+        SelectiveRerenderRequest(
+            start_stage="render_shots",
+            shot_ids=[shot_id],
+            reason="review_rerender",
+            run_immediately=False,
+        ),
+    )
+    rerendered_snapshot = engine.run_project(approved_snapshot.project.project_id)
+    rerendered_shot = next(
+        shot
+        for scene in rerendered_snapshot.scenes
+        for shot in scene.shots
+        if shot.shot_id == shot_id
+    )
+
+    assert rerendered_shot.review.status == "pending_review"
+    assert rerendered_shot.review.output_revision == previous_revision + 1
+    assert rerendered_shot.review.approved_revision is None
+    assert rerendered_snapshot.project.metadata["last_rerender_scope"]["shot_ids"] == [shot_id]
 
 
 def test_stage_service_requirements_follow_backend_profile(tmp_path) -> None:
