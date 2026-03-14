@@ -41,6 +41,7 @@ The current codebase restores:
 - layout-aware subtitle artifacts with `ASS` burn-in and per-cue safe-zone geometry manifests for vertical shorts
 - frame-diff subtitle visibility QC that samples cue boxes on `video_track` vs `subtitle_video_track` to confirm burned subtitles are visually present where the layout manifest expects them
 - dedicated subtitle-lane campaign tooling for `hero_insert` top-lane verification, with per-run lane summaries and aggregate visibility reports
+- dedicated product-readiness campaign tooling for broader real-script verification across multiple vertical-short categories, with case-level topology expectations and aggregate readiness metrics
 - real `FFmpeg` shot composition and final portrait render assembly with a default `720x1280` master profile
 - `ffprobe`-backed QC on the produced media artifacts
 - filesystem-backed GPU lease tracking for single-GPU scheduling visibility
@@ -56,7 +57,10 @@ The system is intended to turn a screenplay into a finished animated film throug
 
 The target architecture remains workflow-first, quality-first, and local self-hosted, with vertical `9:16` shorts as the default delivery profile, a preferred `720x1280` master render, strong observability across every stage, and no automatic quality-degrading fallbacks. Lower render or backend resolutions are allowed only through explicit configuration when this workstation needs them.
 
-Current verified one-box milestone on this workstation: a fresh mixed-stack dry run under `runtime/campaigns/full_dry_run_v8/` completed end to end with `ComfyUI + Piper + Wan + MuseTalk + ACE-Step + FFmpeg/QC`, `720x1280` output, `QC passed`, and `qc_finding_counts={}`.
+Current verified one-box milestones on this workstation:
+
+- a fresh mixed-stack dry run under `runtime/campaigns/full_dry_run_v8/` completed end to end with `ComfyUI + Piper + Wan + MuseTalk + ACE-Step + FFmpeg/QC`, `720x1280` output, `QC passed`, and `qc_finding_counts={}`
+- a broader 3-case product-readiness suite under `runtime/campaigns/product_readiness_v3_green/` completed `3/3` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, and `qc_finding_counts={}`
 
 ## License
 
@@ -176,6 +180,14 @@ Run the local worker pipeline:
 ```bash
 python scripts/run_local_worker.py <project_id>
 ```
+
+Run the broader product-readiness suite on the verified one-box stack:
+
+```bash
+python scripts/run_product_readiness_campaign.py --campaign-name product_readiness_v3_green
+```
+
+The product-readiness runner uses curated multi-scene vertical-short cases, writes a report under `runtime/campaigns/<campaign_name>/stability_report.json`, and tracks category-aware readiness metrics such as `product_ready_rate`, topology expectations, suite-level strategy or lane coverage, and per-backend participation. The current verified reference run on this workstation is `runtime/campaigns/product_readiness_v3_green/`, which completed `3/3` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, and `qc_finding_counts={}`.
 
 Run a dedicated `hero_insert` top-lane subtitle campaign:
 

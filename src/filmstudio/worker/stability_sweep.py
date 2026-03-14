@@ -60,8 +60,15 @@ class FullDryRunCase:
     title: str
     script: str
     language: str = "uk"
+    category: str = "mixed_stack"
     expected_strategies: tuple[str, ...] = ("portrait_lipsync", "hero_insert")
     expected_subtitle_lanes: tuple[str, ...] = ("top", "bottom")
+    expected_scene_count_min: int = 3
+    expected_character_count_min: int = 1
+    expected_speaker_count_min: int = 1
+    expected_portrait_shot_count_min: int = 1
+    expected_wan_shot_count_min: int = 1
+    expected_music_backend: str | None = "ace_step"
 
 
 DEFAULT_PORTRAIT_STABILITY_CASES: tuple[PortraitStabilityCase, ...] = (
@@ -229,6 +236,58 @@ DEFAULT_FULL_DRY_RUN_CASES: tuple[FullDryRunCase, ...] = (
 )
 
 
+DEFAULT_PRODUCT_READINESS_CASES: tuple[FullDryRunCase, ...] = (
+    FullDryRunCase(
+        slug="solo_creator_hook",
+        title="Product Readiness Solo Creator Hook",
+        category="solo_creator",
+        expected_character_count_min=2,
+        expected_speaker_count_min=2,
+        script=(
+            "SCENE 1. HERO hovoryt pryamo do kamery v studiinomu svitli.\n"
+            "HERO: Za kilka khvylyn tsei servis sklade vertykalnyi short iz planu, holosu, rukhu ta finalnoho montazhu.\n\n"
+            "SCENE 2. HERO run po dakhakh mista, kamera strelyae vpered i trymaie dynamiku v portretnomu kadri.\n"
+            "NARRATOR: Hero insert mae daty rush, chytku syluet i dominuiuchyi subiekt u vertykalnomu framingu.\n\n"
+            "SCENE 3. HERO znovu dyvytsia v kameru i pidsumovuie rezultat.\n"
+            "HERO: U finali my otrymuemo hotovyi short z muzykoiu, subtitramy ta kontrolen yakosti."
+        ),
+    ),
+    FullDryRunCase(
+        slug="duo_dialogue_pivot",
+        title="Product Readiness Duo Dialogue Pivot",
+        category="duo_dialogue",
+        expected_character_count_min=2,
+        expected_speaker_count_min=2,
+        expected_subtitle_lanes=("bottom",),
+        script=(
+            "SCENE 1. HERO ta FRIEND po cherzi dyvliatsia pryamo v kameru, nache obhovoriuiut launch studii.\n"
+            "HERO: Nam potriben kerovanyi pipeline dlia vertykalnykh shortiv.\n"
+            "FRIEND: I kozhna scena mae zalyshaty artefakty dlia spokiinoho debugu.\n\n"
+            "SCENE 2. HERO vryvaietsia v dym i svitlo, robyt rush do kamery i zalyshae za soboiu svitlovyi slid.\n\n"
+            "SCENE 3. FRIEND spokiino dyvytsia v kameru i zakryvaie rozmovu.\n"
+            "FRIEND: Todi finalnyi short vyhlyadaie zibrano, chytko i profesiino."
+        ),
+    ),
+    FullDryRunCase(
+        slug="three_voice_roundtable",
+        title="Product Readiness Three Voice Roundtable",
+        category="three_voice_panel",
+        expected_character_count_min=3,
+        expected_speaker_count_min=3,
+        expected_subtitle_lanes=("bottom",),
+        script=(
+            "SCENE 1. HOST vidkryvaie rozmovu, a HERO ta FRIEND po cherzi dopovniuiut odyn odnoho.\n"
+            "HOST: Nam potribna studiia, de planning, render i QC zbyraiutsia v odyn kerovanyi workflow.\n"
+            "HERO: Todi my ne vhaduiemo, a bachymo, de same shot, subtitle chy muzyka vykhodiat za contract.\n"
+            "FRIEND: I vse tse povynno zavershuvatysia hotovym vertykalnym shortom, a ne naborom promizhnykh demo.\n\n"
+            "SCENE 2. HERO stryb z platformy kriz iskry, kamera trymaie reveal i chutlyvyi vertykalnyi framing.\n\n"
+            "SCENE 3. HOST pidsumovuie rezultat i zakryvaie panel korotkym vysnovkom.\n"
+            "HOST: Yakshcho vsi try holosy, hero insert i finalnyi render skhozhatsia, to produkt hotovyi do nastupnoi kampanii."
+        ),
+    ),
+)
+
+
 def load_portrait_stability_cases(path: Path) -> list[PortraitStabilityCase]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     raw_cases = payload.get("cases", payload) if isinstance(payload, dict) else payload
@@ -263,8 +322,22 @@ def load_full_dry_run_cases(path: Path) -> list[FullDryRunCase]:
         if not isinstance(script, str) or not script.strip():
             raise ValueError(f"Case #{index} is missing a non-empty 'script' in {path}")
         language = str(raw_case.get("language") or "uk")
+        category = str(raw_case.get("category") or "mixed_stack").strip() or "mixed_stack"
         expected_strategies_raw = raw_case.get("expected_strategies")
         expected_subtitle_lanes_raw = raw_case.get("expected_subtitle_lanes")
+        expected_scene_count_min = max(1, int(raw_case.get("expected_scene_count_min") or 3))
+        expected_character_count_min = max(1, int(raw_case.get("expected_character_count_min") or 1))
+        expected_speaker_count_min = max(1, int(raw_case.get("expected_speaker_count_min") or 1))
+        expected_portrait_shot_count_min = max(
+            0, int(raw_case.get("expected_portrait_shot_count_min") or 1)
+        )
+        expected_wan_shot_count_min = max(0, int(raw_case.get("expected_wan_shot_count_min") or 1))
+        expected_music_backend_raw = raw_case.get("expected_music_backend")
+        expected_music_backend = (
+            str(expected_music_backend_raw).strip()
+            if expected_music_backend_raw not in (None, "")
+            else "ace_step"
+        )
         expected_strategies = tuple(
             str(value).strip()
             for value in expected_strategies_raw
@@ -281,8 +354,15 @@ def load_full_dry_run_cases(path: Path) -> list[FullDryRunCase]:
                 title=title,
                 script=script,
                 language=language,
+                category=category,
                 expected_strategies=expected_strategies,
                 expected_subtitle_lanes=expected_subtitle_lanes,
+                expected_scene_count_min=expected_scene_count_min,
+                expected_character_count_min=expected_character_count_min,
+                expected_speaker_count_min=expected_speaker_count_min,
+                expected_portrait_shot_count_min=expected_portrait_shot_count_min,
+                expected_wan_shot_count_min=expected_wan_shot_count_min,
+                expected_music_backend=expected_music_backend,
             )
         )
     return cases
@@ -759,12 +839,57 @@ def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
         for scene in snapshot.scenes
         for shot in scene.shots
     )
+    subtitle_summary = extract_subtitle_lane_summary(snapshot)
+    music_summary = extract_music_summary(snapshot)
+    render_summary = extract_final_render_summary(snapshot)
+    character_names = [
+        str(character.name).strip()
+        for character in snapshot.project.characters
+        if str(character.name).strip()
+    ]
+    dialogue_speakers = sorted(
+        {
+            str(line.character_name).strip()
+            for scene in snapshot.scenes
+            for shot in scene.shots
+            for line in shot.dialogue
+            if str(line.character_name).strip()
+        }
+    )
+    backend_profile = {
+        key: str(snapshot.project.metadata.get(key) or "")
+        for key in (
+            "orchestrator_backend",
+            "planner_backend",
+            "visual_backend",
+            "video_backend",
+            "tts_backend",
+            "music_backend",
+            "lipsync_backend",
+            "subtitle_backend",
+        )
+    }
+    portrait_retry_free = bool(portrait_shots) and all(
+        bool(shot.get("first_attempt_success")) for shot in portrait_shots
+    )
+    portrait_warning_free = bool(portrait_shots) and all(
+        not shot.get("source_face_probe_warnings") and not shot.get("output_face_probe_warnings")
+        for shot in portrait_shots
+    )
+    subtitle_visibility_clean = bool(subtitle_summary.get("visibility_available")) and (
+        int(subtitle_summary.get("sample_count") or 0) > 0
+    ) and int(subtitle_summary.get("visible_count") or 0) == int(subtitle_summary.get("sample_count") or 0)
     return {
         "project_id": snapshot.project.project_id,
         "title": snapshot.project.title,
         "status": snapshot.project.status,
         "final_render_path": final_render_path,
         "final_render_exists": bool(final_render_path and Path(final_render_path).exists()),
+        "backend_profile": backend_profile,
+        "character_names": character_names,
+        "character_count": len(character_names),
+        "dialogue_speakers": dialogue_speakers,
+        "speaker_count": len(dialogue_speakers),
         "scene_count": len(snapshot.scenes),
         "shot_count": sum(len(scene.shots) for scene in snapshot.scenes),
         "shot_strategy_counts": dict(shot_strategy_counts),
@@ -778,10 +903,13 @@ def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
             else None
         ),
         "portrait_shots": portrait_shots,
+        "portrait_retry_free": portrait_retry_free,
+        "portrait_warning_free": portrait_warning_free,
         "wan_shots": wan_shots,
-        "subtitle_summary": extract_subtitle_lane_summary(snapshot),
-        "music_summary": extract_music_summary(snapshot),
-        "render_summary": extract_final_render_summary(snapshot),
+        "subtitle_summary": subtitle_summary,
+        "subtitle_visibility_clean": subtitle_visibility_clean,
+        "music_summary": music_summary,
+        "render_summary": render_summary,
     }
 
 
@@ -811,6 +939,70 @@ def _wan_task_rank(task: str | None) -> int:
         "flf2v-14b": 6,
     }
     return order.get(normalized, 0)
+
+
+def _run_has_expected_strategies(run: dict[str, Any]) -> bool:
+    shot_strategy_counts = run.get("shot_strategy_counts", {})
+    expected_strategies = [
+        str(strategy)
+        for strategy in run.get("expected_strategies", [])
+        if isinstance(strategy, str) and str(strategy).strip()
+    ]
+    if not expected_strategies or not isinstance(shot_strategy_counts, dict):
+        return False
+    return all(int(shot_strategy_counts.get(strategy) or 0) > 0 for strategy in expected_strategies)
+
+
+def _run_has_expected_lanes(run: dict[str, Any]) -> bool:
+    subtitle_summary = run.get("subtitle_summary", {})
+    lane_count_payload = subtitle_summary.get("lane_counts", {}) if isinstance(subtitle_summary, dict) else {}
+    expected_subtitle_lanes = [
+        str(lane).lower()
+        for lane in run.get("expected_subtitle_lanes", [])
+        if isinstance(lane, str) and str(lane).strip()
+    ]
+    if not expected_subtitle_lanes or not isinstance(lane_count_payload, dict):
+        return False
+    return all(int(lane_count_payload.get(lane) or 0) > 0 for lane in expected_subtitle_lanes)
+
+
+def _run_meets_full_dry_run_requirements(run: dict[str, Any]) -> bool:
+    portrait_shots = [shot for shot in run.get("portrait_shots", []) if isinstance(shot, dict)]
+    wan_shots = [shot for shot in run.get("wan_shots", []) if isinstance(shot, dict)]
+    render_summary = run.get("render_summary", {})
+    music_summary = run.get("music_summary", {})
+    return bool(
+        not run.get("qc_findings")
+        and portrait_shots
+        and wan_shots
+        and _run_has_expected_strategies(run)
+        and _run_has_expected_lanes(run)
+        and bool(isinstance(render_summary, dict) and render_summary.get("subtitle_burned_in"))
+        and bool(isinstance(render_summary, dict) and render_summary.get("target_matches_actual"))
+        and bool(isinstance(music_summary, dict) and music_summary.get("music_bed_exists"))
+    )
+
+
+def _run_meets_product_readiness_requirements(run: dict[str, Any]) -> bool:
+    portrait_shots = [shot for shot in run.get("portrait_shots", []) if isinstance(shot, dict)]
+    wan_shots = [shot for shot in run.get("wan_shots", []) if isinstance(shot, dict)]
+    music_summary = run.get("music_summary", {})
+    expected_music_backend = str(run.get("expected_music_backend") or "").strip()
+    actual_music_backend = (
+        str(music_summary.get("backend") or "").strip()
+        if isinstance(music_summary, dict)
+        else ""
+    )
+    return bool(
+        _run_meets_full_dry_run_requirements(run)
+        and int(run.get("scene_count") or 0) >= int(run.get("expected_scene_count_min") or 0)
+        and int(run.get("character_count") or 0) >= int(run.get("expected_character_count_min") or 0)
+        and int(run.get("speaker_count") or 0) >= int(run.get("expected_speaker_count_min") or 0)
+        and len(portrait_shots) >= int(run.get("expected_portrait_shot_count_min") or 0)
+        and len(wan_shots) >= int(run.get("expected_wan_shot_count_min") or 0)
+        and bool(run.get("subtitle_visibility_clean"))
+        and (not expected_music_backend or actual_music_backend == expected_music_backend)
+    )
 
 
 def _resolve_wan_budget_profile(settings: Settings, profile: WanBudgetProfile) -> WanBudgetProfile:
@@ -1127,6 +1319,149 @@ def aggregate_subtitle_lane_results(
     }
 
 
+def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    runs = list(run_summaries)
+    base = aggregate_full_dry_run_results(runs)
+    expected_strategy_set = {
+        str(strategy)
+        for run in runs
+        for strategy in run.get("expected_strategies", [])
+        if isinstance(strategy, str) and str(strategy).strip()
+    }
+    expected_lane_set = {
+        str(lane).lower()
+        for run in runs
+        for lane in run.get("expected_subtitle_lanes", [])
+        if isinstance(lane, str) and str(lane).strip()
+    }
+    category_counts: Counter[str] = Counter()
+    completed_category_counts: Counter[str] = Counter()
+    product_ready_category_counts: Counter[str] = Counter()
+    backend_profile_counters: dict[str, Counter[str]] = {
+        key: Counter()
+        for key in (
+            "orchestrator_backend",
+            "planner_backend",
+            "visual_backend",
+            "video_backend",
+            "tts_backend",
+            "music_backend",
+            "lipsync_backend",
+            "subtitle_backend",
+        )
+    }
+    scene_count_distribution: Counter[str] = Counter()
+    character_count_distribution: Counter[str] = Counter()
+    speaker_count_distribution: Counter[str] = Counter()
+    expected_scene_runs = 0
+    expected_character_runs = 0
+    expected_speaker_runs = 0
+    expected_portrait_runs = 0
+    expected_wan_runs = 0
+    expected_music_backend_runs = 0
+    subtitle_visibility_clean_runs = 0
+    portrait_retry_free_runs = 0
+    portrait_warning_free_runs = 0
+    product_ready_runs = 0
+
+    for run in runs:
+        category = str(run.get("case_category") or "uncategorized")
+        category_counts.update([category])
+        if str(run.get("status") or "") == "completed":
+            completed_category_counts.update([category])
+        if bool(run.get("subtitle_visibility_clean")):
+            subtitle_visibility_clean_runs += 1
+        if bool(run.get("portrait_retry_free")):
+            portrait_retry_free_runs += 1
+        if bool(run.get("portrait_warning_free")):
+            portrait_warning_free_runs += 1
+
+        scene_count = int(run.get("scene_count") or 0)
+        character_count = int(run.get("character_count") or 0)
+        speaker_count = int(run.get("speaker_count") or 0)
+        portrait_count = len([shot for shot in run.get("portrait_shots", []) if isinstance(shot, dict)])
+        wan_count = len([shot for shot in run.get("wan_shots", []) if isinstance(shot, dict)])
+        expected_scene_count_min = int(run.get("expected_scene_count_min") or 0)
+        expected_character_count_min = int(run.get("expected_character_count_min") or 0)
+        expected_speaker_count_min = int(run.get("expected_speaker_count_min") or 0)
+        expected_portrait_shot_count_min = int(run.get("expected_portrait_shot_count_min") or 0)
+        expected_wan_shot_count_min = int(run.get("expected_wan_shot_count_min") or 0)
+        expected_music_backend = str(run.get("expected_music_backend") or "").strip()
+        actual_music_backend = str((run.get("music_summary") or {}).get("backend") or "").strip()
+
+        scene_count_distribution.update([str(scene_count)])
+        character_count_distribution.update([str(character_count)])
+        speaker_count_distribution.update([str(speaker_count)])
+
+        if scene_count >= expected_scene_count_min:
+            expected_scene_runs += 1
+        if character_count >= expected_character_count_min:
+            expected_character_runs += 1
+        if speaker_count >= expected_speaker_count_min:
+            expected_speaker_runs += 1
+        if portrait_count >= expected_portrait_shot_count_min:
+            expected_portrait_runs += 1
+        if wan_count >= expected_wan_shot_count_min:
+            expected_wan_runs += 1
+        if not expected_music_backend or actual_music_backend == expected_music_backend:
+            expected_music_backend_runs += 1
+
+        backend_profile = run.get("backend_profile", {})
+        if isinstance(backend_profile, dict):
+            for key, counter in backend_profile_counters.items():
+                value = str(backend_profile.get(key) or "").strip()
+                if value:
+                    counter.update([value])
+
+        if _run_meets_product_readiness_requirements(run):
+            product_ready_runs += 1
+            product_ready_category_counts.update([category])
+
+    return {
+        **base,
+        "case_category_counts": dict(category_counts),
+        "completed_case_category_counts": dict(completed_category_counts),
+        "product_ready_case_category_counts": dict(product_ready_category_counts),
+        "scene_count_distribution": dict(scene_count_distribution),
+        "character_count_distribution": dict(character_count_distribution),
+        "speaker_count_distribution": dict(speaker_count_distribution),
+        "expected_scene_runs": expected_scene_runs,
+        "expected_scene_rate": _rate(expected_scene_runs, len(runs)),
+        "expected_character_runs": expected_character_runs,
+        "expected_character_rate": _rate(expected_character_runs, len(runs)),
+        "expected_speaker_runs": expected_speaker_runs,
+        "expected_speaker_rate": _rate(expected_speaker_runs, len(runs)),
+        "expected_portrait_runs": expected_portrait_runs,
+        "expected_portrait_rate": _rate(expected_portrait_runs, len(runs)),
+        "expected_wan_runs": expected_wan_runs,
+        "expected_wan_rate": _rate(expected_wan_runs, len(runs)),
+        "expected_music_backend_runs": expected_music_backend_runs,
+        "expected_music_backend_rate": _rate(expected_music_backend_runs, len(runs)),
+        "subtitle_visibility_clean_runs": subtitle_visibility_clean_runs,
+        "subtitle_visibility_clean_rate": _rate(subtitle_visibility_clean_runs, len(runs)),
+        "portrait_retry_free_runs": portrait_retry_free_runs,
+        "portrait_retry_free_rate": _rate(portrait_retry_free_runs, len(runs)),
+        "portrait_warning_free_runs": portrait_warning_free_runs,
+        "portrait_warning_free_rate": _rate(portrait_warning_free_runs, len(runs)),
+        "product_ready_runs": product_ready_runs,
+        "product_ready_rate": _rate(product_ready_runs, len(runs)),
+        "suite_expected_strategy_set": sorted(expected_strategy_set),
+        "suite_expected_strategy_coverage_met": all(
+            int(base["strategy_counts"].get(strategy) or 0) > 0
+            for strategy in expected_strategy_set
+        ),
+        "suite_expected_lane_set": sorted(expected_lane_set),
+        "suite_expected_lane_coverage_met": all(
+            int(base["lane_counts"].get(lane) or 0) > 0
+            for lane in expected_lane_set
+        ),
+        "backend_profile_counts": {
+            key: dict(counter)
+            for key, counter in backend_profile_counters.items()
+        },
+    }
+
+
 def aggregate_wan_hero_shot_results(
     run_summaries: Iterable[dict[str, Any]],
     *,
@@ -1324,10 +1659,7 @@ def aggregate_full_dry_run_results(run_summaries: Iterable[dict[str, Any]]) -> d
             for strategy in run.get("expected_strategies", [])
             if isinstance(strategy, str) and str(strategy).strip()
         ]
-        if expected_strategies and all(
-            int(shot_strategy_counts.get(strategy) or 0) > 0
-            for strategy in expected_strategies
-        ):
+        if _run_has_expected_strategies(run):
             required_strategy_runs += 1
 
         subtitle_summary = run.get("subtitle_summary", {})
@@ -1345,10 +1677,7 @@ def aggregate_full_dry_run_results(run_summaries: Iterable[dict[str, Any]]) -> d
             for lane in run.get("expected_subtitle_lanes", [])
             if isinstance(lane, str) and str(lane).strip()
         ]
-        if expected_subtitle_lanes and all(
-            int(lane_count_payload.get(lane) or 0) > 0
-            for lane in expected_subtitle_lanes
-        ):
+        if _run_has_expected_lanes(run):
             required_lane_runs += 1
 
         music_summary = run.get("music_summary", {})
@@ -1371,22 +1700,7 @@ def aggregate_full_dry_run_results(run_summaries: Iterable[dict[str, Any]]) -> d
             if bool(render_summary.get("target_matches_actual")):
                 render_target_match_runs += 1
 
-        if (
-            not run.get("qc_findings")
-            and portrait_shots
-            and wan_shots
-            and (
-                not expected_strategies
-                or all(int(shot_strategy_counts.get(strategy) or 0) > 0 for strategy in expected_strategies)
-            )
-            and (
-                not expected_subtitle_lanes
-                or all(int(lane_count_payload.get(lane) or 0) > 0 for lane in expected_subtitle_lanes)
-            )
-            and bool(isinstance(render_summary, dict) and render_summary.get("subtitle_burned_in"))
-            and bool(isinstance(render_summary, dict) and render_summary.get("target_matches_actual"))
-            and bool(isinstance(music_summary, dict) and music_summary.get("music_bed_exists"))
-        ):
+        if _run_meets_full_dry_run_requirements(run):
             all_requirements_met_runs += 1
 
     return {
@@ -1481,6 +1795,78 @@ def run_full_dry_run_campaign(
             "cases": [asdict(case_item) for case_item in selected_cases],
             "runs": run_summaries,
             "aggregate": aggregate_full_dry_run_results(run_summaries),
+        }
+        report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
+
+    return json.loads(report_path.read_text(encoding="utf-8"))
+
+
+def run_product_readiness_campaign(
+    settings: Settings,
+    cases: Iterable[FullDryRunCase],
+    *,
+    campaign_name: str,
+) -> dict[str, Any]:
+    settings.ensure_runtime_dirs()
+    report_root = settings.runtime_root / "campaigns" / campaign_name
+    runs_root = report_root / "runs"
+    runs_root.mkdir(parents=True, exist_ok=True)
+    service, worker = build_local_runtime(settings)
+    selected_cases = list(cases)
+    run_summaries: list[dict[str, Any]] = []
+    report_path = report_root / "stability_report.json"
+
+    for index, case in enumerate(selected_cases, start=1):
+        project_snapshot = service.create_project(
+            ProjectCreateRequest(
+                title=case.title,
+                script=case.script,
+                language=case.language,
+                visual_backend=settings.visual_backend,
+                video_backend=settings.video_backend,
+                tts_backend=settings.tts_backend,
+                music_backend=settings.music_backend,
+                lipsync_backend=settings.lipsync_backend,
+                subtitle_backend=settings.subtitle_backend,
+            )
+        )
+        run_error: str | None = None
+        try:
+            project_snapshot = worker.run_project(project_snapshot.project.project_id)
+        except Exception as exc:
+            run_error = str(exc)
+            project_snapshot = service.require_snapshot(project_snapshot.project.project_id)
+        run_summary = summarize_project_run(project_snapshot)
+        run_summary.update(
+            {
+                "case_slug": case.slug,
+                "case_index": index,
+                "case_category": case.category,
+                "expected_strategies": list(case.expected_strategies),
+                "expected_subtitle_lanes": list(case.expected_subtitle_lanes),
+                "expected_scene_count_min": case.expected_scene_count_min,
+                "expected_character_count_min": case.expected_character_count_min,
+                "expected_speaker_count_min": case.expected_speaker_count_min,
+                "expected_portrait_shot_count_min": case.expected_portrait_shot_count_min,
+                "expected_wan_shot_count_min": case.expected_wan_shot_count_min,
+                "expected_music_backend": case.expected_music_backend,
+                "run_error": run_error,
+            }
+        )
+        run_summaries.append(run_summary)
+        (runs_root / f"{index:02d}_{case.slug}_{project_snapshot.project.project_id}.json").write_text(
+            json.dumps(run_summary, indent=2),
+            encoding="utf-8",
+        )
+        report_payload = {
+            "generated_at": utc_now(),
+            "campaign_name": campaign_name,
+            "runtime_root": str(settings.runtime_root),
+            "report_root": str(report_root),
+            "backend_profile": worker.engine.adapters.backend_profile(),
+            "cases": [asdict(case_item) for case_item in selected_cases],
+            "runs": run_summaries,
+            "aggregate": aggregate_product_readiness_results(run_summaries),
         }
         report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
 

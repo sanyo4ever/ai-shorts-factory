@@ -8,6 +8,7 @@ from filmstudio.domain.models import (
     ArtifactRecord,
     JobAttemptRecord,
     JobRecord,
+    ProjectCreateRequest,
     ProjectRecord,
     ProjectSnapshot,
     QCReportRecord,
@@ -20,6 +21,7 @@ from filmstudio.worker.stability_sweep import (
     FullDryRunCase,
     WanBudgetProfile,
     aggregate_full_dry_run_results,
+    aggregate_product_readiness_results,
     aggregate_wan_budget_ladder_results,
     aggregate_wan_hero_shot_results,
     aggregate_subtitle_lane_results,
@@ -31,6 +33,7 @@ from filmstudio.worker.stability_sweep import (
     extract_wan_shot_summary,
     load_full_dry_run_cases,
     run_full_dry_run_campaign,
+    run_product_readiness_campaign,
     load_wan_budget_profiles,
     run_wan_budget_ladder_campaign,
     summarize_project_run,
@@ -349,8 +352,15 @@ def test_load_full_dry_run_cases_reads_expected_fields(tmp_path) -> None:
                         "title": "Case Alpha",
                         "script": "SCENE 1. HERO hovoryt.\nHERO: Pryvit.",
                         "language": "uk",
+                        "category": "duo_dialogue",
                         "expected_strategies": ["portrait_lipsync", "hero_insert"],
                         "expected_subtitle_lanes": ["top", "bottom"],
+                        "expected_scene_count_min": 3,
+                        "expected_character_count_min": 2,
+                        "expected_speaker_count_min": 2,
+                        "expected_portrait_shot_count_min": 1,
+                        "expected_wan_shot_count_min": 1,
+                        "expected_music_backend": "ace_step",
                     }
                 ]
             },
@@ -367,8 +377,15 @@ def test_load_full_dry_run_cases_reads_expected_fields(tmp_path) -> None:
             title="Case Alpha",
             script="SCENE 1. HERO hovoryt.\nHERO: Pryvit.",
             language="uk",
+            category="duo_dialogue",
             expected_strategies=("portrait_lipsync", "hero_insert"),
             expected_subtitle_lanes=("top", "bottom"),
+            expected_scene_count_min=3,
+            expected_character_count_min=2,
+            expected_speaker_count_min=2,
+            expected_portrait_shot_count_min=1,
+            expected_wan_shot_count_min=1,
+            expected_music_backend="ace_step",
         )
     ]
 
@@ -905,6 +922,255 @@ def test_aggregate_full_dry_run_results_counts_mixed_pipeline_requirements() -> 
     assert aggregate["music_backend_counts"] == {"ace_step": 2}
     assert aggregate["render_resolution_counts"] == {"720x1280": 2}
     assert aggregate["qc_finding_counts"] == {"wan_timeout": 1}
+
+
+def test_aggregate_product_readiness_results_counts_category_and_topology_requirements() -> None:
+    aggregate = aggregate_product_readiness_results(
+        [
+            {
+                "status": "completed",
+                "qc_status": "passed",
+                "qc_findings": [],
+                "case_category": "duo_dialogue",
+                "scene_count": 3,
+                "character_count": 2,
+                "speaker_count": 2,
+                "expected_scene_count_min": 3,
+                "expected_character_count_min": 2,
+                "expected_speaker_count_min": 2,
+                "expected_portrait_shot_count_min": 1,
+                "expected_wan_shot_count_min": 1,
+                "expected_music_backend": "ace_step",
+                "shot_strategy_counts": {"portrait_lipsync": 2, "hero_insert": 1},
+                "portrait_shots": [{"shot_id": "shot_portrait"}],
+                "portrait_retry_free": True,
+                "portrait_warning_free": True,
+                "wan_shots": [{"shot_id": "shot_wan"}],
+                "expected_strategies": ["portrait_lipsync", "hero_insert"],
+                "expected_subtitle_lanes": ["top", "bottom"],
+                "subtitle_summary": {"lane_counts": {"top": 1, "bottom": 1}},
+                "subtitle_visibility_clean": True,
+                "music_summary": {
+                    "backend": "ace_step",
+                    "manifest_available": True,
+                    "music_bed_exists": True,
+                },
+                "render_summary": {
+                    "actual_resolution": "720x1280",
+                    "subtitle_burned_in": True,
+                    "target_matches_actual": True,
+                },
+                "backend_profile": {
+                    "visual_backend": "comfyui",
+                    "video_backend": "wan",
+                    "tts_backend": "piper",
+                    "music_backend": "ace_step",
+                    "lipsync_backend": "musetalk",
+                    "subtitle_backend": "deterministic",
+                },
+            },
+            {
+                "status": "completed",
+                "qc_status": "passed",
+                "qc_findings": [],
+                "case_category": "three_voice_panel",
+                "scene_count": 2,
+                "character_count": 2,
+                "speaker_count": 2,
+                "expected_scene_count_min": 3,
+                "expected_character_count_min": 3,
+                "expected_speaker_count_min": 3,
+                "expected_portrait_shot_count_min": 1,
+                "expected_wan_shot_count_min": 1,
+                "expected_music_backend": "ace_step",
+                "shot_strategy_counts": {"portrait_lipsync": 1, "hero_insert": 1},
+                "portrait_shots": [{"shot_id": "shot_portrait_2"}],
+                "portrait_retry_free": False,
+                "portrait_warning_free": False,
+                "wan_shots": [{"shot_id": "shot_wan_2"}],
+                "expected_strategies": ["portrait_lipsync", "hero_insert"],
+                "expected_subtitle_lanes": ["top", "bottom"],
+                "subtitle_summary": {"lane_counts": {"top": 1, "bottom": 1}},
+                "subtitle_visibility_clean": False,
+                "music_summary": {
+                    "backend": "ace_step",
+                    "manifest_available": True,
+                    "music_bed_exists": True,
+                },
+                "render_summary": {
+                    "actual_resolution": "720x1280",
+                    "subtitle_burned_in": True,
+                    "target_matches_actual": True,
+                },
+                "backend_profile": {
+                    "visual_backend": "comfyui",
+                    "video_backend": "wan",
+                    "tts_backend": "piper",
+                    "music_backend": "ace_step",
+                    "lipsync_backend": "musetalk",
+                    "subtitle_backend": "deterministic",
+                },
+            },
+        ]
+    )
+
+    assert aggregate["total_runs"] == 2
+    assert aggregate["case_category_counts"] == {"duo_dialogue": 1, "three_voice_panel": 1}
+    assert aggregate["completed_case_category_counts"] == {"duo_dialogue": 1, "three_voice_panel": 1}
+    assert aggregate["product_ready_case_category_counts"] == {"duo_dialogue": 1}
+    assert aggregate["expected_scene_runs"] == 1
+    assert aggregate["expected_character_runs"] == 1
+    assert aggregate["expected_speaker_runs"] == 1
+    assert aggregate["expected_portrait_runs"] == 2
+    assert aggregate["expected_wan_runs"] == 2
+    assert aggregate["expected_music_backend_runs"] == 2
+    assert aggregate["subtitle_visibility_clean_runs"] == 1
+    assert aggregate["portrait_retry_free_runs"] == 1
+    assert aggregate["portrait_warning_free_runs"] == 1
+    assert aggregate["product_ready_runs"] == 1
+    assert aggregate["backend_profile_counts"]["video_backend"] == {"wan": 2}
+    assert aggregate["backend_profile_counts"]["music_backend"] == {"ace_step": 2}
+
+
+def test_run_product_readiness_campaign_writes_report(tmp_path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    settings = get_settings.__wrapped__()  # type: ignore[attr-defined]
+    settings = settings.__class__(
+        **{
+            **settings.__dict__,
+            "runtime_root": runtime_root,
+            "database_path": runtime_root / "filmstudio.sqlite3",
+            "gpu_lease_root": runtime_root / "manifests" / "gpu_leases",
+        }
+    )
+    settings.ensure_runtime_dirs()
+
+    created_payloads: list[ProjectCreateRequest] = []
+
+    class FakeService:
+        def create_project(self, request: ProjectCreateRequest) -> ProjectSnapshot:
+            created_payloads.append(request)
+            return ProjectSnapshot(
+                project=ProjectRecord(
+                    project_id="proj_ready",
+                    title=request.title,
+                    script=request.script,
+                    language=request.language,
+                    style="stylized_short",
+                    target_duration_sec=120,
+                    estimated_duration_sec=18,
+                    status="queued",
+                ),
+                scenes=[],
+                jobs=[],
+                job_attempts=[],
+                artifacts=[],
+                qc_reports=[],
+            )
+
+        def require_snapshot(self, project_id: str) -> ProjectSnapshot:
+            raise AssertionError(f"Unexpected require_snapshot for {project_id}")
+
+    class FakeWorker:
+        class Engine:
+            class Adapters:
+                @staticmethod
+                def backend_profile() -> dict[str, str]:
+                    return {
+                        "visual_backend": "comfyui",
+                        "video_backend": "wan",
+                        "tts_backend": "piper",
+                        "music_backend": "ace_step",
+                        "lipsync_backend": "musetalk",
+                        "subtitle_backend": "deterministic",
+                    }
+
+            adapters = Adapters()
+
+        engine = Engine()
+
+        def run_project(self, project_id: str) -> ProjectSnapshot:
+            return ProjectSnapshot(
+                project=ProjectRecord(
+                    project_id=project_id,
+                    title="Product readiness",
+                    script="SCENE 1. HERO hovoryt.",
+                    language="uk",
+                    style="stylized_short",
+                    target_duration_sec=120,
+                    estimated_duration_sec=18,
+                    status="completed",
+                ),
+                scenes=[],
+                jobs=[],
+                job_attempts=[],
+                artifacts=[],
+                qc_reports=[],
+            )
+
+    monkeypatch.setattr(
+        "filmstudio.worker.stability_sweep.build_local_runtime",
+        lambda local_settings: (FakeService(), FakeWorker()),
+    )
+    monkeypatch.setattr(
+        "filmstudio.worker.stability_sweep.summarize_project_run",
+        lambda snapshot: {
+            "project_id": snapshot.project.project_id,
+            "title": snapshot.project.title,
+            "status": "completed",
+            "scene_count": 3,
+            "character_count": 3,
+            "speaker_count": 3,
+            "shot_strategy_counts": {"portrait_lipsync": 2, "hero_insert": 1},
+            "portrait_shots": [{"shot_id": "shot_portrait"}],
+            "portrait_retry_free": True,
+            "portrait_warning_free": True,
+            "wan_shots": [{"shot_id": "shot_wan"}],
+            "subtitle_summary": {"lane_counts": {"top": 1, "bottom": 1}},
+            "subtitle_visibility_clean": True,
+            "music_summary": {
+                "backend": "ace_step",
+                "manifest_available": True,
+                "music_bed_exists": True,
+            },
+            "render_summary": {
+                "actual_resolution": "720x1280",
+                "subtitle_burned_in": True,
+                "target_matches_actual": True,
+            },
+            "backend_profile": {
+                "visual_backend": "comfyui",
+                "video_backend": "wan",
+                "tts_backend": "piper",
+                "music_backend": "ace_step",
+                "lipsync_backend": "musetalk",
+                "subtitle_backend": "deterministic",
+            },
+            "qc_status": "passed",
+            "qc_findings": [],
+        },
+    )
+
+    report = run_product_readiness_campaign(
+        settings,
+        [
+            FullDryRunCase(
+                slug="three_voice_roundtable",
+                title="Three Voice Roundtable",
+                script="SCENE 1. HOST: Pryvit.\nHERO: Pryvit.\nFRIEND: Pryvit.",
+                category="three_voice_panel",
+                expected_character_count_min=3,
+                expected_speaker_count_min=3,
+            )
+        ],
+        campaign_name="product_readiness_test",
+    )
+
+    assert len(created_payloads) == 1
+    assert created_payloads[0].music_backend == settings.music_backend
+    assert report["aggregate"]["product_ready_runs"] == 1
+    assert report["aggregate"]["case_category_counts"] == {"three_voice_panel": 1}
+    assert (runtime_root / "campaigns" / "product_readiness_test" / "stability_report.json").exists()
 
 
 def test_run_wan_budget_ladder_campaign_writes_profile_reports(tmp_path, monkeypatch) -> None:
