@@ -92,6 +92,7 @@
                   <button id="campaign-mark-canonical-button" class="button button-primary" type="button">Promote Canonical</button>
                   <button id="campaign-mark-superseded-button" class="button button-warning" type="button">Mark Superseded</button>
                 </div>
+                <div id="campaign-release-blockers" class="mini-summary"></div>
               </section>
 
               <section class="focus-card">
@@ -183,6 +184,17 @@
                   <h2>Focused Actions</h2>
                 </div>
               </div>
+              <div class="form-grid compact-grid">
+                <label class="field">
+                  <span>Review Mode</span>
+                  <select id="review-mode-select">
+                    <option value="auto" selected>Auto Focus</option>
+                    <option value="semantic_regressions">Semantic Regressions Only</option>
+                    <option value="all_targets">All Targets</option>
+                  </select>
+                </label>
+              </div>
+              <div id="review-workspace-summary" class="mini-summary"></div>
               <div id="review-focus" class="focus-card"></div>
               <div class="form-grid compact-grid">
                 <label class="field">

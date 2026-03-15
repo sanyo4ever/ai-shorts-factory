@@ -375,9 +375,6 @@ class ProjectService:
                 return artifact
         raise KeyError(artifact_id)
 
-    def build_review_view(self, snapshot: ProjectSnapshot) -> dict[str, object]:
-        return build_review_manifest(snapshot)
-
     def build_shot_review_compare(
         self,
         snapshot: ProjectSnapshot,
@@ -397,6 +394,19 @@ class ProjectService:
         right: str = "approved",
     ) -> dict[str, object]:
         return build_scene_revision_compare(snapshot, scene_id, left=left, right=right)
+
+    def build_review_view(self, snapshot: ProjectSnapshot) -> dict[str, object]:
+        semantic_quality = build_semantic_quality_summary(snapshot)
+        revision_semantic = build_revision_semantic_summary(
+            snapshot,
+            current_semantic_quality=semantic_quality,
+        )
+        revision_release = build_revision_release_summary(snapshot)
+        review_view = build_review_manifest(snapshot)
+        review_view["workspace"] = self._build_review_workspace(snapshot, revision_semantic)
+        review_view["revision_semantic"] = revision_semantic
+        review_view["revision_release"] = revision_release
+        return review_view
 
     @staticmethod
     def _latest_qc_report(snapshot: ProjectSnapshot) -> QCReportRecord | None:
@@ -465,6 +475,116 @@ class ProjectService:
             return "wait"
         return "inspect"
 
+    @staticmethod
+    def _review_target_payload(
+        *,
+        kind: str,
+        target_id: str,
+        scene_id: str,
+        title: str,
+        review: ReviewState,
+        strategy: str | None = None,
+    ) -> dict[str, object]:
+        payload = {
+            "kind": kind,
+            "id": target_id,
+            "scene_id": scene_id,
+            "title": title,
+            "review_status": review.status,
+            "current_revision": int(review.output_revision or 0),
+            "approved_revision": review.approved_revision,
+            "reason_code": review.reason_code,
+        }
+        if strategy:
+            payload["strategy"] = strategy
+        return payload
+
+    def _build_review_workspace(
+        self,
+        snapshot: ProjectSnapshot,
+        revision_semantic: dict[str, object],
+    ) -> dict[str, object]:
+        changed_shot_ids = [
+            str(shot_id)
+            for shot_id in list(revision_semantic.get("changed_shot_ids") or [])
+            if str(shot_id).strip()
+        ]
+        changed_scene_ids = [
+            str(scene_id)
+            for scene_id in list(revision_semantic.get("changed_scene_ids") or [])
+            if str(scene_id).strip()
+        ]
+        changed_shot_id_set = set(changed_shot_ids)
+        changed_scene_id_set = set(changed_scene_ids)
+        semantic_shot_targets: list[dict[str, object]] = []
+        semantic_scene_targets: list[dict[str, object]] = []
+        for scene in snapshot.scenes:
+            if scene.scene_id in changed_scene_id_set:
+                semantic_scene_targets.append(
+                    self._review_target_payload(
+                        kind="scene",
+                        target_id=scene.scene_id,
+                        scene_id=scene.scene_id,
+                        title=scene.title,
+                        review=scene.review,
+                    )
+                )
+            for shot in scene.shots:
+                if shot.shot_id not in changed_shot_id_set:
+                    continue
+                semantic_shot_targets.append(
+                    self._review_target_payload(
+                        kind="shot",
+                        target_id=shot.shot_id,
+                        scene_id=shot.scene_id,
+                        title=shot.title,
+                        review=shot.review,
+                        strategy=shot.strategy,
+                    )
+                )
+        focus_target = (
+            semantic_shot_targets[0]
+            if semantic_shot_targets
+            else semantic_scene_targets[0]
+            if semantic_scene_targets
+            else None
+        )
+        review_quality_regression_open = bool(
+            not revision_semantic.get("gate_passed")
+            and (
+                revision_semantic.get("failed_gates")
+                or revision_semantic.get("regressed_metrics")
+                or semantic_shot_targets
+                or semantic_scene_targets
+            )
+        )
+        return {
+            "default_mode": (
+                "semantic_regressions"
+                if review_quality_regression_open and focus_target is not None
+                else "all_targets"
+            ),
+            "review_quality_regression_open": review_quality_regression_open,
+            "release_blocked_by_quality_regression": review_quality_regression_open,
+            "semantic_regression": {
+                "available": bool(
+                    revision_semantic.get("failed_gates")
+                    or revision_semantic.get("regressed_metrics")
+                    or semantic_shot_targets
+                    or semantic_scene_targets
+                ),
+                "failed_gates": list(revision_semantic.get("failed_gates") or []),
+                "regressed_metrics": list(revision_semantic.get("regressed_metrics") or []),
+                "changed_shot_ids": changed_shot_ids,
+                "changed_scene_ids": changed_scene_ids,
+                "changed_shot_count": len(changed_shot_ids),
+                "changed_scene_count": len(changed_scene_ids),
+                "shots": semantic_shot_targets,
+                "scenes": semantic_scene_targets,
+                "focus_target": focus_target,
+            },
+        }
+
     def build_project_overview(self, snapshot: ProjectSnapshot) -> dict[str, object]:
         review_summary = build_review_summary(snapshot)
         deliverables_view = self.build_deliverables_view(snapshot)
@@ -477,6 +597,7 @@ class ProjectService:
             current_semantic_quality=semantic_quality,
         )
         revision_release = build_revision_release_summary(snapshot)
+        review_workspace = self._build_review_workspace(snapshot, revision_semantic)
         deliverables_named = dict(deliverables_view.get("named") or {})
         missing_required_deliverables = [
             kind
@@ -524,10 +645,20 @@ class ProjectService:
                 "semantic_changed_shot_count": int(
                     revision_semantic.get("changed_shot_count") or 0
                 ),
+                "semantic_changed_scene_count": int(
+                    revision_semantic.get("changed_scene_count") or 0
+                ),
                 "semantic_regressed_metric_count": int(
                     revision_semantic.get("regressed_metric_count") or 0
                 ),
+                "review_quality_regression_open": bool(
+                    review_workspace.get("review_quality_regression_open")
+                ),
+                "recommended_focus_target": (
+                    (review_workspace.get("semantic_regression") or {}).get("focus_target")
+                ),
             },
+            "review_workspace": review_workspace,
             "revision_semantic": revision_semantic,
             "revision_release": revision_release,
             "deliverables": {
@@ -582,6 +713,9 @@ class ProjectService:
                     "review_quality_regression",
                     "review_release",
                 },
+                "release_blocked_by_quality_regression": bool(
+                    review_workspace.get("release_blocked_by_quality_regression")
+                ),
             },
         }
 

@@ -98,6 +98,7 @@ def test_dashboard_routes_and_assets() -> None:
     assert dashboard_response.status_code == 200
     assert "AI Shorts Factory Studio" in dashboard_response.text
     assert "Campaign Center" in dashboard_response.text
+    assert "Semantic Regressions Only" in dashboard_response.text
 
     css_response = client.get("/studio/assets/dashboard.css")
     assert css_response.status_code == 200
@@ -110,6 +111,7 @@ def test_dashboard_routes_and_assets() -> None:
     assert "/api/v1/campaigns/compare" in js_response.text
     assert "/api/v1/campaigns/release/baseline" in js_response.text
     assert "/release" in js_response.text
+    assert "canonical blocked" in js_response.text
 
 
 def test_campaign_endpoints_surface_runtime_reports(tmp_path: Path, monkeypatch) -> None:
@@ -203,6 +205,8 @@ def test_campaign_endpoints_surface_runtime_reports(tmp_path: Path, monkeypatch)
         assert detail_payload["report"]["campaign_name"] == "product_readiness_v12_release_gate_v5_green"
         assert detail_payload["case_table"][0]["project_id"] == "proj_new"
         assert detail_payload["comparison"]["right"]["campaign_name"] == "product_readiness_v11_release_gate_v4_green"
+        assert detail_payload["promotion"]["canonical_blocked"] is False
+        assert "Promote product_readiness_v12_release_gate_v5_green" in detail_payload["promotion"]["suggested_note"]
 
         compare_response = client.get(
             "/api/v1/campaigns/compare",
@@ -241,6 +245,83 @@ def test_campaign_endpoints_surface_runtime_reports(tmp_path: Path, monkeypatch)
 
         not_found_response = client.get("/api/v1/campaigns/missing_campaign")
         assert not_found_response.status_code == 404
+    finally:
+        get_settings.cache_clear()
+
+
+def test_campaign_release_endpoint_blocks_canonical_when_quality_regression_is_open(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    campaign_root = runtime_root / "campaigns"
+    monkeypatch.setenv("FILMSTUDIO_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv(
+        "FILMSTUDIO_DATABASE_PATH",
+        str(runtime_root / "filmstudio.sqlite3"),
+    )
+    get_settings.cache_clear()
+    try:
+        _write_campaign_report(
+            campaign_root,
+            campaign_name="product_readiness_v12_release_gate_v5_green",
+            generated_at="2026-03-15T11:45:07+00:00",
+            aggregate={
+                "total_runs": 1,
+                "completed_runs": 1,
+                "product_ready_rate": 1.0,
+                "all_requirements_met_rate": 1.0,
+                "semantic_quality_gate_rate": 1.0,
+                "revision_semantic_gate_rate": 0.0,
+                "qc_finding_counts": {},
+                "suite_case_category_set": ["reaction_opinion"],
+            },
+            runs=[
+                {
+                    "case_slug": "reaction_opinion",
+                    "title": "Reaction Opinion",
+                    "category": "reaction_opinion",
+                    "status": "completed",
+                    "project_id": "proj_blocked",
+                    "qc_status": "passed",
+                    "semantic_quality": {"available": True, "gate_passed": True, "failed_gates": []},
+                    "revision_semantic": {
+                        "available": True,
+                        "gate_passed": False,
+                        "failed_gates": ["audio_mix_clean_regressed"],
+                        "regressed_metrics": ["audio_mix_clean"],
+                    },
+                    "revision_release": {"available": True, "gate_passed": True, "failed_gates": []},
+                    "deliverables_summary": {"ready": True},
+                    "operator_overview": {
+                        "revision_semantic": {
+                            "available": True,
+                            "gate_passed": False,
+                            "failed_gates": ["audio_mix_clean_regressed"],
+                            "regressed_metrics": ["audio_mix_clean"],
+                        },
+                        "revision_release": {"available": True, "gate_passed": True, "failed_gates": []},
+                        "action": {"next_action": "review_quality_regression", "needs_operator_attention": True},
+                    },
+                    "product_preset": {"style_preset": "studio_illustrated", "short_archetype": "creator_hook"},
+                    "backend_profile": {"visual_backend": "comfyui", "video_backend": "wan", "tts_backend": "piper"},
+                }
+            ],
+        )
+        client = TestClient(create_app())
+
+        detail_response = client.get("/api/v1/campaigns/product_readiness_v12_release_gate_v5_green")
+        assert detail_response.status_code == 200
+        detail_payload = detail_response.json()
+        assert detail_payload["promotion"]["canonical_blocked"] is True
+        assert detail_payload["promotion"]["blocked_case_slugs"] == ["reaction_opinion"]
+
+        release_response = client.post(
+            "/api/v1/campaigns/product_readiness_v12_release_gate_v5_green/release",
+            json={"status": "canonical", "note": "try promote anyway"},
+        )
+        assert release_response.status_code == 409
+        assert "Canonical promotion blocked" in release_response.json()["detail"]
     finally:
         get_settings.cache_clear()
 
@@ -728,6 +809,16 @@ def test_operator_queue_endpoint_surfaces_revision_semantic_regression_work(monk
     assert overview["revision_semantic"]["gate_passed"] is False
     assert overview["action"]["next_action"] == "review_quality_regression"
     assert overview["review"]["semantic_regressed_metric_count"] == 1
+    assert overview["review_workspace"]["default_mode"] == "semantic_regressions"
+    assert overview["review_workspace"]["release_blocked_by_quality_regression"] is True
+    assert overview["review_workspace"]["semantic_regression"]["focus_target"]["kind"] == "shot"
+
+    review_response = client.get(f"/api/v1/projects/{project_id}/review")
+    assert review_response.status_code == 200
+    review_payload = review_response.json()
+    assert review_payload["workspace"]["default_mode"] == "semantic_regressions"
+    assert review_payload["workspace"]["semantic_regression"]["changed_shot_count"] == len(shot_ids)
+    assert review_payload["workspace"]["semantic_regression"]["changed_scene_count"] == 1
 
     queue_response = client.get("/api/v1/projects/operator-queue")
     assert queue_response.status_code == 200

@@ -188,12 +188,18 @@ class CampaignService:
         comparison = None
         if comparison_target:
             comparison = self.compare_campaigns(campaign_name, comparison_target)
+        promotion = self._build_promotion_state(
+            summary=summary,
+            case_table=case_table,
+            comparison=comparison,
+        )
         return {
             "summary": summary,
             "report": report,
             "case_table": case_table,
             "comparison": comparison,
-            "release_summary": self._build_release_summary(summary, comparison),
+            "promotion": promotion,
+            "release_summary": self._build_release_summary(summary, comparison, promotion),
         }
 
     def compare_campaigns(
@@ -471,9 +477,17 @@ class CampaignService:
         note: str = "",
         compared_to: str | None = None,
     ) -> dict[str, object]:
-        payload = self.get_campaign(campaign_name, compare_to=None)
+        payload = self.get_campaign(campaign_name, compare_to=compared_to)
         if payload is None:
             raise KeyError(campaign_name)
+        promotion = dict(payload.get("promotion") or {})
+        if status == "canonical" and bool(promotion.get("canonical_blocked")):
+            blocked_slugs = list(promotion.get("blocked_case_slugs") or [])
+            blocked_preview = ", ".join(blocked_slugs[:4]) if blocked_slugs else "review_quality_regression"
+            raise RuntimeError(
+                "Canonical promotion blocked until review_quality_regression is resolved "
+                f"for: {blocked_preview}"
+            )
 
         registry = self._load_registry()
         records = dict(registry.get("records") or {})
@@ -1045,14 +1059,129 @@ class CampaignService:
         }
         return order.get(status, 0)
 
+    def _build_promotion_state(
+        self,
+        *,
+        summary: dict[str, object],
+        case_table: list[dict[str, object]],
+        comparison: dict[str, object] | None,
+    ) -> dict[str, object]:
+        blocked_cases: list[dict[str, object]] = []
+        blocked_metrics: set[str] = set()
+        for row in case_table:
+            revision_semantic = dict(row.get("revision_semantic") or {})
+            operator_overview = dict(row.get("operator_overview") or {})
+            operator_action = dict(operator_overview.get("action") or {})
+            failed_gates = [
+                str(gate)
+                for gate in list(revision_semantic.get("failed_gates") or [])
+                if str(gate).strip()
+            ]
+            regressed_metrics = [
+                str(metric)
+                for metric in list(revision_semantic.get("regressed_metrics") or [])
+                if str(metric).strip()
+            ]
+            should_block = (
+                (bool(revision_semantic.get("available")) and not bool(revision_semantic.get("gate_passed")))
+                or str(operator_action.get("next_action") or "") == "review_quality_regression"
+            )
+            if not should_block:
+                continue
+            blocked_metrics.update(regressed_metrics)
+            blocked_cases.append(
+                {
+                    "slug": row.get("slug"),
+                    "title": row.get("title"),
+                    "project_id": row.get("project_id"),
+                    "project_url": row.get("project_url"),
+                    "failed_gates": failed_gates,
+                    "regressed_metrics": regressed_metrics,
+                    "next_action": operator_action.get("next_action"),
+                }
+            )
+        blocked_case_slugs = [
+            str(item.get("slug"))
+            for item in blocked_cases
+            if str(item.get("slug") or "").strip()
+        ]
+        blocked_project_ids = [
+            str(item.get("project_id"))
+            for item in blocked_cases
+            if str(item.get("project_id") or "").strip()
+        ]
+        return {
+            "canonical_blocked": bool(blocked_cases),
+            "blocked_case_count": len(blocked_cases),
+            "blocked_case_slugs": blocked_case_slugs,
+            "blocked_project_ids": blocked_project_ids,
+            "blocked_regressed_metrics": sorted(blocked_metrics),
+            "blocked_cases": blocked_cases,
+            "suggested_note": self._build_suggested_release_note(
+                summary=summary,
+                comparison=comparison,
+                blocked_cases=blocked_cases,
+                blocked_regressed_metrics=sorted(blocked_metrics),
+            ),
+        }
+
+    def _build_suggested_release_note(
+        self,
+        *,
+        summary: dict[str, object],
+        comparison: dict[str, object] | None,
+        blocked_cases: list[dict[str, object]],
+        blocked_regressed_metrics: list[str],
+    ) -> str:
+        campaign_name = str(summary.get("campaign_name") or "campaign")
+        lines: list[str] = []
+        if blocked_cases:
+            lines.append(
+                f"Hold canonical promotion for {campaign_name} until semantic regression review is closed."
+            )
+        else:
+            lines.append(f"Promote {campaign_name} as the canonical release baseline.")
+        if comparison and comparison.get("right"):
+            lines.append(
+                "Compared against "
+                f"{comparison['right'].get('campaign_name')} ({comparison.get('status') or 'unchanged'})."
+            )
+            comparison_summary = dict(comparison.get("summary") or {})
+            lines.append(
+                "Case deltas: "
+                f"{comparison_summary.get('improvement_count', 0)} improvements, "
+                f"{comparison_summary.get('regression_count', 0)} regressions."
+            )
+            if comparison_summary.get("revision_semantic_regression_count"):
+                lines.append(
+                    "Revision-semantic regressions: "
+                    f"{comparison_summary['revision_semantic_regression_count']}."
+                )
+            if comparison_summary.get("revision_release_regression_count"):
+                lines.append(
+                    "Revision-release regressions: "
+                    f"{comparison_summary['revision_release_regression_count']}."
+                )
+        if blocked_cases:
+            lines.append(
+                "Blocked cases: "
+                + ", ".join(str(case.get("slug") or case.get("title") or "case") for case in blocked_cases[:6])
+                + "."
+            )
+        if blocked_regressed_metrics:
+            lines.append("Regressed metrics: " + ", ".join(blocked_regressed_metrics) + ".")
+        return "\n".join(lines)
+
     def _build_release_summary(
         self,
         summary: dict[str, object],
         comparison: dict[str, object] | None,
+        promotion: dict[str, object] | None = None,
     ) -> dict[str, object]:
         release = dict(summary.get("release") or {})
         status = str(release.get("status") or "untracked")
         comparison_status = str((comparison or {}).get("status") or "none")
+        promotion_state = dict(promotion or {})
         headline = {
             "canonical": "Current canonical release baseline.",
             "candidate": "Candidate release baseline awaiting promotion.",
@@ -1103,11 +1232,25 @@ class CampaignService:
                 bullets.append(
                     f"Operator regressions: {comparison['summary']['operator_attention_regression_count']}"
                 )
+        if promotion_state.get("canonical_blocked"):
+            bullets.append(
+                "Canonical promotion blocked by unresolved review_quality_regression targets."
+            )
+            if promotion_state.get("blocked_case_count"):
+                bullets.append(
+                    f"Blocked cases: {promotion_state['blocked_case_count']}"
+                )
+            if promotion_state.get("blocked_regressed_metrics"):
+                bullets.append(
+                    "Blocked metrics: "
+                    + ", ".join(str(metric) for metric in promotion_state["blocked_regressed_metrics"])
+                )
         return {
             "status": status,
             "headline": headline,
             "comparison_status": comparison_status,
             "bullets": bullets,
+            "canonical_blocked": bool(promotion_state.get("canonical_blocked")),
         }
 
     def _build_release_baseline_manifest(self) -> dict[str, object] | None:

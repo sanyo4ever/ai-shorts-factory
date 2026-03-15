@@ -56,6 +56,8 @@ def update_campaign_release_status(
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Campaign not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/{campaign_name}")

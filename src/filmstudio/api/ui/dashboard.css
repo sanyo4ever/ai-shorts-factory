@@ -160,6 +160,12 @@ button {
   text-decoration: none;
 }
 
+.button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
 .button-primary {
   color: #fffaf4;
   background: linear-gradient(135deg, var(--accent) 0%, #d27b2c 100%);
@@ -250,6 +256,14 @@ button {
 .queue-item.is-focused {
   border-color: rgba(203, 95, 56, 0.42);
   box-shadow: 0 10px 26px rgba(203, 95, 56, 0.12);
+}
+
+.scene-card.is-regression-target,
+.shot-card.is-regression-target,
+.focus-card.is-regression-target,
+.queue-item.is-regression-target {
+  border-color: rgba(162, 43, 41, 0.34);
+  box-shadow: inset 0 0 0 1px rgba(162, 43, 41, 0.18);
 }
 
 .card-topline,

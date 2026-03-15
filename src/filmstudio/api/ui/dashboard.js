@@ -9,6 +9,8 @@ const state = {
   selectedProjectId: null,
   selectedTarget: null,
   projectDetails: new Map(),
+  campaignReleaseNoteDirty: false,
+  campaignReleaseNoteKey: null,
   statusTimer: null,
 };
 
@@ -36,6 +38,7 @@ function cacheElements() {
   elements.campaignReleaseSummary = byId("campaign-release-summary");
   elements.campaignCompareTarget = byId("campaign-compare-target");
   elements.campaignReleaseNote = byId("campaign-release-note");
+  elements.campaignReleaseBlockers = byId("campaign-release-blockers");
   elements.campaignMarkCandidateButton = byId("campaign-mark-candidate-button");
   elements.campaignMarkCanonicalButton = byId("campaign-mark-canonical-button");
   elements.campaignMarkSupersededButton = byId("campaign-mark-superseded-button");
@@ -54,6 +57,8 @@ function cacheElements() {
   elements.deliverablesList = byId("deliverables-list");
   elements.reviewSummary = byId("review-summary");
   elements.reviewScenes = byId("review-scenes");
+  elements.reviewModeSelect = byId("review-mode-select");
+  elements.reviewWorkspaceSummary = byId("review-workspace-summary");
   elements.reviewFocus = byId("review-focus");
   elements.reviewerInput = byId("reviewer-input");
   elements.reviewReasonCode = byId("review-reason-code");
@@ -110,6 +115,9 @@ function bindEvents() {
       force: true,
       compareTo: elements.campaignCompareTarget.value || null,
     }).catch(handleError);
+  });
+  elements.campaignReleaseNote.addEventListener("input", () => {
+    state.campaignReleaseNoteDirty = true;
   });
   elements.campaignMarkCandidateButton.addEventListener("click", () => {
     updateCampaignReleaseStatus("candidate").catch(handleError);
@@ -168,6 +176,20 @@ function bindEvents() {
     if (!state.selectedProjectId || !state.selectedTarget) {
       return;
     }
+    loadFocusedCompare(state.selectedProjectId, { force: true }).catch(handleError);
+  });
+  elements.reviewModeSelect.addEventListener("change", () => {
+    if (!state.selectedProjectId) {
+      return;
+    }
+    const detail = getSelectedDetail();
+    if (!detail) {
+      return;
+    }
+    primeFocusedTarget(detail.review);
+    renderReviewWorkspaceSummary(detail.review);
+    renderReviewFocus(detail.review);
+    renderReviewScenes(detail.review);
     loadFocusedCompare(state.selectedProjectId, { force: true }).catch(handleError);
   });
   elements.createProjectForm.addEventListener("submit", (event) => {
@@ -294,6 +316,10 @@ async function loadCampaignDetail(campaignName, { force = false, compareTo = nul
 }
 
 async function selectCampaign(campaignName) {
+  if (state.selectedCampaignName !== campaignName) {
+    state.campaignReleaseNoteDirty = false;
+    state.campaignReleaseNoteKey = null;
+  }
   state.selectedCampaignName = campaignName;
   renderChrome();
   await loadCampaignDetail(campaignName, { force: false });
@@ -333,6 +359,32 @@ function primeFocusedTarget(review) {
     sceneId: resolved.sceneId || null,
     title: resolved.title || null,
   };
+}
+
+function getReviewWorkspace(review) {
+  return review?.workspace || {};
+}
+
+function getSemanticRegressionWorkspace(review) {
+  return getReviewWorkspace(review).semantic_regression || {};
+}
+
+function effectiveReviewMode(review) {
+  const requested = elements.reviewModeSelect?.value || "auto";
+  if (requested !== "auto") {
+    return requested;
+  }
+  return getReviewWorkspace(review).default_mode || "all_targets";
+}
+
+function isSemanticRegressionScene(review, scene) {
+  const semantic = getSemanticRegressionWorkspace(review);
+  return new Set(semantic.changed_scene_ids || []).has(scene.scene_id);
+}
+
+function isSemanticRegressionShot(review, shot) {
+  const semantic = getSemanticRegressionWorkspace(review);
+  return new Set(semantic.changed_shot_ids || []).has(shot.shot_id);
 }
 
 function defaultReviewCompareTarget(target) {
@@ -391,9 +443,15 @@ async function loadFocusedCompare(projectId, { force = false } = {}) {
 }
 
 async function selectProject(projectId, target = null) {
+  const projectChanged = state.selectedProjectId !== projectId;
   state.selectedProjectId = projectId;
   if (target) {
     state.selectedTarget = target;
+  } else if (projectChanged) {
+    state.selectedTarget = null;
+  }
+  if (projectChanged && elements.reviewModeSelect) {
+    elements.reviewModeSelect.value = "auto";
   }
   renderChrome();
   await loadProjectDetail(projectId, { force: false });
@@ -524,8 +582,9 @@ function renderCampaignDetail() {
   renderCampaignHero(detail);
   renderCampaignReleaseSummary(detail);
   renderCampaignCompareTarget(detail);
+  renderCampaignPromotionState(detail);
   renderCampaignComparison(detail);
-  renderCampaignReleaseDesk();
+  renderCampaignReleaseDesk(detail);
   renderCampaignCases(detail);
 }
 
@@ -566,6 +625,7 @@ function renderCampaignReleaseSummary(detail) {
   const releaseSummary = detail.release_summary || {};
   const summary = detail.summary || {};
   const release = summary.release || {};
+  const promotion = detail.promotion || {};
   const bullets = Array.isArray(releaseSummary.bullets) ? releaseSummary.bullets : [];
   elements.campaignReleaseSummary.innerHTML = `
     <article class="queue-item">
@@ -582,6 +642,11 @@ function renderCampaignReleaseSummary(detail) {
           release.compared_to
             ? `<span>compared to ${escapeHtml(release.compared_to)}</span>`
             : ""
+        }
+        ${
+          promotion.canonical_blocked
+            ? `<span>canonical blocked</span>`
+            : `<span>canonical ready</span>`
         }
       </div>
       <div class="queue-list">
@@ -607,6 +672,41 @@ function renderCampaignCompareTarget(detail) {
       }),
   ];
   elements.campaignCompareTarget.innerHTML = options.join("");
+}
+
+function campaignReleaseNoteKey(detail) {
+  return `${detail.summary?.campaign_name || ""}::${detail.selected_compare_target || ""}`;
+}
+
+function renderCampaignPromotionState(detail) {
+  const promotion = detail.promotion || {};
+  const blocked = Boolean(promotion.canonical_blocked);
+  const suggestedNote = promotion.suggested_note || "";
+  const releaseNoteKey = campaignReleaseNoteKey(detail);
+  if (!state.campaignReleaseNoteDirty || state.campaignReleaseNoteKey !== releaseNoteKey) {
+    elements.campaignReleaseNote.value = suggestedNote;
+    state.campaignReleaseNoteDirty = false;
+    state.campaignReleaseNoteKey = releaseNoteKey;
+  }
+  elements.campaignMarkCanonicalButton.disabled = blocked;
+  elements.campaignMarkCanonicalButton.title = blocked
+    ? "Resolve review_quality_regression targets before canonical promotion."
+    : "";
+  elements.campaignReleaseBlockers.innerHTML = blocked
+    ? `
+      <span class="quality-chip quality-fail">canonical blocked</span>
+      <span>${escapeHtml(String(promotion.blocked_case_count || 0))} blocked cases</span>
+      ${
+        Array.isArray(promotion.blocked_regressed_metrics) && promotion.blocked_regressed_metrics.length
+          ? `<span>${escapeHtml(promotion.blocked_regressed_metrics.join(", "))}</span>`
+          : `<span>review_quality_regression open</span>`
+      }
+    `
+    : `
+      <span class="quality-chip quality-pass">canonical ready</span>
+      <span>${escapeHtml(String((detail.case_table || []).length))} cases reviewed</span>
+      <span>suggested note hydrated</span>
+    `;
 }
 
 function renderCampaignComparison(detail) {
@@ -708,7 +808,7 @@ function renderCampaignComparison(detail) {
   `;
 }
 
-function renderCampaignReleaseDesk() {
+function renderCampaignReleaseDesk(detail) {
   const releaseManagement = state.campaignOverview?.release_management || {};
   const currentCanonical = releaseManagement.current_canonical || null;
   const previousCanonical = releaseManagement.previous_canonical || null;
@@ -716,6 +816,7 @@ function renderCampaignReleaseDesk() {
   const candidates = Array.isArray(releaseManagement.candidates) ? releaseManagement.candidates : [];
   const baselineManifest = releaseManagement.baseline_manifest || null;
   const baselineSummary = baselineManifest?.comparison?.summary || {};
+  const promotion = detail?.promotion || {};
   elements.campaignReleaseDesk.innerHTML = `
     <article class="queue-item">
       <div class="meta-row">
@@ -749,6 +850,17 @@ function renderCampaignReleaseDesk() {
           : '<div class="muted-copy">No recommended canonical campaign available.</div>'
       }
       ${
+        promotion.canonical_blocked
+          ? `<div class="chip-row">
+              <span class="quality-chip quality-fail">promotion blocked</span>
+              ${(promotion.blocked_case_slugs || [])
+                .slice(0, 6)
+                .map((slug) => `<span class="chip">${escapeHtml(slug)}</span>`)
+                .join("")}
+            </div>`
+          : ""
+      }
+      ${
         candidates.length
           ? `<div class="chip-row">${candidates
               .slice(0, 6)
@@ -772,8 +884,9 @@ function renderCampaignCases(detail) {
       const preset = row.product_preset || {};
       const revisionSemanticPassed = row.revision_semantic?.gate_passed;
       const revisionReleasePassed = row.revision_release?.gate_passed;
+      const nextAction = row.operator_overview?.action?.next_action || "ship";
       return `
-        <article class="queue-item">
+        <article class="queue-item${revisionSemanticPassed ? "" : " is-regression-target"}">
           <div class="card-topline">
             <div>
               <strong class="card-title">${escapeHtml(row.title || row.slug)}</strong>
@@ -803,6 +916,7 @@ function renderCampaignCases(detail) {
             }
             <span class="chip">${revisionSemanticPassed ? "semantic baseline clear" : "semantic baseline review"}</span>
             <span class="chip">${revisionReleasePassed ? "revision release ready" : "revision release review"}</span>
+            <span class="chip">${escapeHtml(nextAction)}</span>
           </div>
           <div class="card-actions">
             ${
@@ -951,6 +1065,7 @@ function renderProjectDetail() {
     detail.overview.revision_release || {},
     detail.overview.revision_semantic || {},
   );
+  renderReviewWorkspaceSummary(detail.review);
   renderReviewFocus(detail.review);
   renderReviewCompare(detail.reviewCompare?.payload || null);
   renderReviewScenes(detail.review);
@@ -1159,9 +1274,39 @@ function renderReviewSummary(review, revisionRelease, revisionSemantic) {
   `;
 }
 
+function renderReviewWorkspaceSummary(review) {
+  const workspace = getReviewWorkspace(review);
+  const semantic = getSemanticRegressionWorkspace(review);
+  if (!semantic.available && elements.reviewModeSelect?.value === "semantic_regressions") {
+    elements.reviewModeSelect.value = "auto";
+  }
+  const activeMode = effectiveReviewMode(review);
+  const focusTarget = semantic.focus_target || null;
+  if (!semantic.available) {
+    elements.reviewWorkspaceSummary.innerHTML = `
+      <span>mode ${escapeHtml(activeMode)}</span>
+      <span>review all targets</span>
+      <span>no semantic regression baseline changes</span>
+    `;
+    return;
+  }
+  elements.reviewWorkspaceSummary.innerHTML = `
+    <span>mode ${escapeHtml(activeMode)}</span>
+    <span>${escapeHtml(String(semantic.changed_shot_count || 0))} changed shots</span>
+    <span>${escapeHtml(String(semantic.changed_scene_count || 0))} changed scenes</span>
+    <span>${escapeHtml(String((semantic.regressed_metrics || []).length))} regressed metrics</span>
+    ${
+      focusTarget
+        ? `<span>focus ${escapeHtml(focusTarget.kind)} ${escapeHtml(focusTarget.id)}</span>`
+        : `<span>no recommended focus target</span>`
+    }
+  `;
+}
+
 function renderReviewFocus(review) {
   const target = resolveFocusedTarget(review);
   if (!target) {
+    elements.reviewFocus.className = "focus-card";
     elements.reviewFocus.innerHTML = `<div class="muted-copy">Select a scene or shot from the review stack.</div>`;
     elements.reviewComparePanel.innerHTML = `<div class="muted-copy">Revision compare becomes available after you focus a scene or shot.</div>`;
     return;
@@ -1173,6 +1318,12 @@ function renderReviewFocus(review) {
     normalizeReviewCompareTarget(target, elements.reviewCompareTarget?.value || ""),
   );
   const status = target.review?.status || "pending_review";
+  const semantic = getSemanticRegressionWorkspace(review);
+  const isRegressionTarget =
+    target.kind === "shot"
+      ? new Set(semantic.changed_shot_ids || []).has(target.id)
+      : new Set(semantic.changed_scene_ids || []).has(target.id);
+  elements.reviewFocus.className = `focus-card${isRegressionTarget ? " is-regression-target" : ""}`;
   elements.reviewFocus.innerHTML = `
     <div class="card-topline">
       <div>
@@ -1189,6 +1340,16 @@ function renderReviewFocus(review) {
       <span>${escapeHtml(target.review?.reviewer || "operator")}</span>
     </div>
     ${
+      isRegressionTarget
+        ? `<div class="chip-row">
+            <span class="quality-chip quality-fail">semantic regression target</span>
+            ${(semantic.regressed_metrics || [])
+              .map((metric) => `<span class="chip">${escapeHtml(metric)}</span>`)
+              .join("")}
+          </div>`
+        : ""
+    }
+    ${
       target.review?.note
         ? `<p>${escapeHtml(target.review.note)}</p>`
         : `<p class="muted-copy">Use the buttons below to approve or rerender this target.</p>`
@@ -1198,12 +1359,19 @@ function renderReviewFocus(review) {
 
 function resolveFocusedTarget(review) {
   const scenes = Array.isArray(review?.scenes) ? review.scenes : [];
+  const reviewMode = effectiveReviewMode(review);
+  const semantic = getSemanticRegressionWorkspace(review);
+  const semanticShotIds = new Set(semantic.changed_shot_ids || []);
+  const semanticSceneIds = new Set(semantic.changed_scene_ids || []);
   if (!scenes.length) {
     return null;
   }
   if (state.selectedTarget) {
     for (const scene of scenes) {
       if (state.selectedTarget.kind === "scene" && scene.scene_id === state.selectedTarget.id) {
+        if (reviewMode === "semantic_regressions" && !semanticSceneIds.has(scene.scene_id)) {
+          break;
+        }
         return {
           kind: "scene",
           id: scene.scene_id,
@@ -1215,6 +1383,9 @@ function resolveFocusedTarget(review) {
       if (state.selectedTarget.kind === "shot") {
         for (const shot of scene.shots || []) {
           if (shot.shot_id === state.selectedTarget.id) {
+            if (reviewMode === "semantic_regressions" && !semanticShotIds.has(shot.shot_id)) {
+              break;
+            }
             return {
               kind: "shot",
               id: shot.shot_id,
@@ -1226,6 +1397,15 @@ function resolveFocusedTarget(review) {
         }
       }
     }
+  }
+  if (reviewMode === "semantic_regressions" && semantic.focus_target) {
+    return {
+      kind: semantic.focus_target.kind,
+      id: semantic.focus_target.id,
+      sceneId: semantic.focus_target.scene_id || semantic.focus_target.id,
+      title: semantic.focus_target.title,
+      review: findReviewStateForTarget(review, semantic.focus_target.kind, semantic.focus_target.id),
+    };
   }
   const firstScene = scenes[0];
   const firstShot = firstScene.shots?.[0];
@@ -1247,18 +1427,54 @@ function resolveFocusedTarget(review) {
   };
 }
 
+function findReviewStateForTarget(review, kind, id) {
+  const scenes = Array.isArray(review?.scenes) ? review.scenes : [];
+  for (const scene of scenes) {
+    if (kind === "scene" && scene.scene_id === id) {
+      return scene.review;
+    }
+    for (const shot of scene.shots || []) {
+      if (kind === "shot" && shot.shot_id === id) {
+        return shot.review;
+      }
+    }
+  }
+  return null;
+}
+
 function renderReviewScenes(review) {
   const scenes = Array.isArray(review?.scenes) ? review.scenes : [];
+  const reviewMode = effectiveReviewMode(review);
   if (!scenes.length) {
     elements.reviewScenes.innerHTML = `<div class="muted-copy">No scenes available.</div>`;
     return;
   }
-  elements.reviewScenes.innerHTML = scenes
+  const visibleScenes =
+    reviewMode === "semantic_regressions"
+      ? scenes.filter((scene) => {
+          if (isSemanticRegressionScene(review, scene)) {
+            return true;
+          }
+          return (scene.shots || []).some((shot) => isSemanticRegressionShot(review, shot));
+        })
+      : scenes;
+  if (!visibleScenes.length) {
+    elements.reviewScenes.innerHTML = `<div class="muted-copy">No semantic-regression targets are available.</div>`;
+    return;
+  }
+  elements.reviewScenes.innerHTML = visibleScenes
     .map((scene) => {
       const isSceneFocused = state.selectedTarget?.kind === "scene" && state.selectedTarget.id === scene.scene_id;
-      const shots = Array.isArray(scene.shots) ? scene.shots : [];
+      const isRegressionScene = isSemanticRegressionScene(review, scene);
+      const shots = (
+        reviewMode === "semantic_regressions"
+          ? (scene.shots || []).filter((shot) => isSemanticRegressionShot(review, shot))
+          : Array.isArray(scene.shots)
+            ? scene.shots
+            : []
+      );
       return `
-        <article class="scene-card${isSceneFocused ? " is-focused" : ""}">
+        <article class="scene-card${isSceneFocused ? " is-focused" : ""}${isRegressionScene ? " is-regression-target" : ""}">
           <details open>
             <summary>
               <div class="card-topline">
@@ -1271,6 +1487,14 @@ function renderReviewScenes(review) {
                 </span>
               </div>
             </summary>
+            ${
+              isRegressionScene || shots.some((shot) => isSemanticRegressionShot(review, shot))
+                ? `<div class="chip-row">
+                    ${isRegressionScene ? '<span class="quality-chip quality-fail">semantic regression scene</span>' : ""}
+                    <span class="chip">${escapeHtml(String(shots.length))} focused shots</span>
+                  </div>`
+                : ""
+            }
             <div class="card-actions">
               <button
                 class="button button-ghost"
@@ -1285,8 +1509,9 @@ function renderReviewScenes(review) {
               ${shots
                 .map((shot) => {
                   const focused = state.selectedTarget?.kind === "shot" && state.selectedTarget.id === shot.shot_id;
+                  const isRegressionShot = isSemanticRegressionShot(review, shot);
                   return `
-                    <article class="shot-card${focused ? " is-focused" : ""}">
+                    <article class="shot-card${focused ? " is-focused" : ""}${isRegressionShot ? " is-regression-target" : ""}">
                       <div class="card-topline">
                         <div>
                           <h4>${escapeHtml(shot.title)}</h4>
@@ -1302,6 +1527,11 @@ function renderReviewScenes(review) {
                         <span>revision ${escapeHtml(String(shot.review?.output_revision || 0))}</span>
                         <span>${escapeHtml(shot.review?.reason || "review_loop")}</span>
                       </div>
+                      ${
+                        isRegressionShot
+                          ? `<div class="chip-row"><span class="quality-chip quality-fail">semantic regression target</span></div>`
+                          : ""
+                      }
                       <div class="card-actions">
                         <button
                           class="button button-ghost"
@@ -1588,10 +1818,19 @@ async function updateCampaignReleaseStatus(status) {
     setStatus("Select a campaign before changing release state.", "warning", 2200);
     return;
   }
+  const detail = getSelectedCampaignDetail();
+  if (status === "canonical" && detail?.promotion?.canonical_blocked) {
+    setStatus(
+      "Canonical promotion is blocked until review_quality_regression targets are resolved.",
+      "warning",
+      2600,
+    );
+    return;
+  }
   const compareTo = elements.campaignCompareTarget.value || null;
   const note = elements.campaignReleaseNote.value.trim();
   setStatus(`${status} on ${state.selectedCampaignName}...`, "info");
-  const detail = await fetchJson(
+  const updatedDetail = await fetchJson(
     `/api/v1/campaigns/${encodeURIComponent(state.selectedCampaignName)}/release`,
     {
       method: "POST",
@@ -1603,15 +1842,16 @@ async function updateCampaignReleaseStatus(status) {
       }),
     },
   );
-  detail.selected_compare_target =
-    compareTo || detail.comparison?.right?.campaign_name || detail.summary?.release?.compared_to || "";
-  state.campaignDetails.set(state.selectedCampaignName, detail);
+  updatedDetail.selected_compare_target =
+    compareTo || updatedDetail.comparison?.right?.campaign_name || updatedDetail.summary?.release?.compared_to || "";
+  state.campaignDetails.set(state.selectedCampaignName, updatedDetail);
   state.campaignDetails.set(
-    `${state.selectedCampaignName}::${detail.selected_compare_target || ""}`,
-    detail,
+    `${state.selectedCampaignName}::${updatedDetail.selected_compare_target || ""}`,
+    updatedDetail,
   );
+  state.campaignReleaseNoteDirty = false;
+  state.campaignReleaseNoteKey = null;
   await refreshStudio({ forceProjectRefresh: false });
-  elements.campaignReleaseNote.value = "";
   setStatus(`Updated release state for ${state.selectedCampaignName}.`, "success", 1800);
 }
 

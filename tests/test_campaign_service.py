@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from filmstudio.services.campaign_service import CampaignService
 
 
@@ -241,6 +243,8 @@ def test_campaign_service_builds_overview_detail_and_case_table(tmp_path: Path) 
     assert detail["comparison"]["right"]["campaign_name"] == "product_readiness_v11_release_gate_v4_green"
     assert detail["comparison"]["summary"]["improvement_count"] == 1
     assert detail["release_summary"]["status"] == "candidate"
+    assert detail["promotion"]["canonical_blocked"] is False
+    assert "Promote product_readiness_v12_release_gate_v5_green" in detail["promotion"]["suggested_note"]
 
 
 def test_campaign_service_promotes_canonical_and_tracks_registry_history(tmp_path: Path) -> None:
@@ -316,6 +320,52 @@ def test_campaign_service_promotes_canonical_and_tracks_registry_history(tmp_pat
         "product_readiness_v11_release_gate_v4_green"
     )
     assert Path(baseline_manifest["manifest_path"]).exists()
+
+
+def test_campaign_service_blocks_canonical_promotion_when_quality_regression_is_open(
+    tmp_path: Path,
+) -> None:
+    campaign_root = tmp_path / "campaigns"
+    _write_campaign_report(
+        campaign_root,
+        campaign_name="product_readiness_v12_release_gate_v5_green",
+        generated_at="2026-03-15T11:45:07+00:00",
+        aggregate={
+            "total_runs": 1,
+            "completed_runs": 1,
+            "product_ready_rate": 1.0,
+            "all_requirements_met_rate": 1.0,
+            "semantic_quality_gate_rate": 1.0,
+            "revision_semantic_gate_rate": 0.0,
+            "qc_finding_counts": {},
+            "suite_case_category_set": ["solo_creator"],
+        },
+        runs=[
+            _sample_run(
+                slug="solo_creator",
+                title="Solo Creator",
+                category="solo_creator",
+                revision_semantic_gate_passed=False,
+                operator_attention=True,
+            )
+        ],
+    )
+
+    service = CampaignService(campaign_root)
+    detail = service.get_campaign("product_readiness_v12_release_gate_v5_green")
+
+    assert detail is not None
+    assert detail["promotion"]["canonical_blocked"] is True
+    assert detail["promotion"]["blocked_case_slugs"] == ["solo_creator"]
+    assert detail["promotion"]["blocked_regressed_metrics"] == ["audio_mix_clean"]
+    assert "Hold canonical promotion" in detail["promotion"]["suggested_note"]
+
+    with pytest.raises(RuntimeError, match="Canonical promotion blocked"):
+        service.update_release_status(
+            "product_readiness_v12_release_gate_v5_green",
+            status="canonical",
+            note="attempt blocked promotion",
+        )
 
 
 def test_campaign_compare_surfaces_release_detail_regressions(tmp_path: Path) -> None:

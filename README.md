@@ -54,6 +54,7 @@ The current codebase restores:
 - a shared semantic-quality layer that scores subtitle readability, script coverage, shot variety, portrait identity consistency, audio-mix cleanliness, and preset-archetype payoff
 - semantic quality is now part of the operator surface itself: project overview includes a normalized `semantic_quality` block, and the queue can emit project-level `review_quality` work when the quality gate fails
 - a revision-aware semantic baseline layer that snapshots semantic quality only after release-ready approval, compares current rerendered outputs against the last approved baseline, and surfaces project-level `review_quality_regression` work when a revision regresses against that baseline
+- the `/studio` review workspace now supports semantic-regression-focused review mode, auto-focus on changed shots/scenes from `revision_semantic`, and release-desk promotion blocking with suggested release notes when `review_quality_regression` work is still open
 - real `FFmpeg` shot composition and final portrait render assembly with a default `720x1280` master profile
 - `ffprobe`-backed QC on the produced media artifacts
 - filesystem-backed GPU lease tracking for single-GPU scheduling visibility
