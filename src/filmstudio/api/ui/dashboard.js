@@ -2,6 +2,8 @@ const state = {
   presetCatalog: null,
   overviews: [],
   queue: null,
+  campaignOverview: null,
+  campaigns: [],
   selectedProjectId: null,
   selectedTarget: null,
   projectDetails: new Map(),
@@ -21,7 +23,10 @@ function cacheElements() {
   elements.refreshButton = byId("refresh-button");
   elements.projectCountBadge = byId("project-count-badge");
   elements.queueCountBadge = byId("queue-count-badge");
+  elements.campaignCountBadge = byId("campaign-count-badge");
   elements.globalMetrics = byId("global-metrics");
+  elements.campaignSummary = byId("campaign-summary");
+  elements.campaignList = byId("campaign-list");
   elements.queueSummary = byId("queue-summary");
   elements.queueList = byId("queue-list");
   elements.projectList = byId("project-list");
@@ -132,14 +137,18 @@ function bindEvents() {
 
 async function refreshStudio({ forceProjectRefresh = false } = {}) {
   setStatus("Syncing studio state...", "info");
-  const [presetCatalog, overviews, queue] = await Promise.all([
+  const [presetCatalog, overviews, queue, campaignOverview, campaigns] = await Promise.all([
     fetchJson("/api/v1/projects/preset-catalog"),
     fetchJson("/api/v1/projects/overviews"),
     fetchJson("/api/v1/projects/operator-queue"),
+    fetchJson("/api/v1/campaigns/overview"),
+    fetchJson("/api/v1/campaigns?limit=8"),
   ]);
   state.presetCatalog = presetCatalog;
   state.overviews = Array.isArray(overviews) ? overviews : [];
   state.queue = queue || { summary: {}, items: [] };
+  state.campaignOverview = campaignOverview || { summary: {}, highlights: {}, campaigns: [] };
+  state.campaigns = Array.isArray(campaigns) ? campaigns : [];
   populatePresetForm();
   chooseProjectSelection();
   renderChrome();
@@ -257,6 +266,7 @@ async function selectProject(projectId, target = null) {
 
 function renderChrome() {
   renderGlobalMetrics();
+  renderCampaignCenter();
   renderQueue();
   renderProjectList();
   renderPresetPreview();
@@ -281,6 +291,59 @@ function renderGlobalMetrics() {
         </article>
       `,
     )
+    .join("");
+}
+
+function renderCampaignCenter() {
+  const overview = state.campaignOverview || { summary: {}, highlights: {} };
+  const summary = overview.summary || {};
+  const latestReadiness = overview.highlights?.latest_product_readiness || null;
+  const readinessRate = latestReadiness?.rates?.product_ready_rate;
+  elements.campaignCountBadge.textContent = `${summary.campaign_count || 0} campaigns`;
+  elements.campaignSummary.innerHTML = `
+    <span>${escapeHtml(String(summary.green_campaign_count || 0))} green</span>
+    <span>${escapeHtml(String(summary.family_count || 0))} families</span>
+    <span>${readinessRate == null ? "no release gate" : `release gate ${escapeHtml(formatRate(readinessRate))}`}</span>
+  `;
+  if (!state.campaigns.length) {
+    elements.campaignList.innerHTML = `<div class="muted-copy">No campaign reports found.</div>`;
+    return;
+  }
+  elements.campaignList.innerHTML = state.campaigns
+    .map((campaign) => {
+      const primaryRate =
+        campaign.rates?.product_ready_rate ??
+        campaign.rates?.all_requirements_met_rate ??
+        campaign.rates?.semantic_quality_gate_rate ??
+        campaign.rates?.expected_lane_visible_rate ??
+        campaign.rates?.duration_alignment_rate ??
+        0;
+      const openUrl = `/api/v1/campaigns/${encodeURIComponent(campaign.campaign_name)}`;
+      return `
+        <article class="queue-item">
+          <div class="card-topline">
+            <div>
+              <strong class="card-title">${escapeHtml(campaign.campaign_name)}</strong>
+              <p>${escapeHtml(campaign.family || "campaign")} / ${escapeHtml(String(campaign.completed_runs || 0))}/${escapeHtml(String(campaign.total_runs || 0))} runs</p>
+            </div>
+            <span class="badge ${campaign.is_green ? "quality-pass" : "quality-fail"}">${escapeHtml(campaign.status || "unknown")}</span>
+          </div>
+          <div class="meta-row">
+            <span>${escapeHtml(campaign.generated_at || "unknown time")}</span>
+            <span>${escapeHtml(formatRate(primaryRate))}</span>
+          </div>
+          ${Array.isArray(campaign.categories) && campaign.categories.length
+            ? `<div class="chip-row">${campaign.categories
+                .slice(0, 4)
+                .map((category) => `<span class="chip">${escapeHtml(category)}</span>`)
+                .join("")}</div>`
+            : ""}
+          <div class="card-actions">
+            <a class="button button-ghost" href="${escapeHtml(openUrl)}" target="_blank" rel="noreferrer">Open Report</a>
+          </div>
+        </article>
+      `;
+    })
     .join("");
 }
 

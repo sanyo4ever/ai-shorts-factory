@@ -4,6 +4,40 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from filmstudio.api.app import create_app
+from filmstudio.core.settings import get_settings
+
+
+def _write_campaign_report(
+    campaign_root: Path,
+    *,
+    campaign_name: str,
+    generated_at: str,
+    aggregate: dict[str, object],
+) -> None:
+    report_root = campaign_root / campaign_name
+    report_root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "campaign_name": campaign_name,
+        "generated_at": generated_at,
+        "report_root": str(report_root),
+        "backend_profile": {
+            "visual_backend": "comfyui",
+            "video_backend": "wan",
+            "render_profile": {
+                "width": 720,
+                "height": 1280,
+                "fps": 24,
+                "orientation": "portrait",
+                "aspect_ratio": "9:16",
+            },
+        },
+        "cases": [],
+        "aggregate": aggregate,
+    }
+    (report_root / "stability_report.json").write_text(
+        json.dumps(payload, indent=2),
+        encoding="utf-8",
+    )
 
 
 def test_health_endpoints() -> None:
@@ -61,6 +95,7 @@ def test_dashboard_routes_and_assets() -> None:
     dashboard_response = client.get("/studio")
     assert dashboard_response.status_code == 200
     assert "AI Shorts Factory Studio" in dashboard_response.text
+    assert "Campaign Center" in dashboard_response.text
 
     css_response = client.get("/studio/assets/dashboard.css")
     assert css_response.status_code == 200
@@ -69,6 +104,71 @@ def test_dashboard_routes_and_assets() -> None:
     js_response = client.get("/studio/assets/dashboard.js")
     assert js_response.status_code == 200
     assert "refreshStudio" in js_response.text
+    assert "/api/v1/campaigns/overview" in js_response.text
+
+
+def test_campaign_endpoints_surface_runtime_reports(tmp_path: Path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    campaign_root = runtime_root / "campaigns"
+    monkeypatch.setenv("FILMSTUDIO_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv(
+        "FILMSTUDIO_DATABASE_PATH",
+        str(runtime_root / "filmstudio.sqlite3"),
+    )
+    get_settings.cache_clear()
+    try:
+        _write_campaign_report(
+            campaign_root,
+            campaign_name="product_readiness_v12_release_gate_v5_green",
+            generated_at="2026-03-15T11:45:07+00:00",
+            aggregate={
+                "total_runs": 12,
+                "completed_runs": 12,
+                "product_ready_rate": 1.0,
+                "all_requirements_met_rate": 1.0,
+                "semantic_quality_gate_rate": 1.0,
+                "qc_finding_counts": {},
+                "suite_case_category_set": ["comparison_showdown", "reaction_opinion"],
+            },
+        )
+        _write_campaign_report(
+            campaign_root,
+            campaign_name="full_dry_run_v8",
+            generated_at="2026-03-14T09:00:00+00:00",
+            aggregate={
+                "total_runs": 1,
+                "completed_runs": 1,
+                "all_requirements_met_rate": 1.0,
+                "qc_finding_counts": {},
+            },
+        )
+
+        client = TestClient(create_app())
+
+        overview_response = client.get("/api/v1/campaigns/overview")
+        assert overview_response.status_code == 200
+        overview_payload = overview_response.json()
+        assert overview_payload["summary"]["campaign_count"] == 2
+        assert overview_payload["highlights"]["latest_product_readiness"]["campaign_name"] == (
+            "product_readiness_v12_release_gate_v5_green"
+        )
+
+        campaigns_response = client.get("/api/v1/campaigns?family=product_readiness")
+        assert campaigns_response.status_code == 200
+        campaigns_payload = campaigns_response.json()
+        assert len(campaigns_payload) == 1
+        assert campaigns_payload[0]["family"] == "product_readiness"
+
+        detail_response = client.get("/api/v1/campaigns/product_readiness_v12_release_gate_v5_green")
+        assert detail_response.status_code == 200
+        detail_payload = detail_response.json()
+        assert detail_payload["summary"]["status"] == "green"
+        assert detail_payload["report"]["campaign_name"] == "product_readiness_v12_release_gate_v5_green"
+
+        not_found_response = client.get("/api/v1/campaigns/missing_campaign")
+        assert not_found_response.status_code == 404
+    finally:
+        get_settings.cache_clear()
 
 
 def test_create_and_run_project() -> None:
