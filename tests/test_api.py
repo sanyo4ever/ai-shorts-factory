@@ -13,6 +13,7 @@ def _write_campaign_report(
     campaign_name: str,
     generated_at: str,
     aggregate: dict[str, object],
+    runs: list[dict[str, object]] | None = None,
 ) -> None:
     report_root = campaign_root / campaign_name
     report_root.mkdir(parents=True, exist_ok=True)
@@ -31,6 +32,7 @@ def _write_campaign_report(
                 "aspect_ratio": "9:16",
             },
         },
+        "runs": runs or [],
         "cases": [],
         "aggregate": aggregate,
     }
@@ -105,6 +107,8 @@ def test_dashboard_routes_and_assets() -> None:
     assert js_response.status_code == 200
     assert "refreshStudio" in js_response.text
     assert "/api/v1/campaigns/overview" in js_response.text
+    assert "/api/v1/campaigns/compare" in js_response.text
+    assert "/release" in js_response.text
 
 
 def test_campaign_endpoints_surface_runtime_reports(tmp_path: Path, monkeypatch) -> None:
@@ -130,17 +134,49 @@ def test_campaign_endpoints_surface_runtime_reports(tmp_path: Path, monkeypatch)
                 "qc_finding_counts": {},
                 "suite_case_category_set": ["comparison_showdown", "reaction_opinion"],
             },
+            runs=[
+                {
+                    "case_slug": "comparison_showdown",
+                    "title": "Comparison Showdown",
+                    "category": "comparison_showdown",
+                    "status": "completed",
+                    "project_id": "proj_new",
+                    "qc_status": "passed",
+                    "semantic_quality": {"available": True, "gate_passed": True, "failed_gates": []},
+                    "deliverables_summary": {"ready": True},
+                    "operator_overview": {"action": {"needs_operator_attention": False}},
+                    "product_preset": {"style_preset": "studio_illustrated", "short_archetype": "creator_hook"},
+                    "backend_profile": {"visual_backend": "comfyui", "video_backend": "wan", "tts_backend": "piper"},
+                }
+            ],
         )
         _write_campaign_report(
             campaign_root,
-            campaign_name="full_dry_run_v8",
+            campaign_name="product_readiness_v11_release_gate_v4_green",
             generated_at="2026-03-14T09:00:00+00:00",
             aggregate={
-                "total_runs": 1,
-                "completed_runs": 1,
+                "total_runs": 12,
+                "completed_runs": 12,
+                "product_ready_rate": 1.0,
                 "all_requirements_met_rate": 1.0,
+                "semantic_quality_gate_rate": 1.0,
                 "qc_finding_counts": {},
             },
+            runs=[
+                {
+                    "case_slug": "comparison_showdown",
+                    "title": "Comparison Showdown",
+                    "category": "comparison_showdown",
+                    "status": "completed",
+                    "project_id": "proj_old",
+                    "qc_status": "passed",
+                    "semantic_quality": {"available": True, "gate_passed": False, "failed_gates": ["audio_mix_clean"]},
+                    "deliverables_summary": {"ready": True},
+                    "operator_overview": {"action": {"needs_operator_attention": True}},
+                    "product_preset": {"style_preset": "studio_illustrated", "short_archetype": "creator_hook"},
+                    "backend_profile": {"visual_backend": "deterministic", "video_backend": "deterministic", "tts_backend": "piper"},
+                }
+            ],
         )
 
         client = TestClient(create_app())
@@ -156,14 +192,43 @@ def test_campaign_endpoints_surface_runtime_reports(tmp_path: Path, monkeypatch)
         campaigns_response = client.get("/api/v1/campaigns?family=product_readiness")
         assert campaigns_response.status_code == 200
         campaigns_payload = campaigns_response.json()
-        assert len(campaigns_payload) == 1
-        assert campaigns_payload[0]["family"] == "product_readiness"
+        assert len(campaigns_payload) == 2
+        assert all(item["family"] == "product_readiness" for item in campaigns_payload)
 
         detail_response = client.get("/api/v1/campaigns/product_readiness_v12_release_gate_v5_green")
         assert detail_response.status_code == 200
         detail_payload = detail_response.json()
         assert detail_payload["summary"]["status"] == "green"
         assert detail_payload["report"]["campaign_name"] == "product_readiness_v12_release_gate_v5_green"
+        assert detail_payload["case_table"][0]["project_id"] == "proj_new"
+        assert detail_payload["comparison"]["right"]["campaign_name"] == "product_readiness_v11_release_gate_v4_green"
+
+        compare_response = client.get(
+            "/api/v1/campaigns/compare",
+            params={
+                "left": "product_readiness_v12_release_gate_v5_green",
+                "right": "product_readiness_v11_release_gate_v4_green",
+            },
+        )
+        assert compare_response.status_code == 200
+        compare_payload = compare_response.json()
+        assert compare_payload["status"] == "improvement"
+        assert compare_payload["summary"]["improvement_count"] >= 1
+
+        release_response = client.post(
+            "/api/v1/campaigns/product_readiness_v12_release_gate_v5_green/release",
+            json={
+                "status": "canonical",
+                "note": "promote release gate",
+                "compared_to": "product_readiness_v11_release_gate_v4_green",
+            },
+        )
+        assert release_response.status_code == 200
+        release_payload = release_response.json()
+        assert release_payload["summary"]["release"]["status"] == "canonical"
+        assert release_payload["summary"]["release"]["compared_to"] == (
+            "product_readiness_v11_release_gate_v4_green"
+        )
 
         not_found_response = client.get("/api/v1/campaigns/missing_campaign")
         assert not_found_response.status_code == 404

@@ -49,6 +49,7 @@ The current codebase restores:
 - a review loop with scene or shot approval, `needs_rerender` state, revision-aware invalidation after new outputs, and a canonical `review_manifest.json` that is also packaged into deliverables
 - an operator-facing project overview and queue surface that merges review state, deliverables readiness, QC, rerender state, and backend profile into one API contract
 - a built-in operator dashboard at `/studio` that consumes those API surfaces directly for create, run, review, rerender, preview, download workflows, and campaign visibility
+- release-management surfaces for campaigns: drilldown, baseline promotion, regression comparison, and operator-facing release summaries through both API and dashboard
 - a shared semantic-quality layer that scores subtitle readability, script coverage, shot variety, portrait identity consistency, audio-mix cleanliness, and preset-archetype payoff
 - semantic quality is now part of the operator surface itself: project overview includes a normalized `semantic_quality` block, and the queue can emit project-level `review_quality` work when the quality gate fails
 - real `FFmpeg` shot composition and final portrait render assembly with a default `720x1280` master profile
@@ -136,7 +137,7 @@ For a first local run, start with the default baseline instead of enabling every
 .venv\Scripts\python.exe -m uvicorn filmstudio.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Once the API is up, open [http://127.0.0.1:8000/studio](http://127.0.0.1:8000/studio). The built-in operator dashboard lets you create projects, watch queue state, inspect campaign history, preview final videos, review shots, trigger rerenders, and download packaged outputs without standing up a separate frontend.
+Once the API is up, open [http://127.0.0.1:8000/studio](http://127.0.0.1:8000/studio). The built-in operator dashboard lets you create projects, watch queue state, inspect campaign history, drill into campaign cases, compare release gates, promote canonical baselines, preview final videos, review shots, trigger rerenders, and download packaged outputs without standing up a separate frontend.
 
 2. In another terminal, create a project:
 
@@ -242,9 +243,28 @@ Campaign reports now also have a first-class API surface and dashboard presence:
 Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/campaigns/overview"
 Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/campaigns?limit=8"
 Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/campaigns/product_readiness_v12_release_gate_v5_green"
+Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/campaigns/compare?left=product_readiness_v12_release_gate_v5_green&right=product_readiness_v10_semantic_gate_v4_green"
 ```
 
-Use those endpoints when you want the latest release-gate proof, recent campaign summaries, or the full JSON for a specific campaign without opening files directly under `runtime/campaigns/`.
+Use those endpoints when you want the latest release-gate proof, recent campaign summaries, a raw regression diff between two campaigns, or the full JSON for a specific campaign without opening files directly under `runtime/campaigns/`.
+
+Campaign release state is also writable through the public API:
+
+```powershell
+$body = @{
+  status = "canonical"
+  note = "Promote the current 12/12 release gate"
+  compared_to = "product_readiness_v10_semantic_gate_v4_green"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://127.0.0.1:8000/api/v1/campaigns/product_readiness_v12_release_gate_v5_green/release" `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+That release-management layer persists registry state under the runtime manifests, tracks `candidate`, `canonical`, and `superseded` campaigns, exposes campaign drilldown plus comparison data through the dashboard, and keeps one explicit current canonical baseline for the operator release flow.
 
 This path is the best starting point for anyone cloning the repo for the first time because it exercises the real control plane, worker, manifests, and final render flow without requiring every optional backend to be bootstrapped first.
 
@@ -423,7 +443,9 @@ set FILMSTUDIO_GPU_LEASE_WAIT_TIMEOUT_SEC=300.0
 - `GET /api/v1/projects/preset-catalog`
 - `GET /api/v1/campaigns`
 - `GET /api/v1/campaigns/overview`
+- `GET /api/v1/campaigns/compare`
 - `GET /api/v1/campaigns/{campaign_name}`
+- `POST /api/v1/campaigns/{campaign_name}/release`
 - `GET /api/v1/projects/{project_id}`
 - `GET /api/v1/projects/{project_id}/overview`
 - `GET /api/v1/projects/{project_id}/deliverables`

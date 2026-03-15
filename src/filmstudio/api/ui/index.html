@@ -50,6 +50,83 @@
       </aside>
 
       <main class="main-stage">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Release Management</p>
+              <h2>Campaign Drilldown</h2>
+            </div>
+            <span id="campaign-selection-hint" class="selection-hint">Select a campaign to inspect</span>
+          </div>
+          <div id="campaign-empty" class="muted-copy">Pick a campaign from Campaign Center to inspect release state and regressions.</div>
+          <div id="campaign-detail" class="detail-stack" hidden>
+            <div id="campaign-hero" class="focus-card"></div>
+            <div class="detail-grid">
+              <section class="focus-card">
+                <div class="panel-head">
+                  <div>
+                    <p class="eyebrow">Release Summary</p>
+                    <h2>Baseline Status</h2>
+                  </div>
+                </div>
+                <div id="campaign-release-summary" class="queue-list"></div>
+              </section>
+
+              <section class="focus-card">
+                <div class="panel-head">
+                  <div>
+                    <p class="eyebrow">Promotion</p>
+                    <h2>Baseline Controls</h2>
+                  </div>
+                </div>
+                <label class="field">
+                  <span>Compare Against</span>
+                  <select id="campaign-compare-target"></select>
+                </label>
+                <label class="field">
+                  <span>Release Note</span>
+                  <textarea id="campaign-release-note" rows="4" placeholder="Document why this campaign becomes candidate, canonical, or superseded."></textarea>
+                </label>
+                <div class="toolbar">
+                  <button id="campaign-mark-candidate-button" class="button button-ghost" type="button">Mark Candidate</button>
+                  <button id="campaign-mark-canonical-button" class="button button-primary" type="button">Promote Canonical</button>
+                  <button id="campaign-mark-superseded-button" class="button button-warning" type="button">Mark Superseded</button>
+                </div>
+              </section>
+
+              <section class="focus-card">
+                <div class="panel-head">
+                  <div>
+                    <p class="eyebrow">Regression Surface</p>
+                    <h2>Comparison</h2>
+                  </div>
+                </div>
+                <div id="campaign-comparison" class="queue-list"></div>
+              </section>
+
+              <section class="focus-card">
+                <div class="panel-head">
+                  <div>
+                    <p class="eyebrow">Release Desk</p>
+                    <h2>Registry Overview</h2>
+                  </div>
+                </div>
+                <div id="campaign-release-desk" class="queue-list"></div>
+              </section>
+            </div>
+
+            <section class="focus-card">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Campaign Cases</p>
+                  <h2>Case Table</h2>
+                </div>
+              </div>
+              <div id="campaign-cases" class="queue-list"></div>
+            </section>
+          </div>
+        </section>
+
         <section class="panel project-stream-panel">
           <div class="panel-head">
             <div>

@@ -37,7 +37,15 @@ def create_app() -> FastAPI:
     app.state.gpu_lease_store = gpu_lease_store
     app.state.service_registry = build_service_registry(settings)
     app.state.runtime_probe = build_runtime_probe(settings)
-    app.state.campaign_service = CampaignService(settings.runtime_root / "campaigns")
+    app.state.campaign_service = CampaignService(
+        settings.runtime_root / "campaigns",
+        registry_path=(
+            settings.runtime_root
+            / "manifests"
+            / "release_management"
+            / "release_registry.json"
+        ),
+    )
     ui_root = Path(__file__).resolve().parent / "ui"
     app.mount("/studio/assets", StaticFiles(directory=ui_root), name="studio-assets")
     app.include_router(dashboard_router)

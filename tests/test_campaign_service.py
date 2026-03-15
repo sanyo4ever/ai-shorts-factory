@@ -4,6 +4,62 @@ from pathlib import Path
 from filmstudio.services.campaign_service import CampaignService
 
 
+def _sample_run(
+    *,
+    slug: str,
+    title: str,
+    category: str,
+    status: str = "completed",
+    qc_status: str = "passed",
+    semantic_gate_passed: bool = True,
+    deliverables_ready: bool = True,
+    operator_attention: bool = False,
+    project_id: str | None = None,
+) -> dict[str, object]:
+    return {
+        "case_slug": slug,
+        "title": title,
+        "category": category,
+        "status": status,
+        "project_id": project_id or f"proj_{slug}",
+        "qc_status": qc_status,
+        "qc_findings": [] if qc_status == "passed" else [{"code": "qc_issue"}],
+        "semantic_quality": {
+            "available": True,
+            "gate_passed": semantic_gate_passed,
+            "failed_gates": [] if semantic_gate_passed else ["audio_mix_clean"],
+        },
+        "deliverables_summary": {
+            "ready": deliverables_ready,
+        },
+        "operator_overview": {
+            "action": {
+                "next_action": "review" if operator_attention else "ship",
+                "needs_operator_attention": operator_attention,
+            }
+        },
+        "backend_profile": {
+            "visual_backend": "comfyui",
+            "video_backend": "wan",
+            "tts_backend": "piper",
+            "music_backend": "ace_step",
+            "render_profile": {
+                "width": 720,
+                "height": 1280,
+                "fps": 24,
+                "orientation": "portrait",
+                "aspect_ratio": "9:16",
+            },
+        },
+        "product_preset": {
+            "style_preset": "studio_illustrated",
+            "voice_cast_preset": "solo_host",
+            "music_preset": "uplift_pulse",
+            "short_archetype": "creator_hook",
+        },
+    }
+
+
 def _write_campaign_report(
     campaign_root: Path,
     *,
@@ -11,6 +67,8 @@ def _write_campaign_report(
     generated_at: str,
     aggregate: dict[str, object],
     backend_profile: dict[str, object] | None = None,
+    runs: list[dict[str, object]] | None = None,
+    cases: list[dict[str, object]] | None = None,
 ) -> Path:
     report_root = campaign_root / campaign_name
     report_root.mkdir(parents=True, exist_ok=True)
@@ -22,6 +80,8 @@ def _write_campaign_report(
         or {
             "visual_backend": "comfyui",
             "video_backend": "wan",
+            "tts_backend": "piper",
+            "music_backend": "ace_step",
             "render_profile": {
                 "width": 720,
                 "height": 1280,
@@ -30,7 +90,8 @@ def _write_campaign_report(
                 "aspect_ratio": "9:16",
             },
         },
-        "cases": [],
+        "runs": runs or [],
+        "cases": cases or [],
         "aggregate": aggregate,
     }
     report_path = report_root / "stability_report.json"
@@ -79,6 +140,7 @@ def test_campaign_service_builds_sorted_campaign_summaries(tmp_path: Path) -> No
     ]
     assert campaigns[0]["family"] == "product_readiness"
     assert campaigns[0]["is_green"] is True
+    assert campaigns[0]["release"]["status"] == "candidate"
     assert campaigns[0]["categories"] == [
         "comparison_showdown",
         "reaction_opinion",
@@ -86,32 +148,52 @@ def test_campaign_service_builds_sorted_campaign_summaries(tmp_path: Path) -> No
     ]
 
 
-def test_campaign_service_builds_overview_and_detail_views(tmp_path: Path) -> None:
+def test_campaign_service_builds_overview_detail_and_case_table(tmp_path: Path) -> None:
     campaign_root = tmp_path / "campaigns"
     _write_campaign_report(
         campaign_root,
-        campaign_name="full_dry_run_v8",
-        generated_at="2026-03-14T08:00:00+00:00",
+        campaign_name="product_readiness_v11_release_gate_v4_green",
+        generated_at="2026-03-14T11:45:07+00:00",
         aggregate={
-            "total_runs": 1,
-            "completed_runs": 1,
-            "all_requirements_met_rate": 1.0,
-            "qc_finding_counts": {},
-        },
-    )
-    product_report_path = _write_campaign_report(
-        campaign_root,
-        campaign_name="product_readiness_v12_release_gate_v5_green",
-        generated_at="2026-03-15T11:45:07+00:00",
-        aggregate={
-            "total_runs": 12,
-            "completed_runs": 12,
+            "total_runs": 2,
+            "completed_runs": 2,
             "product_ready_rate": 1.0,
             "all_requirements_met_rate": 1.0,
             "semantic_quality_gate_rate": 1.0,
             "qc_finding_counts": {},
             "suite_case_category_set": ["solo_creator", "comparison_showdown"],
         },
+        runs=[
+            _sample_run(slug="solo_creator", title="Solo Creator", category="solo_creator"),
+            _sample_run(
+                slug="comparison_showdown",
+                title="Comparison Showdown",
+                category="comparison_showdown",
+                operator_attention=True,
+            ),
+        ],
+    )
+    product_report_path = _write_campaign_report(
+        campaign_root,
+        campaign_name="product_readiness_v12_release_gate_v5_green",
+        generated_at="2026-03-15T11:45:07+00:00",
+        aggregate={
+            "total_runs": 2,
+            "completed_runs": 2,
+            "product_ready_rate": 1.0,
+            "all_requirements_met_rate": 1.0,
+            "semantic_quality_gate_rate": 1.0,
+            "qc_finding_counts": {},
+            "suite_case_category_set": ["solo_creator", "comparison_showdown"],
+        },
+        runs=[
+            _sample_run(slug="solo_creator", title="Solo Creator", category="solo_creator"),
+            _sample_run(
+                slug="comparison_showdown",
+                title="Comparison Showdown",
+                category="comparison_showdown",
+            ),
+        ],
     )
 
     service = CampaignService(campaign_root)
@@ -119,14 +201,85 @@ def test_campaign_service_builds_overview_and_detail_views(tmp_path: Path) -> No
     detail = service.get_campaign("product_readiness_v12_release_gate_v5_green")
 
     assert overview["summary"]["campaign_count"] == 2
-    assert overview["summary"]["family_count"] == 2
+    assert overview["summary"]["family_count"] == 1
     assert overview["highlights"]["latest_product_readiness"]["campaign_name"] == (
         "product_readiness_v12_release_gate_v5_green"
     )
-    assert overview["families"][0]["latest"]["campaign_name"] == (
+    assert overview["release_management"]["recommended_canonical"]["campaign_name"] == (
         "product_readiness_v12_release_gate_v5_green"
     )
     assert detail is not None
     assert detail["summary"]["report_path"] == str(product_report_path)
     assert detail["summary"]["status"] == "green"
     assert detail["report"]["campaign_name"] == "product_readiness_v12_release_gate_v5_green"
+    assert len(detail["case_table"]) == 2
+    assert detail["case_table"][0]["project_url"].endswith("/overview")
+    assert detail["comparison"]["right"]["campaign_name"] == "product_readiness_v11_release_gate_v4_green"
+    assert detail["comparison"]["summary"]["improvement_count"] == 1
+    assert detail["release_summary"]["status"] == "candidate"
+
+
+def test_campaign_service_promotes_canonical_and_tracks_registry_history(tmp_path: Path) -> None:
+    campaign_root = tmp_path / "campaigns"
+    registry_path = tmp_path / "runtime" / "release_management" / "release_registry.json"
+    _write_campaign_report(
+        campaign_root,
+        campaign_name="product_readiness_v11_release_gate_v4_green",
+        generated_at="2026-03-14T11:45:07+00:00",
+        aggregate={
+            "total_runs": 2,
+            "completed_runs": 2,
+            "product_ready_rate": 1.0,
+            "all_requirements_met_rate": 1.0,
+            "semantic_quality_gate_rate": 1.0,
+            "qc_finding_counts": {},
+            "suite_case_category_set": ["solo_creator"],
+        },
+        runs=[_sample_run(slug="solo_creator", title="Solo Creator", category="solo_creator")],
+    )
+    _write_campaign_report(
+        campaign_root,
+        campaign_name="product_readiness_v12_release_gate_v5_green",
+        generated_at="2026-03-15T11:45:07+00:00",
+        aggregate={
+            "total_runs": 2,
+            "completed_runs": 2,
+            "product_ready_rate": 1.0,
+            "all_requirements_met_rate": 1.0,
+            "semantic_quality_gate_rate": 1.0,
+            "qc_finding_counts": {},
+            "suite_case_category_set": ["solo_creator"],
+        },
+        runs=[_sample_run(slug="solo_creator", title="Solo Creator", category="solo_creator")],
+    )
+
+    service = CampaignService(campaign_root, registry_path=registry_path)
+    previous = service.update_release_status(
+        "product_readiness_v11_release_gate_v4_green",
+        status="canonical",
+        note="initial release",
+    )
+    current = service.update_release_status(
+        "product_readiness_v12_release_gate_v5_green",
+        status="canonical",
+        note="supersedes previous baseline",
+    )
+    overview = service.build_overview()
+    previous_summary = next(
+        summary
+        for summary in service.list_campaigns()
+        if summary["campaign_name"] == "product_readiness_v11_release_gate_v4_green"
+    )
+
+    assert previous["summary"]["release"]["status"] == "canonical"
+    assert current["summary"]["release"]["status"] == "canonical"
+    assert current["summary"]["release"]["compared_to"] == "product_readiness_v11_release_gate_v4_green"
+    assert previous_summary["release"]["status"] == "superseded"
+    assert previous_summary["release"]["superseded_by"] == "product_readiness_v12_release_gate_v5_green"
+    assert overview["release_management"]["current_canonical"]["campaign_name"] == (
+        "product_readiness_v12_release_gate_v5_green"
+    )
+    assert overview["release_management"]["previous_canonical"]["campaign_name"] == (
+        "product_readiness_v11_release_gate_v4_green"
+    )
+    assert len(overview["release_management"]["history"]) == 2

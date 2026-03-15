@@ -286,6 +286,9 @@ button {
 
 .badge-status-completed,
 .badge-status-approved,
+.badge-status-passed,
+.badge-status-canonical,
+.badge-status-improvement,
 .quality-pass {
   color: #f7fffb;
   background: rgba(23, 114, 69, 0.94);
@@ -295,6 +298,7 @@ button {
 .badge-status-queued,
 .badge-status-running,
 .badge-status-review_quality,
+.badge-status-candidate,
 .status-info {
   color: #effbff;
   background: rgba(78, 104, 151, 0.92);
@@ -303,6 +307,8 @@ button {
 
 .badge-status-failed,
 .badge-status-blocked,
+.badge-status-superseded,
+.badge-status-regression,
 .quality-fail,
 .status-error {
   color: #fff6f6;
@@ -314,6 +320,10 @@ button {
 .badge-status-needs_rerender,
 .badge-status-rerender,
 .badge-status-review,
+.badge-status-needs_attention,
+.badge-status-incomplete,
+.badge-status-unchanged,
+.badge-status-untracked,
 .status-warning {
   color: #fffaf0;
   background: rgba(179, 106, 5, 0.92);

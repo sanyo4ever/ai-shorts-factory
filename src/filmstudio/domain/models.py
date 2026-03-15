@@ -43,6 +43,7 @@ ShortArchetype = Literal[
     "countdown_list",
     "hero_teaser",
 ]
+CampaignReleaseStatus = Literal["candidate", "canonical", "superseded"]
 ReviewStatus = Literal["pending_review", "approved", "needs_rerender"]
 ReviewTargetKind = Literal["scene", "shot"]
 RerenderStage = Literal[
@@ -271,6 +272,12 @@ class ReviewUpdateRequest(BaseModel):
     request_rerender: bool = False
     start_stage: RerenderStage = "render_shots"
     run_immediately: bool = False
+
+
+class CampaignReleaseUpdateRequest(BaseModel):
+    status: CampaignReleaseStatus
+    note: str = ""
+    compared_to: str | None = None
 
 
 class ProjectRecord(BaseModel):

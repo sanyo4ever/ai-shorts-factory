@@ -4,6 +4,8 @@ const state = {
   queue: null,
   campaignOverview: null,
   campaigns: [],
+  selectedCampaignName: null,
+  campaignDetails: new Map(),
   selectedProjectId: null,
   selectedTarget: null,
   projectDetails: new Map(),
@@ -27,6 +29,19 @@ function cacheElements() {
   elements.globalMetrics = byId("global-metrics");
   elements.campaignSummary = byId("campaign-summary");
   elements.campaignList = byId("campaign-list");
+  elements.campaignSelectionHint = byId("campaign-selection-hint");
+  elements.campaignEmpty = byId("campaign-empty");
+  elements.campaignDetail = byId("campaign-detail");
+  elements.campaignHero = byId("campaign-hero");
+  elements.campaignReleaseSummary = byId("campaign-release-summary");
+  elements.campaignCompareTarget = byId("campaign-compare-target");
+  elements.campaignReleaseNote = byId("campaign-release-note");
+  elements.campaignMarkCandidateButton = byId("campaign-mark-candidate-button");
+  elements.campaignMarkCanonicalButton = byId("campaign-mark-canonical-button");
+  elements.campaignMarkSupersededButton = byId("campaign-mark-superseded-button");
+  elements.campaignComparison = byId("campaign-comparison");
+  elements.campaignReleaseDesk = byId("campaign-release-desk");
+  elements.campaignCases = byId("campaign-cases");
   elements.queueSummary = byId("queue-summary");
   elements.queueList = byId("queue-list");
   elements.projectList = byId("project-list");
@@ -76,6 +91,31 @@ function bindEvents() {
       return;
     }
     runProject(state.selectedProjectId).catch(handleError);
+  });
+  elements.campaignList.addEventListener("click", (event) => {
+    const campaignButton = event.target.closest("[data-campaign-name]");
+    if (!campaignButton) {
+      return;
+    }
+    selectCampaign(campaignButton.dataset.campaignName).catch(handleError);
+  });
+  elements.campaignCompareTarget.addEventListener("change", () => {
+    if (!state.selectedCampaignName) {
+      return;
+    }
+    loadCampaignDetail(state.selectedCampaignName, {
+      force: true,
+      compareTo: elements.campaignCompareTarget.value || null,
+    }).catch(handleError);
+  });
+  elements.campaignMarkCandidateButton.addEventListener("click", () => {
+    updateCampaignReleaseStatus("candidate").catch(handleError);
+  });
+  elements.campaignMarkCanonicalButton.addEventListener("click", () => {
+    updateCampaignReleaseStatus("canonical").catch(handleError);
+  });
+  elements.campaignMarkSupersededButton.addEventListener("click", () => {
+    updateCampaignReleaseStatus("superseded").catch(handleError);
   });
   elements.approveFocusButton.addEventListener("click", () => {
     applyFocusedReview({ status: "approved" }).catch(handleError);
@@ -150,8 +190,14 @@ async function refreshStudio({ forceProjectRefresh = false } = {}) {
   state.campaignOverview = campaignOverview || { summary: {}, highlights: {}, campaigns: [] };
   state.campaigns = Array.isArray(campaigns) ? campaigns : [];
   populatePresetForm();
+  chooseCampaignSelection();
   chooseProjectSelection();
   renderChrome();
+  if (state.selectedCampaignName) {
+    await loadCampaignDetail(state.selectedCampaignName, { force: forceProjectRefresh });
+  } else {
+    renderCampaignDetail();
+  }
   if (state.selectedProjectId) {
     await loadProjectDetail(state.selectedProjectId, { force: forceProjectRefresh });
   } else {
@@ -202,6 +248,46 @@ function chooseProjectSelection() {
   }
   state.selectedProjectId = state.overviews[0]?.project_id || null;
   state.selectedTarget = null;
+}
+
+function chooseCampaignSelection() {
+  const knownNames = new Set(state.campaigns.map((campaign) => campaign.campaign_name));
+  if (state.selectedCampaignName && knownNames.has(state.selectedCampaignName)) {
+    return;
+  }
+  const currentCanonical =
+    state.campaignOverview?.release_management?.current_canonical?.campaign_name || null;
+  state.selectedCampaignName =
+    (currentCanonical && knownNames.has(currentCanonical) ? currentCanonical : null) ||
+    state.campaigns[0]?.campaign_name ||
+    null;
+}
+
+async function loadCampaignDetail(campaignName, { force = false, compareTo = null } = {}) {
+  if (!campaignName) {
+    renderCampaignDetail();
+    return;
+  }
+  const cacheKey = `${campaignName}::${compareTo || ""}`;
+  if (!force && state.campaignDetails.has(cacheKey)) {
+    renderCampaignDetail();
+    return;
+  }
+  setStatus(`Loading campaign ${campaignName}...`, "info");
+  const query = compareTo ? `?compare_to=${encodeURIComponent(compareTo)}` : "";
+  const detail = await fetchJson(`/api/v1/campaigns/${encodeURIComponent(campaignName)}${query}`);
+  detail.selected_compare_target =
+    compareTo || detail.comparison?.right?.campaign_name || detail.summary?.release?.compared_to || "";
+  state.campaignDetails.set(cacheKey, detail);
+  state.campaignDetails.set(campaignName, detail);
+  renderChrome();
+  renderCampaignDetail();
+}
+
+async function selectCampaign(campaignName) {
+  state.selectedCampaignName = campaignName;
+  renderChrome();
+  await loadCampaignDetail(campaignName, { force: false });
 }
 
 async function loadProjectDetail(projectId, { force = false } = {}) {
@@ -267,6 +353,7 @@ async function selectProject(projectId, target = null) {
 function renderChrome() {
   renderGlobalMetrics();
   renderCampaignCenter();
+  renderCampaignDetail();
   renderQueue();
   renderProjectList();
   renderPresetPreview();
@@ -299,11 +386,14 @@ function renderCampaignCenter() {
   const summary = overview.summary || {};
   const latestReadiness = overview.highlights?.latest_product_readiness || null;
   const readinessRate = latestReadiness?.rates?.product_ready_rate;
+  const releaseManagement = overview.release_management || {};
+  const currentCanonical = releaseManagement.current_canonical || null;
   elements.campaignCountBadge.textContent = `${summary.campaign_count || 0} campaigns`;
   elements.campaignSummary.innerHTML = `
     <span>${escapeHtml(String(summary.green_campaign_count || 0))} green</span>
     <span>${escapeHtml(String(summary.family_count || 0))} families</span>
     <span>${readinessRate == null ? "no release gate" : `release gate ${escapeHtml(formatRate(readinessRate))}`}</span>
+    <span>${currentCanonical ? `canonical ${escapeHtml(currentCanonical.campaign_name)}` : "no canonical baseline"}</span>
   `;
   if (!state.campaigns.length) {
     elements.campaignList.innerHTML = `<div class="muted-copy">No campaign reports found.</div>`;
@@ -319,8 +409,10 @@ function renderCampaignCenter() {
         campaign.rates?.duration_alignment_rate ??
         0;
       const openUrl = `/api/v1/campaigns/${encodeURIComponent(campaign.campaign_name)}`;
+      const selected = campaign.campaign_name === state.selectedCampaignName;
+      const releaseStatus = campaign.release?.status || "untracked";
       return `
-        <article class="queue-item">
+        <article class="queue-item${selected ? " is-focused" : ""}">
           <div class="card-topline">
             <div>
               <strong class="card-title">${escapeHtml(campaign.campaign_name)}</strong>
@@ -332,6 +424,14 @@ function renderCampaignCenter() {
             <span>${escapeHtml(campaign.generated_at || "unknown time")}</span>
             <span>${escapeHtml(formatRate(primaryRate))}</span>
           </div>
+          <div class="chip-row">
+            <span class="chip">${escapeHtml(releaseStatus)}</span>
+            ${
+              campaign.release?.is_current_canonical
+                ? '<span class="quality-chip quality-pass">current canonical</span>'
+                : ""
+            }
+          </div>
           ${Array.isArray(campaign.categories) && campaign.categories.length
             ? `<div class="chip-row">${campaign.categories
                 .slice(0, 4)
@@ -339,7 +439,270 @@ function renderCampaignCenter() {
                 .join("")}</div>`
             : ""}
           <div class="card-actions">
+            <button class="button button-primary" type="button" data-campaign-name="${escapeHtml(campaign.campaign_name)}">Inspect</button>
             <a class="button button-ghost" href="${escapeHtml(openUrl)}" target="_blank" rel="noreferrer">Open Report</a>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function getSelectedCampaignDetail() {
+  if (!state.selectedCampaignName) {
+    return null;
+  }
+  const selectedCompareTarget = elements.campaignCompareTarget?.value || "";
+  return (
+    state.campaignDetails.get(`${state.selectedCampaignName}::${selectedCompareTarget}`) ||
+    state.campaignDetails.get(state.selectedCampaignName) ||
+    null
+  );
+}
+
+function renderCampaignDetail() {
+  elements.campaignSelectionHint.textContent = state.selectedCampaignName
+    ? `Focused campaign: ${state.selectedCampaignName}`
+    : "Select a campaign to inspect";
+  const detail = getSelectedCampaignDetail();
+  if (!detail) {
+    elements.campaignEmpty.hidden = false;
+    elements.campaignDetail.hidden = true;
+    return;
+  }
+  elements.campaignEmpty.hidden = true;
+  elements.campaignDetail.hidden = false;
+  renderCampaignHero(detail);
+  renderCampaignReleaseSummary(detail);
+  renderCampaignCompareTarget(detail);
+  renderCampaignComparison(detail);
+  renderCampaignReleaseDesk();
+  renderCampaignCases(detail);
+}
+
+function renderCampaignHero(detail) {
+  const summary = detail.summary || {};
+  const release = summary.release || {};
+  const comparison = detail.comparison || null;
+  elements.campaignHero.innerHTML = `
+    <div class="card-topline">
+      <div>
+        <strong class="card-title">${escapeHtml(summary.campaign_name || "campaign")}</strong>
+        <p>${escapeHtml(summary.family || "campaign")} / ${escapeHtml(summary.generated_at || "unknown time")}</p>
+      </div>
+      <span class="badge ${summary.is_green ? "quality-pass" : "quality-fail"}">${escapeHtml(summary.status || "unknown")}</span>
+    </div>
+    <div class="chip-row">
+      <span class="chip">${escapeHtml(release.status || "untracked")}</span>
+      ${
+        release.is_current_canonical
+          ? '<span class="quality-chip quality-pass">current canonical</span>'
+          : ""
+      }
+      ${
+        comparison?.status
+          ? `<span class="chip">comparison ${escapeHtml(comparison.status)}</span>`
+          : ""
+      }
+    </div>
+    <div class="meta-row">
+      <span>${escapeHtml(String(summary.completed_runs || 0))}/${escapeHtml(String(summary.total_runs || 0))} runs</span>
+      <span>${escapeHtml(String(summary.qc_finding_count || 0))} QC findings</span>
+      <span>${escapeHtml(formatRate(summary.rates?.product_ready_rate ?? summary.rates?.all_requirements_met_rate ?? 0))}</span>
+    </div>
+  `;
+}
+
+function renderCampaignReleaseSummary(detail) {
+  const releaseSummary = detail.release_summary || {};
+  const summary = detail.summary || {};
+  const release = summary.release || {};
+  const bullets = Array.isArray(releaseSummary.bullets) ? releaseSummary.bullets : [];
+  elements.campaignReleaseSummary.innerHTML = `
+    <article class="queue-item">
+      <div class="card-topline">
+        <div>
+          <strong class="card-title">${escapeHtml(releaseSummary.headline || "Release summary unavailable.")}</strong>
+          <p>${escapeHtml(summary.campaign_name || "")}</p>
+        </div>
+        <span class="badge ${badgeClass(release.status || "untracked")}">${escapeHtml(release.status || "untracked")}</span>
+      </div>
+      <div class="meta-row">
+        <span>${escapeHtml(release.explicit ? "explicit registry state" : "derived release state")}</span>
+        ${
+          release.compared_to
+            ? `<span>compared to ${escapeHtml(release.compared_to)}</span>`
+            : ""
+        }
+      </div>
+      <div class="queue-list">
+        ${
+          bullets.length
+            ? bullets.map((bullet) => `<div class="muted-copy">${escapeHtml(bullet)}</div>`).join("")
+            : '<div class="muted-copy">No release summary bullets available.</div>'
+        }
+      </div>
+    </article>
+  `;
+}
+
+function renderCampaignCompareTarget(detail) {
+  const options = [
+    '<option value="">Auto compare target</option>',
+    ...state.campaigns
+      .filter((campaign) => campaign.campaign_name !== state.selectedCampaignName)
+      .map((campaign) => {
+        const selected =
+          campaign.campaign_name === (detail.selected_compare_target || "") ? " selected" : "";
+        return `<option value="${escapeHtml(campaign.campaign_name)}"${selected}>${escapeHtml(campaign.campaign_name)}</option>`;
+      }),
+  ];
+  elements.campaignCompareTarget.innerHTML = options.join("");
+}
+
+function renderCampaignComparison(detail) {
+  const comparison = detail.comparison || null;
+  if (!comparison) {
+    elements.campaignComparison.innerHTML = `<div class="muted-copy">No comparison target selected for this campaign.</div>`;
+    return;
+  }
+  const compareUrl = `/api/v1/campaigns/compare?left=${encodeURIComponent(
+    comparison.left?.campaign_name || "",
+  )}&right=${encodeURIComponent(comparison.right?.campaign_name || "")}`;
+  const changedCases = comparison.case_diff?.changed || [];
+  const regressions = comparison.case_diff?.regressed || [];
+  const improvements = comparison.case_diff?.improved || [];
+  const backendChanges = comparison.backend_changes || [];
+  const metricDeltas = (comparison.metric_deltas || [])
+    .filter((item) => Math.abs(Number(item.delta || 0)) > 0)
+    .slice(0, 6);
+  elements.campaignComparison.innerHTML = `
+    <article class="queue-item">
+      <div class="card-topline">
+        <div>
+          <strong class="card-title">${escapeHtml(comparison.left?.campaign_name || "")}</strong>
+          <p>vs ${escapeHtml(comparison.right?.campaign_name || "")}</p>
+        </div>
+        <span class="badge ${badgeClass(comparison.status || "unchanged")}">${escapeHtml(comparison.status || "unchanged")}</span>
+      </div>
+      <div class="meta-row">
+        <span>${escapeHtml(String(regressions.length))} regressions</span>
+        <span>${escapeHtml(String(improvements.length))} improvements</span>
+        <span>${escapeHtml(String(backendChanges.length))} backend changes</span>
+      </div>
+      ${
+        metricDeltas.length
+          ? `<div class="chip-row">${metricDeltas
+              .map(
+                (item) =>
+                  `<span class="chip">${escapeHtml(item.metric)} ${item.delta > 0 ? "+" : ""}${escapeHtml(item.delta.toFixed(2))}</span>`,
+              )
+              .join("")}</div>`
+          : '<div class="muted-copy">No metric deltas across release gates.</div>'
+      }
+      ${
+        changedCases.length
+          ? `<div class="queue-list">${changedCases
+              .slice(0, 8)
+              .map(
+                (item) => `
+                  <article class="queue-item">
+                    <div class="card-topline">
+                      <strong class="card-title">${escapeHtml(item.title || item.slug)}</strong>
+                      <span class="badge ${item.left_status === "passed" ? "quality-pass" : "quality-fail"}">${escapeHtml(item.right_status)} → ${escapeHtml(item.left_status)}</span>
+                    </div>
+                    <div class="meta-row">
+                      <span>${escapeHtml(item.slug)}</span>
+                    </div>
+                  </article>
+                `,
+              )
+              .join("")}</div>`
+          : '<div class="muted-copy">No per-case regressions or improvements.</div>'
+      }
+      <div class="card-actions">
+        <a class="button button-ghost" href="${escapeHtml(compareUrl)}" target="_blank" rel="noreferrer">Open Raw Compare</a>
+      </div>
+    </article>
+  `;
+}
+
+function renderCampaignReleaseDesk() {
+  const releaseManagement = state.campaignOverview?.release_management || {};
+  const currentCanonical = releaseManagement.current_canonical || null;
+  const previousCanonical = releaseManagement.previous_canonical || null;
+  const recommended = releaseManagement.recommended_canonical || null;
+  const candidates = Array.isArray(releaseManagement.candidates) ? releaseManagement.candidates : [];
+  elements.campaignReleaseDesk.innerHTML = `
+    <article class="queue-item">
+      <div class="meta-row">
+        <span>${currentCanonical ? `canonical ${escapeHtml(currentCanonical.campaign_name)}` : "no canonical baseline"}</span>
+        <span>${previousCanonical ? `previous ${escapeHtml(previousCanonical.campaign_name)}` : "no previous baseline"}</span>
+      </div>
+      ${
+        recommended
+          ? `<div class="muted-copy">Recommended canonical: ${escapeHtml(recommended.campaign_name)}</div>`
+          : '<div class="muted-copy">No recommended canonical campaign available.</div>'
+      }
+      ${
+        candidates.length
+          ? `<div class="chip-row">${candidates
+              .slice(0, 6)
+              .map((candidate) => `<span class="chip">${escapeHtml(candidate.campaign_name)}</span>`)
+              .join("")}</div>`
+          : '<div class="muted-copy">No candidate campaigns in registry.</div>'
+      }
+    </article>
+  `;
+}
+
+function renderCampaignCases(detail) {
+  const rows = Array.isArray(detail.case_table) ? detail.case_table : [];
+  if (!rows.length) {
+    elements.campaignCases.innerHTML = `<div class="muted-copy">No case rows available for this campaign.</div>`;
+    return;
+  }
+  elements.campaignCases.innerHTML = rows
+    .map((row) => {
+      const backendProfile = row.backend_profile || {};
+      const preset = row.product_preset || {};
+      return `
+        <article class="queue-item">
+          <div class="card-topline">
+            <div>
+              <strong class="card-title">${escapeHtml(row.title || row.slug)}</strong>
+              <p>${escapeHtml(row.slug || "case")}</p>
+            </div>
+            <span class="badge ${badgeClass(row.status || "unknown")}">${escapeHtml(row.status || "unknown")}</span>
+          </div>
+          <div class="meta-row">
+            <span>${escapeHtml(row.category || "uncategorized")}</span>
+            <span>${escapeHtml(backendProfile.visual_backend || "visual")} / ${escapeHtml(backendProfile.video_backend || "video")} / ${escapeHtml(backendProfile.tts_backend || "tts")}</span>
+          </div>
+          <div class="chip-row">
+            ${
+              preset.style_preset
+                ? `<span class="chip">${escapeHtml(preset.style_preset)}</span>`
+                : ""
+            }
+            ${
+              preset.short_archetype
+                ? `<span class="chip">${escapeHtml(preset.short_archetype)}</span>`
+                : ""
+            }
+            ${
+              row.project_id
+                ? `<span class="chip">${escapeHtml(row.project_id)}</span>`
+                : ""
+            }
+          </div>
+          <div class="card-actions">
+            ${
+              row.project_url
+                ? `<a class="button button-ghost" href="${escapeHtml(row.project_url)}" target="_blank" rel="noreferrer">Open Project</a>`
+                : ""
+            }
+            <a class="button button-ghost" href="${escapeHtml(row.campaign_url)}" target="_blank" rel="noreferrer">Open Campaign</a>
           </div>
         </article>
       `;
@@ -873,6 +1236,38 @@ async function runProject(projectId) {
   await fetchJson(`/api/v1/projects/${projectId}/run`, { method: "POST" });
   state.projectDetails.delete(projectId);
   await refreshStudio({ forceProjectRefresh: true });
+}
+
+async function updateCampaignReleaseStatus(status) {
+  if (!state.selectedCampaignName) {
+    setStatus("Select a campaign before changing release state.", "warning", 2200);
+    return;
+  }
+  const compareTo = elements.campaignCompareTarget.value || null;
+  const note = elements.campaignReleaseNote.value.trim();
+  setStatus(`${status} on ${state.selectedCampaignName}...`, "info");
+  const detail = await fetchJson(
+    `/api/v1/campaigns/${encodeURIComponent(state.selectedCampaignName)}/release`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        status,
+        note,
+        compared_to: compareTo,
+      }),
+    },
+  );
+  detail.selected_compare_target =
+    compareTo || detail.comparison?.right?.campaign_name || detail.summary?.release?.compared_to || "";
+  state.campaignDetails.set(state.selectedCampaignName, detail);
+  state.campaignDetails.set(
+    `${state.selectedCampaignName}::${detail.selected_compare_target || ""}`,
+    detail,
+  );
+  await refreshStudio({ forceProjectRefresh: false });
+  elements.campaignReleaseNote.value = "";
+  setStatus(`Updated release state for ${state.selectedCampaignName}.`, "success", 1800);
 }
 
 async function createProjectFromForm() {
