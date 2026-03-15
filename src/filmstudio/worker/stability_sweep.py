@@ -402,6 +402,45 @@ DEFAULT_PRODUCT_READINESS_CASES: tuple[FullDryRunCase, ...] = (
             "HERO: Kintsevyi znak yakosti - ne tilky final.mp4, a povnyi handoff z review_manifest i deliverables package."
         ),
     ),
+    FullDryRunCase(
+        slug="workflow_walkthrough_control_room",
+        title="Product Readiness Workflow Walkthrough Control Room",
+        category="workflow_walkthrough",
+        style_preset="studio_illustrated",
+        voice_cast_preset="solo_host",
+        music_preset="uplift_pulse",
+        short_archetype="creator_hook",
+        expected_character_count_min=2,
+        expected_speaker_count_min=2,
+        script=(
+            "SCENE 1. HERO hovoryt pryamo do kamery i pokazuye panel keruvannia studii.\n"
+            "HERO: Operator maie bachyty ne tilky roluk, a vsu liniiu vid planu do review ta deliverables.\n\n"
+            "SCENE 2. HERO run kriz control room iz paneliamy, kamera trymaie rush, reveal i odyn dominantnyi syluet u vertykalnomu framingu.\n"
+            "NARRATOR: Hero insert tut mae pidkreslyty, shcho workflow ne rozsypaetsia na okremi instrumenty, a zbyraietsia v odyn kerovanyi kontur.\n\n"
+            "SCENE 3. HERO znovu dyvytsia v kameru i pidbyvaie vysnovok.\n"
+            "HERO: Same tomu overview, queue i finalnyi render povynni zbyhatysia v odnomu produktnomu kontrakti."
+        ),
+    ),
+    FullDryRunCase(
+        slug="before_after_reveal_loop",
+        title="Product Readiness Before After Reveal Loop",
+        category="before_after_reveal",
+        style_preset="warm_documentary",
+        voice_cast_preset="narrator_guest",
+        music_preset="documentary_warmth",
+        short_archetype="narrated_breakdown",
+        expected_character_count_min=2,
+        expected_speaker_count_min=2,
+        script=(
+            "SCENE 1. NARRATOR spokiino opisuje stan do avtomatyzovanoi studii, a HERO pokazuye rozrizneni fayly ta notes.\n"
+            "NARRATOR: Ranishe komanda zbierala plan, review i eksport z okremykh djerel, tomu finalnyi stan bulo vazhko prochytaty.\n"
+            "HERO: Bud-yaka zmina u shoti odrazu rozryvala kartynu po vsomu proiektu.\n\n"
+            "SCENE 2. HERO vryvaietsia v onovlenyi pipeline, rush do kamery pidkresliuie reveal, a svitlo vedе oka vhoru po vertykalnomu kadru.\n"
+            "NARRATOR: Pislia zminy systema pokazuye odyn operatorskyi poverkh: shcho hotove, shcho chekaie review i shcho treba rerender.\n\n"
+            "SCENE 3. HERO spokiino dyvytsia v kameru ta fiksuie rezultat.\n"
+            "HERO: Ose i ye before-after efekt, koly product-grade short maie ne tilky final video, a y zrozumilyi stan dlia komandy."
+        ),
+    ),
 )
 
 
@@ -1233,6 +1272,75 @@ def _run_has_ready_deliverables(run: dict[str, Any]) -> bool:
     )
 
 
+def _run_has_operator_overview_ready(run: dict[str, Any]) -> bool:
+    overview = run.get("operator_overview", {})
+    if not isinstance(overview, dict):
+        return False
+    review_payload = overview.get("review", {})
+    deliverables_payload = overview.get("deliverables", {})
+    qc_payload = overview.get("qc", {})
+    action_payload = overview.get("action", {})
+    if not isinstance(review_payload, dict):
+        return False
+    if not isinstance(deliverables_payload, dict):
+        return False
+    if not isinstance(qc_payload, dict):
+        return False
+    if not isinstance(action_payload, dict):
+        return False
+    review_summary = review_payload.get("summary", {})
+    if not isinstance(review_summary, dict):
+        return False
+    pending_review_shot_count = int(review_summary.get("pending_review_shot_count") or 0)
+    needs_rerender_shot_count = int(review_summary.get("needs_rerender_shot_count") or 0)
+    expected_action = "deliver"
+    if needs_rerender_shot_count > 0:
+        expected_action = "rerender"
+    elif pending_review_shot_count > 0:
+        expected_action = "review"
+    return bool(
+        deliverables_payload.get("ready")
+        and qc_payload.get("status") == "passed"
+        and action_payload.get("next_action") == expected_action
+        and action_payload.get("needs_operator_attention") is (expected_action in {"review", "rerender"})
+    )
+
+
+def _run_has_operator_queue_ready(run: dict[str, Any]) -> bool:
+    queue_summary = run.get("operator_queue_summary", {})
+    queue_items = run.get("operator_queue_items", [])
+    overview = run.get("operator_overview", {})
+    if not isinstance(queue_summary, dict):
+        return False
+    if not isinstance(queue_items, list):
+        return False
+    if not isinstance(overview, dict):
+        return False
+    review_summary = ((overview.get("review") or {}).get("summary") or {})
+    if not isinstance(review_summary, dict):
+        return False
+    project_id = str(run.get("project_id") or "").strip()
+    pending_review_shot_count = int(review_summary.get("pending_review_shot_count") or 0)
+    needs_rerender_shot_count = int(review_summary.get("needs_rerender_shot_count") or 0)
+    expected_min_queue_items = pending_review_shot_count + needs_rerender_shot_count
+    project_items = [
+        item
+        for item in queue_items
+        if isinstance(item, dict) and str(item.get("project_id") or "").strip() == project_id
+    ]
+    if expected_min_queue_items == 0:
+        return bool(
+            int(queue_summary.get("project_count") or 0) == 1
+            and int(queue_summary.get("queue_item_count") or 0) == 0
+            and not project_items
+        )
+    return bool(
+        int(queue_summary.get("project_count") or 0) == 1
+        and int(queue_summary.get("queue_item_count") or 0) >= expected_min_queue_items
+        and len(project_items) >= expected_min_queue_items
+    )
+
+
 def _run_meets_product_readiness_requirements(run: dict[str, Any]) -> bool:
     portrait_shots = [shot for shot in run.get("portrait_shots", []) if isinstance(shot, dict)]
     wan_shots = [shot for shot in run.get("wan_shots", []) if isinstance(shot, dict)]
@@ -1254,6 +1362,8 @@ def _run_meets_product_readiness_requirements(run: dict[str, Any]) -> bool:
         and (not expected_music_backend or actual_music_backend == expected_music_backend)
         and _run_matches_expected_product_preset(run)
         and _run_has_ready_deliverables(run)
+        and _run_has_operator_overview_ready(run)
+        and _run_has_operator_queue_ready(run)
     )
 
 
@@ -1660,6 +1770,9 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
     deliverables_package_runs = 0
     review_surface_consistent_runs = 0
     deliverables_ready_runs = 0
+    operator_overview_ready_runs = 0
+    operator_queue_ready_runs = 0
+    operator_surface_ready_runs = 0
     product_ready_runs = 0
 
     for run in runs:
@@ -1747,6 +1860,12 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
                 review_surface_consistent_runs += 1
             if bool(deliverables_summary.get("package_ready")):
                 deliverables_ready_runs += 1
+        if _run_has_operator_overview_ready(run):
+            operator_overview_ready_runs += 1
+        if _run_has_operator_queue_ready(run):
+            operator_queue_ready_runs += 1
+        if _run_has_operator_overview_ready(run) and _run_has_operator_queue_ready(run):
+            operator_surface_ready_runs += 1
 
         backend_profile = run.get("backend_profile", {})
         if isinstance(backend_profile, dict):
@@ -1810,6 +1929,12 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
         "review_surface_consistent_rate": _rate(review_surface_consistent_runs, len(runs)),
         "deliverables_ready_runs": deliverables_ready_runs,
         "deliverables_ready_rate": _rate(deliverables_ready_runs, len(runs)),
+        "operator_overview_ready_runs": operator_overview_ready_runs,
+        "operator_overview_ready_rate": _rate(operator_overview_ready_runs, len(runs)),
+        "operator_queue_ready_runs": operator_queue_ready_runs,
+        "operator_queue_ready_rate": _rate(operator_queue_ready_runs, len(runs)),
+        "operator_surface_ready_runs": operator_surface_ready_runs,
+        "operator_surface_ready_rate": _rate(operator_surface_ready_runs, len(runs)),
         "product_ready_runs": product_ready_runs,
         "product_ready_rate": _rate(product_ready_runs, len(runs)),
         "style_preset_counts": dict(style_preset_counts),
@@ -2183,6 +2308,73 @@ def _remove_existing_case_runs(
     return filtered_runs
 
 
+def hydrate_seeded_product_readiness_runs(
+    settings: Settings,
+    cases: Iterable[FullDryRunCase],
+    report_paths: Iterable[Path],
+) -> list[dict[str, Any]]:
+    selected_cases = list(cases)
+    cases_by_slug = {case.slug: case for case in selected_cases}
+    service, _ = build_local_runtime(settings)
+    hydrated_runs: list[dict[str, Any]] = []
+    hydrated_case_slugs: set[str] = set()
+
+    for report_path in report_paths:
+        path = Path(report_path)
+        if not path.exists():
+            continue
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw_runs = payload.get("runs", []) if isinstance(payload, dict) else []
+        if not isinstance(raw_runs, list):
+            continue
+        for run in raw_runs:
+            if not isinstance(run, dict):
+                continue
+            case_slug = str(run.get("case_slug") or "").strip()
+            if not case_slug or case_slug in hydrated_case_slugs:
+                continue
+            case = cases_by_slug.get(case_slug)
+            if case is None:
+                continue
+            project_id = str(run.get("project_id") or "").strip()
+            if not project_id:
+                continue
+            snapshot = service.get_snapshot(project_id)
+            if snapshot is None:
+                continue
+            run_summary = summarize_project_run(snapshot)
+            operator_overview = service.build_project_overview(snapshot)
+            operator_queue = service.build_operator_queue_for_snapshots([snapshot])
+            run_summary.update(
+                {
+                    "case_slug": case.slug,
+                    "case_index": selected_cases.index(case) + 1,
+                    "case_category": case.category,
+                    "expected_style_preset": case.style_preset,
+                    "expected_voice_cast_preset": case.voice_cast_preset,
+                    "expected_music_preset": case.music_preset,
+                    "expected_short_archetype": case.short_archetype,
+                    "expected_strategies": list(case.expected_strategies),
+                    "expected_subtitle_lanes": list(case.expected_subtitle_lanes),
+                    "expected_scene_count_min": case.expected_scene_count_min,
+                    "expected_character_count_min": case.expected_character_count_min,
+                    "expected_speaker_count_min": case.expected_speaker_count_min,
+                    "expected_portrait_shot_count_min": case.expected_portrait_shot_count_min,
+                    "expected_wan_shot_count_min": case.expected_wan_shot_count_min,
+                    "expected_music_backend": case.expected_music_backend,
+                    "operator_overview": operator_overview,
+                    "operator_queue_summary": operator_queue.get("summary", {}),
+                    "operator_queue_items": operator_queue.get("items", []),
+                    "run_error": run.get("run_error"),
+                    "seeded_from_report": str(path),
+                    "hydrated_from_snapshot": True,
+                }
+            )
+            hydrated_runs.append(run_summary)
+            hydrated_case_slugs.add(case_slug)
+    return hydrated_runs
+
+
 def run_full_dry_run_campaign(
     settings: Settings,
     cases: Iterable[FullDryRunCase],
@@ -2263,6 +2455,7 @@ def run_product_readiness_campaign(
     campaign_name: str,
     resume: bool = False,
     replace_existing_case_slugs: Iterable[str] = (),
+    seed_runs: Iterable[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     settings.ensure_runtime_dirs()
     report_root = settings.runtime_root / "campaigns" / campaign_name
@@ -2288,6 +2481,13 @@ def run_product_readiness_campaign(
             for run in run_summaries
             if str(run.get("case_slug") or "").strip()
         }
+    seeded_payloads = [dict(run) for run in seed_runs if isinstance(run, dict)]
+    for seeded_run in seeded_payloads:
+        case_slug = str(seeded_run.get("case_slug") or "").strip()
+        if not case_slug or case_slug in completed_case_slugs:
+            continue
+        run_summaries.append(seeded_run)
+        completed_case_slugs.add(case_slug)
     skipped_case_slugs: list[str] = []
 
     for index, case in enumerate(selected_cases, start=1):
@@ -2318,6 +2518,8 @@ def run_product_readiness_campaign(
             run_error = str(exc)
             project_snapshot = service.require_snapshot(project_snapshot.project.project_id)
         run_summary = summarize_project_run(project_snapshot)
+        operator_overview = service.build_project_overview(project_snapshot)
+        operator_queue = service.build_operator_queue_for_snapshots([project_snapshot])
         run_summary.update(
             {
                 "case_slug": case.slug,
@@ -2335,6 +2537,9 @@ def run_product_readiness_campaign(
                 "expected_portrait_shot_count_min": case.expected_portrait_shot_count_min,
                 "expected_wan_shot_count_min": case.expected_wan_shot_count_min,
                 "expected_music_backend": case.expected_music_backend,
+                "operator_overview": operator_overview,
+                "operator_queue_summary": operator_queue.get("summary", {}),
+                "operator_queue_items": operator_queue.get("items", []),
                 "run_error": run_error,
             }
         )
@@ -2343,6 +2548,22 @@ def run_product_readiness_campaign(
             json.dumps(run_summary, indent=2),
             encoding="utf-8",
         )
+        report_payload = {
+            "generated_at": utc_now(),
+            "campaign_name": campaign_name,
+            "runtime_root": str(settings.runtime_root),
+            "report_root": str(report_root),
+            "resume_mode": resume,
+            "replaced_case_slugs": sorted(replaced_case_slugs),
+            "skipped_case_slugs": skipped_case_slugs,
+            "backend_profile": worker.engine.adapters.backend_profile(),
+            "cases": [asdict(case_item) for case_item in selected_cases],
+            "runs": run_summaries,
+            "aggregate": aggregate_product_readiness_results(run_summaries),
+        }
+        report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
+
+    if not report_path.exists():
         report_payload = {
             "generated_at": utc_now(),
             "campaign_name": campaign_name,

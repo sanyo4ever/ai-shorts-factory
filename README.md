@@ -69,6 +69,7 @@ Current verified one-box milestones on this workstation:
 - a broader 3-case product-readiness suite under `runtime/campaigns/product_readiness_v5_retry_free/` completed `3/3` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, `portrait_retry_free_rate=1.0`, `portrait_warning_free_rate=1.0`, and `qc_finding_counts={}`
 - the broader presetized release-gate suite under `runtime/campaigns/product_readiness_v6_preset_suite_v3/` completed `6/6` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, `portrait_retry_free_rate=1.0`, `portrait_warning_free_rate=1.0`, `product_preset_match_rate=1.0`, and `qc_finding_counts={}`
 - the current release-gate v2 suite under `runtime/campaigns/product_readiness_v8_release_gate_v2_green/` completed `8/8` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, `suite_product_ready_case_coverage_met=true`, `suite_product_ready_category_coverage_met=true`, `deliverables_ready_rate=1.0`, and `qc_finding_counts={}`
+- the current release-gate v3 suite under `runtime/campaigns/product_readiness_v10_release_gate_v3_green/` completed `10/10` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, `product_preset_match_rate=1.0`, `deliverables_ready_rate=1.0`, `operator_overview_ready_rate=1.0`, `operator_queue_ready_rate=1.0`, `operator_surface_ready_rate=1.0`, and `qc_finding_counts={}`
 
 ## License
 
@@ -259,19 +260,20 @@ python scripts/run_local_worker.py <project_id>
 Run the broader product-readiness suite on the verified one-box stack:
 
 ```bash
-python scripts/run_product_readiness_campaign.py --campaign-name product_readiness_v8_release_gate_v2_green
+python scripts/run_product_readiness_campaign.py --campaign-name product_readiness_v10_release_gate_v3_green
 ```
 
-The product-readiness runner uses curated multi-scene vertical-short cases, writes a report under `runtime/campaigns/<campaign_name>/stability_report.json`, and tracks category-aware readiness metrics such as `product_ready_rate`, topology expectations, suite-level strategy or lane coverage, per-backend participation, deliverables readiness, and preset-contract coverage. The current verified reference run on this workstation is `runtime/campaigns/product_readiness_v8_release_gate_v2_green/`, which completed `8/8` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, `portrait_retry_free_rate=1.0`, `portrait_warning_free_rate=1.0`, `deliverables_ready_rate=1.0`, `suite_product_ready_case_coverage_met=true`, `suite_product_ready_category_coverage_met=true`, `product_preset_match_rate=1.0`, and `qc_finding_counts={}`.
+The product-readiness runner uses curated multi-scene vertical-short cases, writes a report under `runtime/campaigns/<campaign_name>/stability_report.json`, and tracks category-aware readiness metrics such as `product_ready_rate`, topology expectations, suite-level strategy or lane coverage, per-backend participation, deliverables readiness, preset-contract coverage, and now operator-surface coverage through project overview and operator-queue readiness. The current verified reference run on this workstation is `runtime/campaigns/product_readiness_v10_release_gate_v3_green/`, which completed `10/10` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, `portrait_retry_free_rate=1.0`, `portrait_warning_free_rate=1.0`, `deliverables_ready_rate=1.0`, `operator_overview_ready_rate=1.0`, `operator_queue_ready_rate=1.0`, `operator_surface_ready_rate=1.0`, `suite_product_ready_case_coverage_met=true`, `suite_product_ready_category_coverage_met=true`, `product_preset_match_rate=1.0`, and `qc_finding_counts={}`.
 
-The runner also supports resumable and replace-in-place flows for long campaigns:
+The runner also supports resumable, replace-in-place, and seeded-hydration flows for long campaigns:
 
 ```bash
-python scripts/run_product_readiness_campaign.py --campaign-name product_readiness_v8_release_gate_v2_green --categories hero_teaser --resume
-python scripts/run_product_readiness_campaign.py --campaign-name product_readiness_v8_release_gate_v2_green --categories narrated_breakdown --resume --replace-existing
+python scripts/run_product_readiness_campaign.py --campaign-name product_readiness_v10_release_gate_v3_green --categories hero_teaser --resume
+python scripts/run_product_readiness_campaign.py --campaign-name product_readiness_v10_release_gate_v3_green --categories narrated_breakdown --resume --replace-existing
+python scripts/run_product_readiness_campaign.py --campaign-name product_readiness_v10_release_gate_v3_green --resume --seed-report runtime/campaigns/product_readiness_v8_release_gate_v2_green/stability_report.json --seed-report runtime/campaigns/product_readiness_v10_new_categories_diag/stability_report.json
 ```
 
-Use `--resume` to continue an existing report with only the missing categories, and `--replace-existing` when you want to rerun a previously recorded category inside the same campaign and recompute the aggregate without creating a new campaign name.
+Use `--resume` to continue an existing report with only the missing categories, `--replace-existing` when you want to rerun a previously recorded category inside the same campaign and recompute the aggregate without creating a new campaign name, and `--seed-report` when you want to promote already-verified runs from older reports into a new canonical gate without rerunning every heavy case on the one-box stack.
 
 Run a dedicated `hero_insert` top-lane subtitle campaign:
 

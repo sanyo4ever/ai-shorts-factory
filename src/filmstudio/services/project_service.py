@@ -480,16 +480,19 @@ class ProjectService:
             },
         }
 
-    def build_operator_queue(self) -> dict[str, object]:
-        snapshots = sorted(
-            self.snapshot_store.list_snapshots(),
+    def build_operator_queue_for_snapshots(
+        self,
+        snapshots: list[ProjectSnapshot],
+    ) -> dict[str, object]:
+        ordered_snapshots = sorted(
+            snapshots,
             key=lambda snapshot: snapshot.project.updated_at,
             reverse=True,
         )
-        project_overviews = [self.build_project_overview(snapshot) for snapshot in snapshots]
+        project_overviews = [self.build_project_overview(snapshot) for snapshot in ordered_snapshots]
         items: list[dict[str, object]] = []
 
-        for snapshot, overview in zip(snapshots, project_overviews):
+        for snapshot, overview in zip(ordered_snapshots, project_overviews):
             latest_qc = self._latest_qc_report(snapshot)
             if snapshot.project.status in {"failed", "blocked"} or (
                 latest_qc is not None and latest_qc.status == "failed"
@@ -583,6 +586,9 @@ class ProjectService:
             "projects": project_overviews,
             "items": items,
         }
+
+    def build_operator_queue(self) -> dict[str, object]:
+        return self.build_operator_queue_for_snapshots(self.snapshot_store.list_snapshots())
 
     def apply_shot_review(
         self,

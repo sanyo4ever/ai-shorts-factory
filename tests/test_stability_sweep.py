@@ -33,6 +33,7 @@ from filmstudio.worker.stability_sweep import (
     extract_portrait_shot_summary,
     extract_subtitle_lane_summary,
     extract_wan_shot_summary,
+    hydrate_seeded_product_readiness_runs,
     load_full_dry_run_cases,
     run_full_dry_run_campaign,
     run_product_readiness_campaign,
@@ -80,11 +81,58 @@ def _ready_deliverables_summary(*, shot_count: int, scene_count: int) -> dict[st
     }
 
 
-def test_default_product_readiness_cases_cover_release_gate_v2_categories() -> None:
+def _ready_operator_surface(
+    *,
+    project_id: str = "proj_test",
+    shot_count: int,
+    scene_count: int,
+    next_action: str = "review",
+) -> tuple[dict[str, object], dict[str, object], list[dict[str, object]]]:
+    pending_review_shot_count = shot_count if next_action == "review" else 0
+    needs_rerender_shot_count = shot_count if next_action == "rerender" else 0
+    overview = {
+        "project_id": project_id,
+        "status": "completed",
+        "deliverables": {"ready": True},
+        "qc": {"status": "passed"},
+        "review": {
+            "summary": {
+                "scene_count": scene_count,
+                "shot_count": shot_count,
+                "pending_review_shot_count": pending_review_shot_count,
+                "needs_rerender_shot_count": needs_rerender_shot_count,
+            }
+        },
+        "action": {
+            "next_action": next_action,
+            "needs_operator_attention": next_action in {"review", "rerender"},
+        },
+    }
+    action = "rerender" if next_action == "rerender" else "review"
+    review_status = "needs_rerender" if next_action == "rerender" else "pending_review"
+    queue_item_count = shot_count if next_action in {"review", "rerender"} else 0
+    queue_items = [
+        {
+            "project_id": project_id,
+            "target_kind": "shot",
+            "target_id": f"shot_{index+1:02d}",
+            "action": action,
+            "review_status": review_status,
+        }
+        for index in range(queue_item_count)
+    ]
+    queue_summary = {
+        "project_count": 1,
+        "queue_item_count": len(queue_items),
+    }
+    return overview, queue_summary, queue_items
+
+
+def test_default_product_readiness_cases_cover_release_gate_v3_categories() -> None:
     categories = {case.category for case in DEFAULT_PRODUCT_READINESS_CASES}
     slugs = [case.slug for case in DEFAULT_PRODUCT_READINESS_CASES]
 
-    assert len(DEFAULT_PRODUCT_READINESS_CASES) == 8
+    assert len(DEFAULT_PRODUCT_READINESS_CASES) == 10
     assert len(slugs) == len(set(slugs))
     assert categories == {
         "solo_creator",
@@ -95,6 +143,8 @@ def test_default_product_readiness_cases_cover_release_gate_v2_categories() -> N
         "hero_teaser",
         "myth_busting",
         "case_study",
+        "workflow_walkthrough",
+        "before_after_reveal",
     }
 
 
@@ -1183,9 +1233,22 @@ def test_aggregate_full_dry_run_results_counts_mixed_pipeline_requirements() -> 
 
 
 def test_aggregate_product_readiness_results_counts_category_and_topology_requirements() -> None:
+    ready_overview, ready_queue_summary, ready_queue_items = _ready_operator_surface(
+        project_id="proj_ready",
+        shot_count=2,
+        scene_count=3,
+        next_action="review",
+    )
+    stale_overview, stale_queue_summary, stale_queue_items = _ready_operator_surface(
+        project_id="proj_stale",
+        shot_count=2,
+        scene_count=2,
+        next_action="deliver",
+    )
     aggregate = aggregate_product_readiness_results(
         [
             {
+                "project_id": "proj_ready",
                 "case_slug": "duo_dialogue_pivot",
                 "status": "completed",
                 "qc_status": "passed",
@@ -1236,8 +1299,12 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
                     "lipsync_backend": "musetalk",
                     "subtitle_backend": "deterministic",
                 },
+                "operator_overview": ready_overview,
+                "operator_queue_summary": ready_queue_summary,
+                "operator_queue_items": ready_queue_items,
             },
             {
+                "project_id": "proj_stale",
                 "case_slug": "three_voice_roundtable",
                 "status": "completed",
                 "qc_status": "passed",
@@ -1288,6 +1355,9 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
                     "lipsync_backend": "musetalk",
                     "subtitle_backend": "deterministic",
                 },
+                "operator_overview": stale_overview,
+                "operator_queue_summary": stale_queue_summary,
+                "operator_queue_items": stale_queue_items,
             },
         ]
     )
@@ -1318,6 +1388,9 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
     assert aggregate["deliverables_package_runs"] == 2
     assert aggregate["review_surface_consistent_runs"] == 2
     assert aggregate["deliverables_ready_runs"] == 2
+    assert aggregate["operator_overview_ready_runs"] == 2
+    assert aggregate["operator_queue_ready_runs"] == 2
+    assert aggregate["operator_surface_ready_runs"] == 2
     assert aggregate["product_ready_runs"] == 1
     assert aggregate["style_preset_counts"] == {"broadcast_panel": 2}
     assert aggregate["voice_cast_preset_counts"] == {"duo_contrast": 1, "trio_panel": 1}
@@ -1371,6 +1444,32 @@ def test_run_product_readiness_campaign_writes_report(tmp_path, monkeypatch) -> 
 
         def require_snapshot(self, project_id: str) -> ProjectSnapshot:
             raise AssertionError(f"Unexpected require_snapshot for {project_id}")
+
+        def build_project_overview(self, snapshot: ProjectSnapshot) -> dict[str, object]:
+            overview, _, _ = _ready_operator_surface(
+                project_id=snapshot.project.project_id,
+                shot_count=2,
+                scene_count=3,
+                next_action="review",
+            )
+            return overview
+
+        def build_operator_queue_for_snapshots(
+            self,
+            snapshots: list[ProjectSnapshot],
+        ) -> dict[str, object]:
+            project_id = snapshots[0].project.project_id if snapshots else "proj_test"
+            _, queue_summary, queue_items = _ready_operator_surface(
+                project_id=project_id,
+                shot_count=2,
+                scene_count=3,
+                next_action="review",
+            )
+            return {
+                "summary": queue_summary,
+                "projects": [],
+                "items": queue_items,
+            }
 
     class FakeWorker:
         class Engine:
@@ -1497,6 +1596,267 @@ def test_run_product_readiness_campaign_writes_report(tmp_path, monkeypatch) -> 
     assert (runtime_root / "campaigns" / "product_readiness_test" / "stability_report.json").exists()
 
 
+def test_hydrate_seeded_product_readiness_runs_reuses_saved_project_snapshot(tmp_path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    settings = get_settings.__wrapped__()  # type: ignore[attr-defined]
+    settings = settings.__class__(
+        **{
+            **settings.__dict__,
+            "runtime_root": runtime_root,
+            "database_path": runtime_root / "filmstudio.sqlite3",
+            "gpu_lease_root": runtime_root / "manifests" / "gpu_leases",
+        }
+    )
+    settings.ensure_runtime_dirs()
+
+    snapshot = ProjectSnapshot(
+        project=ProjectRecord(
+            project_id="proj_seeded",
+            title="Seeded case",
+            script="SCENE 1. HERO hovoryt.",
+            language="uk",
+            style="stylized_short",
+            target_duration_sec=120,
+            estimated_duration_sec=18,
+            status="completed",
+        ),
+        scenes=[],
+        jobs=[],
+        job_attempts=[],
+        artifacts=[],
+        qc_reports=[],
+    )
+
+    class FakeService:
+        def get_snapshot(self, project_id: str) -> ProjectSnapshot | None:
+            return snapshot if project_id == "proj_seeded" else None
+
+        def build_project_overview(self, project_snapshot: ProjectSnapshot) -> dict[str, object]:
+            overview, _, _ = _ready_operator_surface(
+                project_id=project_snapshot.project.project_id,
+                shot_count=2,
+                scene_count=3,
+                next_action="review",
+            )
+            return overview
+
+        def build_operator_queue_for_snapshots(
+            self,
+            snapshots: list[ProjectSnapshot],
+        ) -> dict[str, object]:
+            project_id = snapshots[0].project.project_id if snapshots else "proj_test"
+            _, queue_summary, queue_items = _ready_operator_surface(
+                project_id=project_id,
+                shot_count=2,
+                scene_count=3,
+                next_action="review",
+            )
+            return {
+                "summary": queue_summary,
+                "projects": [],
+                "items": queue_items,
+            }
+
+    class FakeWorker:
+        class Engine:
+            class Adapters:
+                @staticmethod
+                def backend_profile() -> dict[str, str]:
+                    return {}
+
+            adapters = Adapters()
+
+        engine = Engine()
+
+    monkeypatch.setattr(
+        "filmstudio.worker.stability_sweep.build_local_runtime",
+        lambda local_settings: (FakeService(), FakeWorker()),
+    )
+    monkeypatch.setattr(
+        "filmstudio.worker.stability_sweep.summarize_project_run",
+        lambda project_snapshot: {
+            "project_id": project_snapshot.project.project_id,
+            "title": project_snapshot.project.title,
+            "status": "completed",
+            "style_preset": "broadcast_panel",
+            "voice_cast_preset": "duo_contrast",
+            "music_preset": "debate_tension",
+            "short_archetype": "dialogue_pivot",
+            "scene_count": 3,
+            "character_count": 2,
+            "speaker_count": 2,
+            "portrait_shots": [{"shot_id": "shot_portrait"}],
+            "portrait_retry_free": True,
+            "portrait_warning_free": True,
+            "wan_shots": [{"shot_id": "shot_wan"}],
+            "shot_strategy_counts": {"portrait_lipsync": 1, "hero_insert": 1},
+            "subtitle_summary": {"lane_counts": {"top": 1, "bottom": 1}},
+            "subtitle_visibility_clean": True,
+            "music_summary": {"backend": "ace_step", "manifest_available": True, "music_bed_exists": True},
+            "render_summary": {
+                "actual_resolution": "720x1280",
+                "subtitle_burned_in": True,
+                "target_matches_actual": True,
+            },
+            "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=3),
+            "backend_profile": {
+                "visual_backend": "comfyui",
+                "video_backend": "wan",
+                "tts_backend": "piper",
+                "music_backend": "ace_step",
+                "lipsync_backend": "musetalk",
+                "subtitle_backend": "deterministic",
+            },
+            "qc_status": "passed",
+            "qc_findings": [],
+        },
+    )
+
+    seed_report_path = runtime_root / "campaigns" / "seeded_report.json"
+    seed_report_path.parent.mkdir(parents=True, exist_ok=True)
+    seed_report_path.write_text(
+        json.dumps(
+            {
+                "runs": [
+                    {
+                        "project_id": "proj_seeded",
+                        "case_slug": "seeded_case",
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    seeded_runs = hydrate_seeded_product_readiness_runs(
+        settings,
+        [
+            FullDryRunCase(
+                slug="seeded_case",
+                title="Seeded Case",
+                script="SCENE 1. HERO hovoryt.\n\nSCENE 2. HERO runs.\n\nSCENE 3. FRIEND hovoryt.",
+                category="duo_dialogue",
+                style_preset="broadcast_panel",
+                voice_cast_preset="duo_contrast",
+                music_preset="debate_tension",
+                short_archetype="dialogue_pivot",
+                expected_character_count_min=2,
+                expected_speaker_count_min=2,
+            )
+        ],
+        [seed_report_path],
+    )
+
+    assert len(seeded_runs) == 1
+    assert seeded_runs[0]["case_slug"] == "seeded_case"
+    assert seeded_runs[0]["project_id"] == "proj_seeded"
+    assert seeded_runs[0]["hydrated_from_snapshot"] is True
+    assert seeded_runs[0]["operator_overview"]["action"]["next_action"] == "review"
+    assert seeded_runs[0]["operator_queue_summary"]["queue_item_count"] == 2
+
+
+def test_run_product_readiness_campaign_writes_report_for_seed_only_resume(tmp_path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    settings = get_settings.__wrapped__()  # type: ignore[attr-defined]
+    settings = settings.__class__(
+        **{
+            **settings.__dict__,
+            "runtime_root": runtime_root,
+            "database_path": runtime_root / "filmstudio.sqlite3",
+            "gpu_lease_root": runtime_root / "manifests" / "gpu_leases",
+        }
+    )
+    settings.ensure_runtime_dirs()
+
+    class FakeService:
+        def create_project(self, request: ProjectCreateRequest) -> ProjectSnapshot:
+            raise AssertionError("Seed-only resume should not create new projects")
+
+    class FakeWorker:
+        class Engine:
+            class Adapters:
+                @staticmethod
+                def backend_profile() -> dict[str, str]:
+                    return {"visual_backend": "comfyui"}
+
+            adapters = Adapters()
+
+        engine = Engine()
+
+    monkeypatch.setattr(
+        "filmstudio.worker.stability_sweep.build_local_runtime",
+        lambda local_settings: (FakeService(), FakeWorker()),
+    )
+
+    seed_run = {
+        "project_id": "proj_seeded",
+        "case_slug": "seeded_case",
+        "status": "completed",
+        "case_category": "duo_dialogue",
+        "style_preset": "broadcast_panel",
+        "voice_cast_preset": "duo_contrast",
+        "music_preset": "debate_tension",
+        "short_archetype": "dialogue_pivot",
+        "expected_style_preset": "broadcast_panel",
+        "expected_voice_cast_preset": "duo_contrast",
+        "expected_music_preset": "debate_tension",
+        "expected_short_archetype": "dialogue_pivot",
+        "scene_count": 3,
+        "character_count": 2,
+        "speaker_count": 2,
+        "expected_scene_count_min": 3,
+        "expected_character_count_min": 2,
+        "expected_speaker_count_min": 2,
+        "expected_portrait_shot_count_min": 1,
+        "expected_wan_shot_count_min": 1,
+        "expected_music_backend": "ace_step",
+        "shot_strategy_counts": {"portrait_lipsync": 1, "hero_insert": 1},
+        "portrait_shots": [{"shot_id": "shot_portrait"}],
+        "portrait_retry_free": True,
+        "portrait_warning_free": True,
+        "wan_shots": [{"shot_id": "shot_wan"}],
+        "expected_strategies": ["portrait_lipsync", "hero_insert"],
+        "expected_subtitle_lanes": ["bottom", "top"],
+        "subtitle_summary": {"lane_counts": {"bottom": 1, "top": 1}},
+        "subtitle_visibility_clean": True,
+        "music_summary": {"backend": "ace_step", "manifest_available": True, "music_bed_exists": True},
+        "render_summary": {"actual_resolution": "720x1280", "subtitle_burned_in": True, "target_matches_actual": True},
+        "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=3),
+        "backend_profile": {"visual_backend": "comfyui", "video_backend": "wan", "music_backend": "ace_step"},
+        "operator_overview": _ready_operator_surface(project_id="proj_seeded", shot_count=2, scene_count=3)[0],
+        "operator_queue_summary": _ready_operator_surface(project_id="proj_seeded", shot_count=2, scene_count=3)[1],
+        "operator_queue_items": _ready_operator_surface(project_id="proj_seeded", shot_count=2, scene_count=3)[2],
+        "qc_status": "passed",
+        "qc_findings": [],
+    }
+
+    report = run_product_readiness_campaign(
+        settings,
+        [
+            FullDryRunCase(
+                slug="seeded_case",
+                title="Seeded Case",
+                script="SCENE 1. HERO hovoryt.\n\nSCENE 2. HERO runs.\n\nSCENE 3. FRIEND hovoryt.",
+                category="duo_dialogue",
+                style_preset="broadcast_panel",
+                voice_cast_preset="duo_contrast",
+                music_preset="debate_tension",
+                short_archetype="dialogue_pivot",
+                expected_character_count_min=2,
+                expected_speaker_count_min=2,
+            )
+        ],
+        campaign_name="product_readiness_seed_only",
+        resume=True,
+        seed_runs=[seed_run],
+    )
+
+    assert report["aggregate"]["product_ready_runs"] == 1
+    assert report["skipped_case_slugs"] == ["seeded_case"]
+    assert (runtime_root / "campaigns" / "product_readiness_seed_only" / "stability_report.json").exists()
+
+
 def test_run_product_readiness_campaign_resume_skips_existing_case(tmp_path, monkeypatch) -> None:
     runtime_root = tmp_path / "runtime"
     settings = get_settings.__wrapped__()  # type: ignore[attr-defined]
@@ -1535,6 +1895,32 @@ def test_run_product_readiness_campaign_resume_skips_existing_case(tmp_path, mon
 
         def require_snapshot(self, project_id: str) -> ProjectSnapshot:
             raise AssertionError(f"Unexpected require_snapshot for {project_id}")
+
+        def build_project_overview(self, snapshot: ProjectSnapshot) -> dict[str, object]:
+            overview, _, _ = _ready_operator_surface(
+                project_id=snapshot.project.project_id,
+                shot_count=2,
+                scene_count=3,
+                next_action="review",
+            )
+            return overview
+
+        def build_operator_queue_for_snapshots(
+            self,
+            snapshots: list[ProjectSnapshot],
+        ) -> dict[str, object]:
+            project_id = snapshots[0].project.project_id if snapshots else "proj_test"
+            _, queue_summary, queue_items = _ready_operator_surface(
+                project_id=project_id,
+                shot_count=2,
+                scene_count=3,
+                next_action="review",
+            )
+            return {
+                "summary": queue_summary,
+                "projects": [],
+                "items": queue_items,
+            }
 
     class FakeWorker:
         class Engine:
@@ -1763,6 +2149,32 @@ def test_run_product_readiness_campaign_replace_existing_case(tmp_path, monkeypa
 
         def require_snapshot(self, project_id: str) -> ProjectSnapshot:
             raise AssertionError(f"Unexpected require_snapshot for {project_id}")
+
+        def build_project_overview(self, snapshot: ProjectSnapshot) -> dict[str, object]:
+            overview, _, _ = _ready_operator_surface(
+                project_id=snapshot.project.project_id,
+                shot_count=2,
+                scene_count=3,
+                next_action="review",
+            )
+            return overview
+
+        def build_operator_queue_for_snapshots(
+            self,
+            snapshots: list[ProjectSnapshot],
+        ) -> dict[str, object]:
+            project_id = snapshots[0].project.project_id if snapshots else "proj_test"
+            _, queue_summary, queue_items = _ready_operator_surface(
+                project_id=project_id,
+                shot_count=2,
+                scene_count=3,
+                next_action="review",
+            )
+            return {
+                "summary": queue_summary,
+                "projects": [],
+                "items": queue_items,
+            }
 
     class FakeWorker:
         class Engine:
