@@ -21,6 +21,7 @@ _RATE_KEYS = (
     "product_ready_rate",
     "all_requirements_met_rate",
     "semantic_quality_gate_rate",
+    "revision_semantic_gate_rate",
     "revision_release_gate_rate",
     "deliverables_ready_rate",
     "operator_surface_ready_rate",
@@ -248,6 +249,8 @@ class CampaignService:
         removed_cases = []
         semantic_regressions = []
         semantic_improvements = []
+        revision_semantic_regressions = []
+        revision_semantic_improvements = []
         revision_release_regressions = []
         revision_release_improvements = []
         deliverable_regressions = []
@@ -285,6 +288,10 @@ class CampaignService:
                 left_case.get("semantic_quality"),
                 right_case.get("semantic_quality"),
             )
+            revision_semantic_changes = self._diff_revision_semantic(
+                left_case.get("revision_semantic"),
+                right_case.get("revision_semantic"),
+            )
             revision_release_changes = self._diff_revision_release(
                 left_case.get("revision_release"),
                 right_case.get("revision_release"),
@@ -313,6 +320,8 @@ class CampaignService:
                     left_status != right_status,
                     bool(semantic_changes["added"]),
                     bool(semantic_changes["resolved"]),
+                    bool(revision_semantic_changes["added"]),
+                    bool(revision_semantic_changes["resolved"]),
                     bool(revision_release_changes["added"]),
                     bool(revision_release_changes["resolved"]),
                     deliverables_changed,
@@ -335,6 +344,8 @@ class CampaignService:
                 "right_project_url": right_case.get("project_url"),
                 "semantic_failures_added": semantic_changes["added"],
                 "semantic_failures_resolved": semantic_changes["resolved"],
+                "revision_semantic_failures_added": revision_semantic_changes["added"],
+                "revision_semantic_failures_resolved": revision_semantic_changes["resolved"],
                 "revision_release_failures_added": revision_release_changes["added"],
                 "revision_release_failures_resolved": revision_release_changes["resolved"],
                 "deliverables_regressed": not left_deliverables_ready and right_deliverables_ready,
@@ -354,6 +365,10 @@ class CampaignService:
                 semantic_regressions.append(change)
             if change["semantic_failures_resolved"]:
                 semantic_improvements.append(change)
+            if change["revision_semantic_failures_added"]:
+                revision_semantic_regressions.append(change)
+            if change["revision_semantic_failures_resolved"]:
+                revision_semantic_improvements.append(change)
             if change["revision_release_failures_added"]:
                 revision_release_regressions.append(change)
             if change["revision_release_failures_resolved"]:
@@ -379,6 +394,7 @@ class CampaignService:
         if (
             regressions
             or semantic_regressions
+            or revision_semantic_regressions
             or revision_release_regressions
             or deliverable_regressions
             or operator_attention_regressions
@@ -387,6 +403,7 @@ class CampaignService:
         elif (
             improvements
             or semantic_improvements
+            or revision_semantic_improvements
             or revision_release_improvements
             or deliverable_improvements
             or operator_attention_improvements
@@ -413,6 +430,8 @@ class CampaignService:
                 "improved": improvements,
                 "semantic_regressed": semantic_regressions,
                 "semantic_improved": semantic_improvements,
+                "revision_semantic_regressed": revision_semantic_regressions,
+                "revision_semantic_improved": revision_semantic_improvements,
                 "revision_release_regressed": revision_release_regressions,
                 "revision_release_improved": revision_release_improvements,
                 "deliverables_regressed": deliverable_regressions,
@@ -428,6 +447,8 @@ class CampaignService:
                 "improvement_count": len(improvements),
                 "semantic_regression_count": len(semantic_regressions),
                 "semantic_improvement_count": len(semantic_improvements),
+                "revision_semantic_regression_count": len(revision_semantic_regressions),
+                "revision_semantic_improvement_count": len(revision_semantic_improvements),
                 "revision_release_regression_count": len(revision_release_regressions),
                 "revision_release_improvement_count": len(revision_release_improvements),
                 "deliverable_regression_count": len(deliverable_regressions),
@@ -781,6 +802,11 @@ class CampaignService:
     ) -> dict[str, object]:
         operator_overview = dict(run.get("operator_overview") or {})
         semantic_quality = dict(run.get("semantic_quality") or {})
+        revision_semantic = dict(
+            run.get("revision_semantic")
+            or operator_overview.get("revision_semantic")
+            or {}
+        )
         revision_release = dict(
             run.get("revision_release")
             or operator_overview.get("revision_release")
@@ -792,6 +818,9 @@ class CampaignService:
             qc_status=str(run.get("qc_status") or ""),
             has_error=bool(run.get("run_error")),
             semantic_gate_passed=bool(semantic_quality.get("gate_passed")),
+            revision_semantic_gate_passed=(
+                True if not revision_semantic else bool(revision_semantic.get("gate_passed"))
+            ),
             revision_release_gate_passed=(
                 True if not revision_release else bool(revision_release.get("gate_passed"))
             ),
@@ -810,6 +839,7 @@ class CampaignService:
             "qc_status": run.get("qc_status"),
             "qc_findings": list(run.get("qc_findings") or []),
             "semantic_quality": semantic_quality,
+            "revision_semantic": revision_semantic,
             "revision_release": revision_release,
             "deliverables": deliverables,
             "operator_overview": operator_overview,
@@ -836,6 +866,7 @@ class CampaignService:
                 qc_status=str(case.get("qc_status") or ""),
                 has_error=False,
                 semantic_gate_passed=bool(case.get("semantic_gate_passed", True)),
+                revision_semantic_gate_passed=bool(case.get("revision_semantic_gate_passed", True)),
                 revision_release_gate_passed=bool(case.get("revision_release_gate_passed", True)),
                 deliverables_ready=bool(case.get("deliverables_ready", True)),
                 operator_attention=bool(case.get("needs_operator_attention", False)),
@@ -847,6 +878,7 @@ class CampaignService:
             "qc_status": case.get("qc_status"),
             "qc_findings": list(case.get("qc_findings") or []),
             "semantic_quality": dict(case.get("semantic_quality") or {}),
+            "revision_semantic": dict(case.get("revision_semantic") or {}),
             "revision_release": dict(case.get("revision_release") or {}),
             "deliverables": {
                 "ready": bool(case.get("deliverables_ready", True)),
@@ -871,6 +903,7 @@ class CampaignService:
         qc_status: str,
         has_error: bool,
         semantic_gate_passed: bool,
+        revision_semantic_gate_passed: bool,
         revision_release_gate_passed: bool,
         deliverables_ready: bool,
         operator_attention: bool,
@@ -881,7 +914,13 @@ class CampaignService:
             return "incomplete"
         if qc_status and qc_status not in {"passed", "approved", "green"}:
             return "needs_attention"
-        if not semantic_gate_passed or not revision_release_gate_passed or not deliverables_ready or operator_attention:
+        if (
+            not semantic_gate_passed
+            or not revision_semantic_gate_passed
+            or not revision_release_gate_passed
+            or not deliverables_ready
+            or operator_attention
+        ):
             return "needs_attention"
         return "passed"
 
@@ -931,6 +970,28 @@ class CampaignService:
 
     @staticmethod
     def _diff_semantic_quality(
+        left: object,
+        right: object,
+    ) -> dict[str, list[str]]:
+        left_quality = dict(left or {})
+        right_quality = dict(right or {})
+        left_failures = {
+            str(item)
+            for item in (left_quality.get("failed_gates") or [])
+            if str(item).strip()
+        }
+        right_failures = {
+            str(item)
+            for item in (right_quality.get("failed_gates") or [])
+            if str(item).strip()
+        }
+        return {
+            "added": sorted(left_failures - right_failures),
+            "resolved": sorted(right_failures - left_failures),
+        }
+
+    @staticmethod
+    def _diff_revision_semantic(
         left: object,
         right: object,
     ) -> dict[str, list[str]]:
@@ -1023,6 +1084,11 @@ class CampaignService:
             if comparison.get("summary", {}).get("semantic_regression_count"):
                 bullets.append(
                     f"Semantic regressions: {comparison['summary']['semantic_regression_count']}"
+                )
+            if comparison.get("summary", {}).get("revision_semantic_regression_count"):
+                bullets.append(
+                    "Revision-semantic regressions: "
+                    f"{comparison['summary']['revision_semantic_regression_count']}"
                 )
             if comparison.get("summary", {}).get("revision_release_regression_count"):
                 bullets.append(

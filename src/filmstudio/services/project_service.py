@@ -30,6 +30,10 @@ from filmstudio.services.review_manifest import (
     build_shot_revision_compare,
 )
 from filmstudio.services.revision_release import build_revision_release_summary
+from filmstudio.services.revision_semantic import (
+    build_revision_semantic_summary,
+    build_semantic_quality_baseline_payload,
+)
 from filmstudio.services.semantic_quality import build_semantic_quality_summary
 from filmstudio.storage.artifact_store import ArtifactStore
 from filmstudio.storage.sqlite_store import SqliteSnapshotStore
@@ -295,6 +299,7 @@ class ProjectService:
             "scene_preview_sheet",
             "project_archive",
             "review_manifest",
+            "semantic_quality_baseline",
             "deliverables_manifest",
             "deliverables_package",
         ]
@@ -439,6 +444,7 @@ class ProjectService:
         review_summary: dict[str, object],
         deliverables_ready: bool,
         semantic_quality_gate_passed: bool,
+        revision_semantic_gate_passed: bool,
         revision_release_gate_passed: bool,
     ) -> str:
         if project_status in {"failed", "blocked"} or qc_status == "failed":
@@ -449,6 +455,8 @@ class ProjectService:
             return "review"
         if project_status == "completed" and not semantic_quality_gate_passed:
             return "review_quality"
+        if project_status == "completed" and not revision_semantic_gate_passed:
+            return "review_quality_regression"
         if project_status == "completed" and not revision_release_gate_passed:
             return "review_release"
         if project_status == "completed" and deliverables_ready:
@@ -464,6 +472,10 @@ class ProjectService:
         latest_recovery = self._latest_recovery_plan(snapshot)
         temporal_view = self.build_temporal_progress_view(snapshot)
         semantic_quality = build_semantic_quality_summary(snapshot)
+        revision_semantic = build_revision_semantic_summary(
+            snapshot,
+            current_semantic_quality=semantic_quality,
+        )
         revision_release = build_revision_release_summary(snapshot)
         deliverables_named = dict(deliverables_view.get("named") or {})
         missing_required_deliverables = [
@@ -477,6 +489,7 @@ class ProjectService:
             review_summary=review_summary,
             deliverables_ready=bool(deliverables_view["ready"]),
             semantic_quality_gate_passed=bool(semantic_quality.get("gate_passed")),
+            revision_semantic_gate_passed=bool(revision_semantic.get("gate_passed")),
             revision_release_gate_passed=bool(revision_release.get("gate_passed")),
         )
         return {
@@ -508,7 +521,14 @@ class ProjectService:
                 "release_ready_scene_count": int(
                     revision_release.get("release_ready_scene_count") or 0
                 ),
+                "semantic_changed_shot_count": int(
+                    revision_semantic.get("changed_shot_count") or 0
+                ),
+                "semantic_regressed_metric_count": int(
+                    revision_semantic.get("regressed_metric_count") or 0
+                ),
             },
+            "revision_semantic": revision_semantic,
             "revision_release": revision_release,
             "deliverables": {
                 "ready": bool(deliverables_view["ready"]),
@@ -554,7 +574,14 @@ class ProjectService:
             },
             "action": {
                 "next_action": next_action,
-                "needs_operator_attention": next_action in {"resolve_qc", "rerender", "review", "review_quality", "review_release"},
+                "needs_operator_attention": next_action in {
+                    "resolve_qc",
+                    "rerender",
+                    "review",
+                    "review_quality",
+                    "review_quality_regression",
+                    "review_release",
+                },
             },
         }
 
@@ -576,6 +603,12 @@ class ProjectService:
             semantic_quality_failed_gates = (
                 list(semantic_quality.get("failed_gates", []))
                 if isinstance(semantic_quality, dict)
+                else []
+            )
+            revision_semantic = overview.get("revision_semantic", {})
+            revision_semantic_failed_gates = (
+                list(revision_semantic.get("failed_gates", []))
+                if isinstance(revision_semantic, dict)
                 else []
             )
             revision_release = overview.get("revision_release", {})
@@ -618,6 +651,26 @@ class ProjectService:
                         "review_status": None,
                         "reason": "semantic_quality_gate_failed",
                         "failed_gates": semantic_quality_failed_gates,
+                        "updated_at": snapshot.project.updated_at,
+                    }
+                )
+
+            if revision_semantic_failed_gates:
+                items.append(
+                    {
+                        "priority": 1,
+                        "action": "review_quality_regression",
+                        "target_kind": "project",
+                        "target_id": snapshot.project.project_id,
+                        "project_id": snapshot.project.project_id,
+                        "project_title": snapshot.project.title,
+                        "project_status": snapshot.project.status,
+                        "review_status": None,
+                        "reason": "semantic_quality_regressed_against_baseline",
+                        "failed_gates": revision_semantic_failed_gates,
+                        "regressed_metrics": list(revision_semantic.get("regressed_metrics", [])),
+                        "changed_shot_ids": list(revision_semantic.get("changed_shot_ids", [])),
+                        "changed_scene_ids": list(revision_semantic.get("changed_scene_ids", [])),
                         "updated_at": snapshot.project.updated_at,
                     }
                 )
@@ -726,6 +779,13 @@ class ProjectService:
                         overview
                         for overview in project_overviews
                         if not bool((overview.get("semantic_quality") or {}).get("gate_passed"))
+                    ]
+                ),
+                "quality_regression_failed_project_count": len(
+                    [
+                        overview
+                        for overview in project_overviews
+                        if not bool((overview.get("revision_semantic") or {}).get("gate_passed"))
                     ]
                 ),
                 "revision_release_failed_project_count": len(
@@ -915,6 +975,33 @@ class ProjectService:
         return self.refresh_review_artifacts(snapshot)
 
     def refresh_review_artifacts(self, snapshot: ProjectSnapshot) -> ProjectSnapshot:
+        semantic_quality = build_semantic_quality_summary(snapshot)
+        revision_release = build_revision_release_summary(snapshot)
+        baseline_artifact_path: Path | None = None
+        if revision_release.get("gate_passed"):
+            baseline_payload = build_semantic_quality_baseline_payload(
+                snapshot,
+                semantic_quality=semantic_quality,
+                revision_release=revision_release,
+            )
+            baseline_artifact_path = self.artifact_store.write_json(
+                snapshot.project.project_id,
+                "renders/semantic_quality_baseline.json",
+                baseline_payload,
+            )
+            snapshot.artifacts.append(
+                ArtifactRecord(
+                    artifact_id=new_id("artifact"),
+                    kind="semantic_quality_baseline",
+                    path=str(baseline_artifact_path),
+                    stage="review_loop",
+                    metadata={
+                        "overall_rate": baseline_payload["semantic_quality"].get("overall_rate"),
+                        "shot_revision_count": len(baseline_payload.get("shot_revision_map") or {}),
+                        "scene_revision_count": len(baseline_payload.get("scene_revision_map") or {}),
+                    },
+                )
+            )
         review_manifest_payload = build_review_manifest(snapshot)
         review_manifest_path = self.artifact_store.write_json(
             snapshot.project.project_id,
@@ -986,6 +1073,15 @@ class ProjectService:
                 "archive_path": "deliverables/reviews/review_manifest.json",
             },
         ]
+        semantic_baseline_artifact = latest_by_kind.get("semantic_quality_baseline")
+        if semantic_baseline_artifact is not None:
+            deliverable_files.append(
+                {
+                    "kind": "semantic_quality_baseline",
+                    "path": semantic_baseline_artifact.path,
+                    "archive_path": "deliverables/manifests/semantic_quality_baseline.json",
+                }
+            )
         render_profile = dict(snapshot.project.metadata.get("render_profile") or {})
         deliverables_manifest_payload = {
             "project_id": snapshot.project.project_id,
@@ -993,6 +1089,9 @@ class ProjectService:
             "status": "packaged",
             "render_profile": render_profile,
             "review_summary": review_manifest_payload["summary"],
+            "semantic_quality_baseline_path": str(baseline_artifact_path) if baseline_artifact_path is not None else (
+                semantic_baseline_artifact.path if semantic_baseline_artifact is not None else None
+            ),
             "items": [
                 {
                     **item,

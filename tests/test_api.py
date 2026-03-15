@@ -415,6 +415,8 @@ def test_project_overview_endpoints_surface_operator_summary() -> None:
     assert overview["summary"]["character_count"] >= 2
     assert overview["deliverables"]["ready"] is True
     assert overview["semantic_quality"]["available"] is True
+    assert overview["revision_semantic"]["available"] is True
+    assert overview["revision_semantic"]["gate_passed"] is True
     assert overview["revision_release"]["available"] is True
     assert overview["revision_release"]["gate_passed"] is False
     assert "metrics" in overview["semantic_quality"]
@@ -647,6 +649,95 @@ def test_operator_queue_endpoint_surfaces_revision_release_work(monkeypatch) -> 
         item["project_id"] == project_id
         and item["action"] == "review_release"
         and "scene_canonical_artifacts_incomplete" in item["failed_gates"]
+        for item in queue_payload["items"]
+    )
+
+
+def test_operator_queue_endpoint_surfaces_revision_semantic_regression_work(monkeypatch) -> None:
+    from filmstudio.services import project_service as project_service_module
+
+    monkeypatch.setattr(
+        project_service_module,
+        "build_semantic_quality_summary",
+        lambda snapshot: {
+            "available": True,
+            "gate_passed": True,
+            "failed_gates": [],
+            "overall_rate": 1.0,
+            "metrics": {"audio_mix_clean": {"rate": 1.0, "passed": True}},
+        },
+    )
+    monkeypatch.setattr(
+        project_service_module,
+        "build_revision_semantic_summary",
+        lambda snapshot, current_semantic_quality=None: {
+            "available": True,
+            "baseline_available": True,
+            "comparison_required": True,
+            "gate_passed": False,
+            "failed_gates": ["audio_mix_clean_regressed"],
+            "regressed_metrics": ["audio_mix_clean"],
+            "changed_shot_ids": [shot.shot_id for scene in snapshot.scenes for shot in scene.shots[:1]],
+            "changed_scene_ids": [snapshot.scenes[0].scene_id] if snapshot.scenes else [],
+            "changed_shot_count": 1,
+            "changed_scene_count": 1,
+            "regressed_metric_count": 1,
+            "current_overall_rate": 0.8,
+            "baseline_overall_rate": 1.0,
+            "overall_rate_delta": -0.2,
+        },
+    )
+    app = create_app()
+    client = TestClient(app)
+    create_response = client.post(
+        "/api/v1/projects",
+        json={
+            "title": "Revision semantic queue",
+            "script": (
+                "SCENE 1. HERO hovoryt do kamery.\n"
+                "HERO: Pershyi beat.\n\n"
+                "SCENE 2. FRIEND hovoryt do kamery.\n"
+                "FRIEND: Finalnyi beat."
+            ),
+            "language": "uk",
+        },
+    )
+    assert create_response.status_code == 200
+    project_id = create_response.json()["project"]["project_id"]
+
+    run_response = client.post(f"/api/v1/projects/{project_id}/run")
+    assert run_response.status_code == 200
+    snapshot = run_response.json()
+    shot_ids = [shot["shot_id"] for scene in snapshot["scenes"] for shot in scene["shots"]]
+
+    for shot_id in shot_ids:
+        review_response = client.post(
+            f"/api/v1/projects/{project_id}/shots/{shot_id}/review",
+            json={
+                "status": "approved",
+                "note": "approved for revision semantic gate test",
+                "reviewer": "qa",
+            },
+        )
+        assert review_response.status_code == 200
+
+    overview_response = client.get(f"/api/v1/projects/{project_id}/overview")
+    assert overview_response.status_code == 200
+    overview = overview_response.json()
+    assert overview["semantic_quality"]["gate_passed"] is True
+    assert overview["revision_semantic"]["gate_passed"] is False
+    assert overview["action"]["next_action"] == "review_quality_regression"
+    assert overview["review"]["semantic_regressed_metric_count"] == 1
+
+    queue_response = client.get("/api/v1/projects/operator-queue")
+    assert queue_response.status_code == 200
+    queue_payload = queue_response.json()
+    assert queue_payload["summary"]["quality_regression_failed_project_count"] >= 1
+    assert any(
+        item["project_id"] == project_id
+        and item["action"] == "review_quality_regression"
+        and "audio_mix_clean_regressed" in item["failed_gates"]
+        and "audio_mix_clean" in item["regressed_metrics"]
         for item in queue_payload["items"]
     )
 

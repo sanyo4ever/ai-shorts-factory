@@ -53,6 +53,7 @@ The current codebase restores:
 - release-management surfaces for campaigns: drilldown, baseline promotion, canonical baseline manifests, richer case-level regression comparison across semantic, revision-release, deliverable, and operator deltas, and operator-facing release summaries through both API and dashboard
 - a shared semantic-quality layer that scores subtitle readability, script coverage, shot variety, portrait identity consistency, audio-mix cleanliness, and preset-archetype payoff
 - semantic quality is now part of the operator surface itself: project overview includes a normalized `semantic_quality` block, and the queue can emit project-level `review_quality` work when the quality gate fails
+- a revision-aware semantic baseline layer that snapshots semantic quality only after release-ready approval, compares current rerendered outputs against the last approved baseline, and surfaces project-level `review_quality_regression` work when a revision regresses against that baseline
 - real `FFmpeg` shot composition and final portrait render assembly with a default `720x1280` master profile
 - `ffprobe`-backed QC on the produced media artifacts
 - filesystem-backed GPU lease tracking for single-GPU scheduling visibility
@@ -243,7 +244,7 @@ Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/projects/<proje
 Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/projects/operator-queue"
 ```
 
-`overview` merges product preset, backend profile, scene and shot counts, review summary, revision-release state, deliverables readiness, semantic-quality state, latest QC, rerender scope, and temporal state into one stable read-model. `operator-queue` gives the actionable cross-project view: pending-review shots, `needs_rerender` targets, project-level QC failures, `review_quality` work when a completed project still misses the semantic gate, and `review_release` work when semantic quality is green but canonical release locks are not.
+`overview` merges product preset, backend profile, scene and shot counts, review summary, semantic baseline state, revision-release state, deliverables readiness, semantic-quality state, latest QC, rerender scope, and temporal state into one stable read-model. `operator-queue` gives the actionable cross-project view: pending-review shots, `needs_rerender` targets, project-level QC failures, `review_quality` work when a completed project still misses the semantic gate, `review_quality_regression` work when a rerender regresses against the last approved semantic baseline, and `review_release` work when semantic quality is green but canonical release locks are not.
 
 The browser operator surface at `/studio` is intentionally thin and static: it consumes the public API directly, so local one-box bring-up stays simple and contributors can extend the operator experience without introducing a separate frontend stack.
 
@@ -282,7 +283,7 @@ The current canonical baseline is also materialized as a first-class manifest:
 Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/campaigns/release/baseline"
 ```
 
-That payload exposes the current canonical campaign, the previous canonical it was compared against, the current comparison summary, and a case matrix with per-case semantic, revision-release, deliverable, and operator regression or improvement flags. It is the operator-facing handoff surface for release promotion on this workstation.
+That payload exposes the current canonical campaign, the previous canonical it was compared against, the current comparison summary, and a case matrix with per-case semantic, revision-semantic, revision-release, deliverable, and operator regression or improvement flags. It is the operator-facing handoff surface for release promotion on this workstation.
 
 This path is the best starting point for anyone cloning the repo for the first time because it exercises the real control plane, worker, manifests, and final render flow without requiring every optional backend to be bootstrapped first.
 

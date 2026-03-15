@@ -88,6 +88,7 @@ def _ready_operator_surface(
     scene_count: int,
     next_action: str = "review",
     semantic_quality_gate_passed: bool = True,
+    revision_semantic_gate_passed: bool = True,
     revision_release_gate_passed: bool = True,
     failed_gates: list[str] | None = None,
 ) -> tuple[dict[str, object], dict[str, object], list[dict[str, object]]]:
@@ -96,6 +97,7 @@ def _ready_operator_surface(
     failed_quality_gates = list(failed_gates or [])
     if not semantic_quality_gate_passed and not failed_quality_gates:
         failed_quality_gates = ["shot_variety"]
+    failed_quality_regression_gates = [] if revision_semantic_gate_passed else ["shot_variety_regressed"]
     failed_revision_gates = [] if revision_release_gate_passed else ["scene_canonical_artifacts_incomplete"]
     overview = {
         "project_id": project_id,
@@ -106,6 +108,22 @@ def _ready_operator_surface(
             "gate_passed": semantic_quality_gate_passed,
             "failed_gates": failed_quality_gates,
             "metrics": {},
+        },
+        "revision_semantic": {
+            "available": True,
+            "baseline_available": True,
+            "comparison_required": not revision_semantic_gate_passed,
+            "gate_passed": revision_semantic_gate_passed,
+            "failed_gates": failed_quality_regression_gates,
+            "regressed_metrics": ["shot_variety"] if not revision_semantic_gate_passed else [],
+            "changed_shot_ids": ["shot_01"] if not revision_semantic_gate_passed else [],
+            "changed_scene_ids": ["scene_01"] if not revision_semantic_gate_passed else [],
+            "changed_shot_count": 1 if not revision_semantic_gate_passed else 0,
+            "changed_scene_count": 1 if not revision_semantic_gate_passed else 0,
+            "regressed_metric_count": 1 if not revision_semantic_gate_passed else 0,
+            "current_overall_rate": 0.9 if not revision_semantic_gate_passed else 1.0,
+            "baseline_overall_rate": 1.0,
+            "overall_rate_delta": -0.1 if not revision_semantic_gate_passed else 0.0,
         },
         "revision_release": {
             "available": True,
@@ -123,7 +141,13 @@ def _ready_operator_surface(
         },
         "action": {
             "next_action": next_action,
-            "needs_operator_attention": next_action in {"review", "rerender", "review_quality", "review_release"},
+            "needs_operator_attention": next_action in {
+                "review",
+                "rerender",
+                "review_quality",
+                "review_quality_regression",
+                "review_release",
+            },
         },
     }
     action = "rerender" if next_action == "rerender" else "review"
@@ -150,6 +174,20 @@ def _ready_operator_surface(
                 "failed_gates": failed_quality_gates,
             }
         )
+    if next_action == "review_quality_regression":
+        queue_items.append(
+            {
+                "project_id": project_id,
+                "target_kind": "project",
+                "target_id": project_id,
+                "action": "review_quality_regression",
+                "review_status": None,
+                "failed_gates": failed_quality_regression_gates,
+                "regressed_metrics": ["shot_variety"],
+                "changed_shot_ids": ["shot_01"],
+                "changed_scene_ids": ["scene_01"],
+            }
+        )
     if next_action == "review_release":
         queue_items.append(
             {
@@ -165,6 +203,7 @@ def _ready_operator_surface(
         "project_count": 1,
         "queue_item_count": len(queue_items),
         "quality_gate_failed_project_count": 0 if semantic_quality_gate_passed else 1,
+        "quality_regression_failed_project_count": 0 if revision_semantic_gate_passed else 1,
         "revision_release_failed_project_count": 0 if revision_release_gate_passed else 1,
     }
     return overview, queue_summary, queue_items
@@ -1457,6 +1496,7 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
     assert aggregate["operator_queue_ready_runs"] == 2
     assert aggregate["operator_surface_ready_runs"] == 2
     assert aggregate["semantic_quality_gate_runs"] == 2
+    assert aggregate["revision_semantic_gate_runs"] == 2
     assert aggregate["revision_release_gate_runs"] == 2
     assert aggregate["subtitle_readability_runs"] == 2
     assert aggregate["script_coverage_runs"] == 2

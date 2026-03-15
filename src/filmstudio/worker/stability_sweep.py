@@ -14,6 +14,7 @@ from filmstudio.domain.models import (
     utc_now,
 )
 from filmstudio.services.revision_release import build_revision_release_summary
+from filmstudio.services.revision_semantic import build_revision_semantic_summary
 from filmstudio.services.semantic_quality import build_semantic_quality_summary
 from filmstudio.worker.runtime_factory import build_local_runtime
 
@@ -1137,6 +1138,10 @@ def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
     render_summary = extract_final_render_summary(snapshot)
     deliverables_summary = extract_deliverables_summary(snapshot)
     semantic_quality = build_semantic_quality_summary(snapshot)
+    revision_semantic = build_revision_semantic_summary(
+        snapshot,
+        current_semantic_quality=semantic_quality,
+    )
     revision_release = build_revision_release_summary(snapshot)
     character_names = [
         str(character.name).strip()
@@ -1214,6 +1219,7 @@ def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
         "render_summary": render_summary,
         "deliverables_summary": deliverables_summary,
         "semantic_quality": semantic_quality,
+        "revision_semantic": revision_semantic,
         "revision_release": revision_release,
     }
 
@@ -1332,6 +1338,22 @@ def _run_has_semantic_quality_gate_passed(run: dict[str, Any]) -> bool:
     )
 
 
+def _run_has_revision_semantic_gate_passed(run: dict[str, Any]) -> bool:
+    revision_semantic = run.get("revision_semantic") or ((run.get("operator_overview") or {}).get("revision_semantic")) or {}
+    if not revision_semantic:
+        return True
+    if not isinstance(revision_semantic, dict):
+        return False
+    failed_gates = revision_semantic.get("failed_gates", [])
+    regressed_metrics = revision_semantic.get("regressed_metrics", [])
+    return bool(
+        revision_semantic.get("available")
+        and revision_semantic.get("gate_passed")
+        and isinstance(failed_gates, list)
+        and isinstance(regressed_metrics, list)
+    )
+
+
 def _run_has_revision_release_gate_passed(run: dict[str, Any]) -> bool:
     revision_release = run.get("revision_release") or ((run.get("operator_overview") or {}).get("revision_release")) or {}
     if not isinstance(revision_release, dict):
@@ -1353,6 +1375,7 @@ def _run_has_operator_overview_ready(run: dict[str, Any]) -> bool:
     qc_payload = overview.get("qc", {})
     action_payload = overview.get("action", {})
     semantic_quality_payload = overview.get("semantic_quality", {})
+    revision_semantic_payload = overview.get("revision_semantic", {})
     revision_release_payload = overview.get("revision_release", {})
     if not isinstance(review_payload, dict):
         return False
@@ -1364,12 +1387,16 @@ def _run_has_operator_overview_ready(run: dict[str, Any]) -> bool:
         return False
     if not isinstance(semantic_quality_payload, dict):
         return False
+    if not isinstance(revision_semantic_payload, dict):
+        return False
     if not isinstance(revision_release_payload, dict):
         return False
     review_summary = review_payload.get("summary", {})
     if not isinstance(review_summary, dict):
         return False
     if not isinstance(semantic_quality_payload.get("failed_gates", []), list):
+        return False
+    if not isinstance(revision_semantic_payload.get("failed_gates", []), list):
         return False
     if not isinstance(revision_release_payload.get("failed_gates", []), list):
         return False
@@ -1382,15 +1409,20 @@ def _run_has_operator_overview_ready(run: dict[str, Any]) -> bool:
         expected_action = "review"
     elif not bool(semantic_quality_payload.get("gate_passed")):
         expected_action = "review_quality"
+    elif not bool(revision_semantic_payload.get("gate_passed")):
+        expected_action = "review_quality_regression"
     elif not bool(revision_release_payload.get("gate_passed")):
         expected_action = "review_release"
     return bool(
         deliverables_payload.get("ready")
         and qc_payload.get("status") == "passed"
         and semantic_quality_payload.get("available")
+        and revision_semantic_payload.get("available")
         and revision_release_payload.get("available")
         and action_payload.get("next_action") == expected_action
-        and action_payload.get("needs_operator_attention") is (expected_action in {"review", "rerender", "review_quality", "review_release"})
+        and action_payload.get("needs_operator_attention") is (
+            expected_action in {"review", "rerender", "review_quality", "review_quality_regression", "review_release"}
+        )
     )
 
 
@@ -1410,6 +1442,9 @@ def _run_has_operator_queue_ready(run: dict[str, Any]) -> bool:
     semantic_quality = overview.get("semantic_quality", {})
     if not isinstance(semantic_quality, dict):
         return False
+    revision_semantic = overview.get("revision_semantic", {})
+    if not isinstance(revision_semantic, dict):
+        return False
     revision_release = overview.get("revision_release", {})
     if not isinstance(revision_release, dict):
         return False
@@ -1417,6 +1452,7 @@ def _run_has_operator_queue_ready(run: dict[str, Any]) -> bool:
     pending_review_shot_count = int(review_summary.get("pending_review_shot_count") or 0)
     needs_rerender_shot_count = int(review_summary.get("needs_rerender_shot_count") or 0)
     quality_gate_failed = not bool(semantic_quality.get("gate_passed"))
+    quality_regression_failed = not bool(revision_semantic.get("gate_passed"))
     revision_release_failed = not bool(revision_release.get("gate_passed"))
     requires_release_queue_item = bool(
         revision_release_failed and pending_review_shot_count == 0 and needs_rerender_shot_count == 0
@@ -1425,6 +1461,7 @@ def _run_has_operator_queue_ready(run: dict[str, Any]) -> bool:
         pending_review_shot_count
         + needs_rerender_shot_count
         + (1 if quality_gate_failed else 0)
+        + (1 if quality_regression_failed else 0)
         + (1 if requires_release_queue_item else 0)
     )
     project_items = [
@@ -1436,6 +1473,11 @@ def _run_has_operator_queue_ready(run: dict[str, Any]) -> bool:
         item
         for item in project_items
         if str(item.get("action") or "").strip() == "review_quality"
+    ]
+    quality_regression_items = [
+        item
+        for item in project_items
+        if str(item.get("action") or "").strip() == "review_quality_regression"
     ]
     release_items = [
         item
@@ -1449,6 +1491,7 @@ def _run_has_operator_queue_ready(run: dict[str, Any]) -> bool:
         and int(queue_summary.get("queue_item_count") or 0) >= expected_min_queue_items
         and len(project_items) >= expected_min_queue_items
         and ((not quality_gate_failed) or bool(quality_items))
+        and ((not quality_regression_failed) or bool(quality_regression_items))
         and ((not requires_release_queue_item) or bool(release_items))
     )
 
@@ -1475,6 +1518,7 @@ def _run_meets_product_readiness_requirements(run: dict[str, Any]) -> bool:
         and _run_matches_expected_product_preset(run)
         and _run_has_ready_deliverables(run)
         and _run_has_semantic_quality_gate_passed(run)
+        and _run_has_revision_semantic_gate_passed(run)
         and _run_has_revision_release_gate_passed(run)
         and _run_has_operator_overview_ready(run)
         and _run_has_operator_queue_ready(run)
@@ -1888,6 +1932,7 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
     operator_queue_ready_runs = 0
     operator_surface_ready_runs = 0
     semantic_quality_gate_runs = 0
+    revision_semantic_gate_runs = 0
     revision_release_gate_runs = 0
     subtitle_readability_runs = 0
     script_coverage_runs = 0
@@ -1990,6 +2035,8 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
         if _run_has_operator_overview_ready(run) and _run_has_operator_queue_ready(run):
             operator_surface_ready_runs += 1
         semantic_quality = run.get("semantic_quality", {})
+        if _run_has_revision_semantic_gate_passed(run):
+            revision_semantic_gate_runs += 1
         if _run_has_revision_release_gate_passed(run):
             revision_release_gate_runs += 1
         if isinstance(semantic_quality, dict):
@@ -2081,6 +2128,8 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
         "operator_surface_ready_rate": _rate(operator_surface_ready_runs, len(runs)),
         "semantic_quality_gate_runs": semantic_quality_gate_runs,
         "semantic_quality_gate_rate": _rate(semantic_quality_gate_runs, len(runs)),
+        "revision_semantic_gate_runs": revision_semantic_gate_runs,
+        "revision_semantic_gate_rate": _rate(revision_semantic_gate_runs, len(runs)),
         "revision_release_gate_runs": revision_release_gate_runs,
         "revision_release_gate_rate": _rate(revision_release_gate_runs, len(runs)),
         "subtitle_readability_runs": subtitle_readability_runs,
