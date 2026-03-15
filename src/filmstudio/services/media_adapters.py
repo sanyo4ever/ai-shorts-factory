@@ -515,27 +515,99 @@ class DeterministicMediaAdapters:
                 f"characters/{character.character_id}/profile.json",
                 character.model_dump(),
             )
-            workflow = build_character_portrait_workflow(
-                checkpoint_name=self.comfyui_checkpoint_name,
-                positive_prompt=(
-                    f"{snapshot.project.style}, solo character portrait, one person only, "
-                    f"head and shoulders, centered face, looking at camera, clear eyes, "
-                    f"symmetrical facial features, clean neutral background, "
-                    f"consistent character sheet illustration, {character.visual_hint}"
-                ),
-                negative_prompt=(
-                    "multiple people, crowd, collage, extra faces, duplicate person, split face, "
-                    "deformed face, profile view, cropped head, hands covering face, blurry, "
-                    "watermark, text"
-                ),
-                filename_prefix=f"filmstudio/{snapshot.project.project_id}/characters/{index:02d}_{character.name.lower()}",
-                seed=stable_visual_seed(snapshot.project.project_id, character.character_id, "character"),
-            )
-            image = client.generate_image(workflow)
+            attempt_payloads: list[dict[str, Any]] = []
+            selected_attempt: dict[str, Any] | None = None
+            best_attempt: dict[str, Any] | None = None
+            for attempt_index, variant in enumerate(
+                self._character_reference_prompt_variants(snapshot, character),
+                start=1,
+            ):
+                workflow = build_character_portrait_workflow(
+                    checkpoint_name=self.comfyui_checkpoint_name,
+                    positive_prompt=variant["positive_prompt"],
+                    negative_prompt=variant["negative_prompt"],
+                    filename_prefix=(
+                        f"filmstudio/{snapshot.project.project_id}/characters/"
+                        f"{index:02d}_{character.name.lower()}_{variant['label']}"
+                    ),
+                    seed=stable_visual_seed(
+                        snapshot.project.project_id,
+                        character.character_id,
+                        f"character_{variant['label']}",
+                    ),
+                )
+                image = client.generate_image(workflow)
+                attempt_image_path = write_image_bytes(
+                    self.artifact_store.project_dir(snapshot.project.project_id)
+                    / f"characters/{character.character_id}/reference_attempt_{attempt_index:02d}.png",
+                    image.image_bytes,
+                )
+                attempt_payload: dict[str, Any] = {
+                    "attempt_index": attempt_index,
+                    "prompt_variant": variant["label"],
+                    "positive_prompt": variant["positive_prompt"],
+                    "negative_prompt": variant["negative_prompt"],
+                    "prompt_id": image.prompt_id,
+                    "duration_sec": image.duration_sec,
+                    "filename": image.filename,
+                    "subfolder": image.subfolder,
+                    "workflow": image.workflow,
+                    "history": image.history,
+                    "image_path": str(attempt_image_path),
+                    "image_bytes": image.image_bytes,
+                    "quality_gate_passed": True,
+                    "quality_gate_reason": "probe_unavailable",
+                }
+                if self._can_probe_character_reference_faces():
+                    probe_result = self._probe_character_reference_face(
+                        character=character,
+                        project_id=snapshot.project.project_id,
+                        attempt_index=attempt_index,
+                        image_path=attempt_image_path,
+                    )
+                    attempt_payload.update(
+                        {
+                            "face_probe": probe_result["face_probe"],
+                            "face_probe_path": probe_result["face_probe_path"],
+                            "face_probe_stdout_path": probe_result["face_probe_stdout_path"],
+                            "face_probe_stderr_path": probe_result["face_probe_stderr_path"],
+                            "face_probe_command": probe_result["face_probe_command"],
+                            "face_probe_duration_sec": probe_result["face_probe_duration_sec"],
+                            "face_quality": probe_result["face_quality"],
+                            "face_occupancy": probe_result["face_occupancy"],
+                            "face_isolation": probe_result["face_isolation"],
+                        }
+                    )
+                    quality_gate_passed, quality_gate_reason = self._character_reference_quality_gate(
+                        probe_result["face_probe"],
+                        face_quality=probe_result["face_quality"],
+                        face_occupancy=probe_result["face_occupancy"],
+                        face_isolation=probe_result["face_isolation"],
+                    )
+                    attempt_payload["quality_gate_passed"] = quality_gate_passed
+                    attempt_payload["quality_gate_reason"] = quality_gate_reason
+                    attempt_payload["score"] = (
+                        float(probe_result["face_quality"].get("score", 0.0) or 0.0)
+                        + float(probe_result["face_occupancy"].get("score", 0.0) or 0.0)
+                        + float(probe_result["face_isolation"].get("score", 0.0) or 0.0)
+                        + (0.25 if quality_gate_passed else 0.0)
+                    )
+                if best_attempt is None or float(attempt_payload.get("score", 0.0) or 0.0) > float(
+                    best_attempt.get("score", 0.0) or 0.0
+                ):
+                    best_attempt = attempt_payload
+                attempt_payloads.append(attempt_payload)
+                if bool(attempt_payload.get("quality_gate_passed")):
+                    selected_attempt = attempt_payload
+                    break
+            if selected_attempt is None:
+                selected_attempt = best_attempt
+            if selected_attempt is None:
+                raise RuntimeError(f"Failed to generate character reference for {character.name}.")
             image_path = write_image_bytes(
                 self.artifact_store.project_dir(snapshot.project.project_id)
                 / f"characters/{character.character_id}/reference.png",
-                image.image_bytes,
+                bytes(selected_attempt["image_bytes"]),
             )
             manifest_path = self.artifact_store.write_json(
                 snapshot.project.project_id,
@@ -543,12 +615,29 @@ class DeterministicMediaAdapters:
                 {
                     "backend": "comfyui",
                     "character_id": character.character_id,
-                    "prompt_id": image.prompt_id,
-                    "duration_sec": image.duration_sec,
-                    "filename": image.filename,
-                    "subfolder": image.subfolder,
-                    "workflow": image.workflow,
-                    "history": image.history,
+                    "prompt_id": selected_attempt["prompt_id"],
+                    "duration_sec": selected_attempt["duration_sec"],
+                    "filename": selected_attempt["filename"],
+                    "subfolder": selected_attempt["subfolder"],
+                    "workflow": selected_attempt["workflow"],
+                    "history": selected_attempt["history"],
+                    "selected_attempt_index": selected_attempt["attempt_index"],
+                    "selected_prompt_variant": selected_attempt["prompt_variant"],
+                    "quality_gate_passed": bool(selected_attempt.get("quality_gate_passed")),
+                    "quality_gate_reason": selected_attempt.get("quality_gate_reason"),
+                    "selected_face_probe_path": selected_attempt.get("face_probe_path"),
+                    "selected_face_quality": selected_attempt.get("face_quality"),
+                    "selected_face_occupancy": selected_attempt.get("face_occupancy"),
+                    "selected_face_isolation": selected_attempt.get("face_isolation"),
+                    "attempt_count": len(attempt_payloads),
+                    "attempts": [
+                        {
+                            key: value
+                            for key, value in attempt.items()
+                            if key != "image_bytes"
+                        }
+                        for attempt in attempt_payloads
+                    ],
                 },
             )
             result.artifacts.extend(
@@ -564,7 +653,12 @@ class DeterministicMediaAdapters:
                         kind="character_reference",
                         path=str(image_path),
                         stage="build_characters",
-                        metadata={"backend": "comfyui", "character_id": character.character_id},
+                        metadata={
+                            "backend": "comfyui",
+                            "character_id": character.character_id,
+                            "selected_attempt_index": selected_attempt["attempt_index"],
+                            "quality_gate_passed": bool(selected_attempt.get("quality_gate_passed")),
+                        },
                     ),
                     ArtifactRecord(
                         artifact_id=new_id("artifact"),
@@ -575,16 +669,154 @@ class DeterministicMediaAdapters:
                     ),
                 ]
             )
+            if selected_attempt.get("face_probe_path"):
+                result.artifacts.append(
+                    ArtifactRecord(
+                        artifact_id=new_id("artifact"),
+                        kind="character_reference_face_probe",
+                        path=str(selected_attempt["face_probe_path"]),
+                        stage="build_characters",
+                        metadata={
+                            "backend": "musetalk_face_preflight",
+                            "character_id": character.character_id,
+                            "attempt_index": selected_attempt["attempt_index"],
+                        },
+                    )
+                )
             result.logs.append(
                 {
                     "message": f"generated character package for {character.name} via comfyui",
                     "character_id": character.character_id,
-                    "prompt_id": image.prompt_id,
-                    "duration_sec": image.duration_sec,
+                    "prompt_id": selected_attempt["prompt_id"],
+                    "duration_sec": selected_attempt["duration_sec"],
                     "visual_backend": "comfyui",
+                    "selected_prompt_variant": selected_attempt["prompt_variant"],
+                    "attempt_count": len(attempt_payloads),
+                    "quality_gate_passed": bool(selected_attempt.get("quality_gate_passed")),
+                    "quality_gate_reason": selected_attempt.get("quality_gate_reason"),
                 }
             )
         return result
+
+    def _character_reference_prompt_variants(
+        self,
+        snapshot: ProjectSnapshot,
+        character: CharacterProfile,
+    ) -> list[dict[str, str]]:
+        character_visual_fragment = self._character_visual_fragment(character)
+        character_negative_fragment = self._character_negative_fragment(character)
+        negative_suffix = (
+            f", {character_negative_fragment}" if character_negative_fragment else ""
+        )
+        shared_negative = (
+            "multiple people, crowd, duo pose, second character, collage, extra faces, duplicate person, "
+            "split face, deformed face, profile view, cropped head, blurry, watermark, text, full body, "
+            "action pose, running pose, weapon pose, face covering, full mask, visor, helmet shadow"
+            f"{negative_suffix}"
+        )
+        return [
+            {
+                "label": "studio_headshot",
+                "positive_prompt": (
+                    f"{snapshot.project.style}, solo character portrait, one person only, single human subject, "
+                    f"head and shoulders only, studio headshot, direct gaze, both eyes visible, visible mouth, "
+                    f"uncovered face, symmetrical facial features, clean neutral background, crisp cel-shaded portrait, "
+                    f"{character_visual_fragment}"
+                ),
+                "negative_prompt": shared_negative,
+            },
+            {
+                "label": "passport_portrait",
+                "positive_prompt": (
+                    f"{snapshot.project.style}, one person only, passport portrait, face filling most of frame, "
+                    f"front-facing closeup, visible mouth, uncovered face, no dramatic pose, simple neutral background, "
+                    f"stylized game portrait, {character_visual_fragment}"
+                ),
+                "negative_prompt": shared_negative,
+            },
+            {
+                "label": "direct_portrait",
+                "positive_prompt": (
+                    f"{snapshot.project.style}, solo direct portrait, chest-up, one person only, no action, "
+                    f"clean readable silhouette, visible mouth, uncovered face, eyes looking at camera, "
+                    f"hero-card portrait, {character_visual_fragment}"
+                ),
+                "negative_prompt": shared_negative,
+            },
+        ]
+
+    def _can_probe_character_reference_faces(self) -> bool:
+        return bool(
+            self.musetalk_repo_path is not None
+            and self.musetalk_repo_path.exists()
+            and self.musetalk_python_binary
+            and resolve_binary(self.musetalk_python_binary) is not None
+        )
+
+    def _probe_character_reference_face(
+        self,
+        *,
+        character: CharacterProfile,
+        project_id: str,
+        attempt_index: int,
+        image_path: Path,
+    ) -> dict[str, Any]:
+        probe_result = run_musetalk_source_probe(
+            MuseTalkSourceProbeConfig(
+                python_binary=self.musetalk_python_binary,
+                repo_path=self._require_musetalk_repo(),
+            ),
+            source_media_path=image_path,
+            result_root=(
+                self.artifact_store.project_dir(project_id)
+                / f"characters/{character.character_id}/probe_attempt_{attempt_index:02d}"
+            ),
+        )
+        face_probe_payload = probe_result.payload
+        face_isolation = self._summarize_face_isolation(face_probe_payload)
+        face_occupancy = self._summarize_musetalk_source_occupancy(face_probe_payload)
+        self._annotate_effective_face_probe_warnings(
+            face_probe_payload,
+            face_isolation_summary=face_isolation,
+            face_occupancy_summary=face_occupancy,
+        )
+        face_quality = self._summarize_source_face_quality(face_probe_payload)
+        face_probe_payload["effective_pass"] = self._face_probe_effective_pass(face_probe_payload)
+        face_probe_payload["quality_summary"] = face_quality
+        face_probe_payload["occupancy_summary"] = face_occupancy
+        face_probe_payload["face_isolation_summary"] = face_isolation
+        probe_result.probe_path.write_text(json.dumps(face_probe_payload, indent=2), encoding="utf-8")
+        return {
+            "face_probe": face_probe_payload,
+            "face_probe_path": str(probe_result.probe_path),
+            "face_probe_stdout_path": str(probe_result.stdout_path),
+            "face_probe_stderr_path": str(probe_result.stderr_path),
+            "face_probe_command": probe_result.command,
+            "face_probe_duration_sec": probe_result.duration_sec,
+            "face_quality": face_quality,
+            "face_occupancy": face_occupancy,
+            "face_isolation": face_isolation,
+        }
+
+    def _character_reference_quality_gate(
+        self,
+        face_probe_payload: dict[str, Any],
+        *,
+        face_quality: dict[str, Any],
+        face_occupancy: dict[str, Any],
+        face_isolation: dict[str, Any],
+    ) -> tuple[bool, str]:
+        if not self._face_probe_effective_pass(face_probe_payload):
+            return False, "face_probe_failed"
+        if self._is_rejected_face_quality(face_quality) or self._is_marginal_face_quality(face_quality):
+            return False, "face_quality_below_target"
+        if self._is_rejected_face_quality(face_occupancy) or self._is_marginal_face_quality(face_occupancy):
+            return False, "face_occupancy_below_target"
+        if self._is_rejected_face_quality(face_isolation) or self._is_marginal_face_quality(face_isolation):
+            return False, "face_isolation_below_target"
+        if int(face_isolation.get("secondary_face_count", 0) or 0) > 0:
+            return False, "secondary_face_detected"
+        return True, "quality_gate_passed"
 
     def _generate_storyboards_comfyui(self, snapshot: ProjectSnapshot) -> StageExecutionResult:
         client = self._require_comfyui()
@@ -673,14 +905,24 @@ class DeterministicMediaAdapters:
         shot: ShotPlan,
     ) -> tuple[str, str]:
         primary_character = self._resolve_primary_character(snapshot, shot)
+        primary_descriptor = self._character_visual_fragment(primary_character)
+        primary_negative = self._character_negative_fragment(primary_character)
+        group_descriptor = self._shot_character_prompt_fragment(snapshot, shot)
         composition_hint = self._composition_prompt_fragment(shot)
         lane_hint = self._subtitle_lane_prompt_fragment(shot)
         if shot.strategy == "portrait_lipsync":
+            off_camera_partners = [name for name in shot.characters if name.casefold() != primary_character["name"].casefold()]
+            partner_hint = ""
+            if off_camera_partners:
+                partner_hint = (
+                    f"show only {primary_character['name']} on camera and keep {', '.join(off_camera_partners)} off-camera, "
+                )
             return (
                 (
                     f"{snapshot.project.style}, storyboard frame, solo talking-head portrait of "
-                    f"{primary_character['name']}, one person only, head and shoulders, "
+                    f"{primary_character['name']}, one person only, {partner_hint}head and shoulders, "
                     f"looking at camera, clear facial features, natural expression, dialogue close-up, "
+                    f"{primary_descriptor}, "
                     f"{composition_hint}, {lane_hint}, "
                     f"{shot.purpose}, seed hint: {shot.prompt_seed}"
                 ),
@@ -688,13 +930,14 @@ class DeterministicMediaAdapters:
                     "multiple people, crowd, collage, extra faces, duplicate person, split face, "
                     "profile view, extreme close-up, cropped forehead, cropped chin, face too low in frame, "
                     "important details inside the subtitle lane, hands covering face, "
-                    "blurry, bad anatomy, watermark, text, logo"
+                    f"blurry, bad anatomy, watermark, text, logo"
+                    f"{', ' + primary_negative if primary_negative else ''}"
                 ),
             )
         return (
             (
                 f"{snapshot.project.style}, storyboard frame, {shot.title}, {shot.purpose}, "
-                f"characters: {', '.join(shot.characters) or 'none'}, {composition_hint}, {lane_hint}, "
+                f"characters: {group_descriptor}, {composition_hint}, {lane_hint}, "
                 f"seed hint: {shot.prompt_seed}"
             ),
             "blurry, bad anatomy, duplicate body parts, watermark, text, logo",
@@ -728,11 +971,119 @@ class DeterministicMediaAdapters:
             + (f", notes: {notes}" if notes else "")
         )
 
+    @staticmethod
+    def _resolve_project_character(
+        snapshot: ProjectSnapshot,
+        name: str,
+    ) -> CharacterProfile | None:
+        normalized = str(name).strip().casefold()
+        if not normalized:
+            return None
+        for character in snapshot.project.characters:
+            if character.name.casefold() == normalized:
+                return character
+        return None
+
+    @staticmethod
+    def _character_visual_fragment(character: CharacterProfile | dict[str, Any]) -> str:
+        style_tags = (
+            character.get("style_tags") if isinstance(character, dict) else character.style_tags
+        ) or []
+        parts = [
+            str(character.get("name") if isinstance(character, dict) else character.name).strip(),
+            str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip(),
+            str(
+                character.get("relationship_hint") if isinstance(character, dict) else character.relationship_hint
+            ).strip(),
+            str(character.get("age_hint") if isinstance(character, dict) else character.age_hint).strip(),
+            str(character.get("gender_hint") if isinstance(character, dict) else character.gender_hint).strip(),
+            str(character.get("wardrobe_hint") if isinstance(character, dict) else character.wardrobe_hint).strip(),
+            str(character.get("palette_hint") if isinstance(character, dict) else character.palette_hint).strip(),
+            ", ".join(
+                [
+                    str(tag).strip()
+                    for tag in style_tags
+                    if str(tag).strip()
+                ][:4]
+            ),
+            str(character.get("visual_hint") if isinstance(character, dict) else character.visual_hint).strip(),
+        ]
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for part in parts:
+            if not part:
+                continue
+            normalized = part.casefold()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(part)
+        return ", ".join(ordered)
+
+    @staticmethod
+    def _character_negative_fragment(character: CharacterProfile | dict[str, Any]) -> str:
+        return str(
+            character.get("negative_visual_hint") if isinstance(character, dict) else character.negative_visual_hint
+        ).strip()
+
+    @staticmethod
+    def _character_action_fragment(character: CharacterProfile | dict[str, Any]) -> str:
+        name = str(character.get("name") if isinstance(character, dict) else character.name).strip()
+        relationship = str(
+            character.get("relationship_hint") if isinstance(character, dict) else character.relationship_hint
+        ).strip()
+        wardrobe = str(
+            character.get("wardrobe_hint") if isinstance(character, dict) else character.wardrobe_hint
+        ).strip()
+        raw_style_tags = (
+            character.get("style_tags") if isinstance(character, dict) else character.style_tags
+        ) or []
+        style_tags = [
+            str(tag).strip()
+            for tag in raw_style_tags
+            if str(tag).strip()
+        ]
+        selected_tags = [
+            tag
+            for tag in style_tags
+            if "fortnite" in tag.casefold() or "battle royale" in tag.casefold()
+        ][:1]
+        parts = [
+            name,
+            relationship,
+            wardrobe,
+            ", ".join(selected_tags),
+        ]
+        return DeterministicMediaAdapters._compact_prompt_text(
+            ", ".join(part for part in parts if part),
+            limit=80,
+        )
+
+    def _shot_character_prompt_fragment(
+        self,
+        snapshot: ProjectSnapshot,
+        shot: ShotPlan,
+        *,
+        compact: bool = False,
+    ) -> str:
+        fragments: list[str] = []
+        for name in shot.characters[:3]:
+            character = self._resolve_project_character(snapshot, name)
+            if character is not None:
+                fragments.append(
+                    self._character_action_fragment(character)
+                    if compact
+                    else self._character_visual_fragment(character)
+                )
+            else:
+                fragments.append(name)
+        return " | ".join(fragment for fragment in fragments if fragment) or "no named character"
+
     def _resolve_primary_character(
         self,
         snapshot: ProjectSnapshot,
         shot: ShotPlan,
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         desired_name = ""
         if shot.dialogue:
             desired_name = shot.dialogue[0].character_name.strip()
@@ -742,15 +1093,20 @@ class DeterministicMediaAdapters:
         normalized = desired_name.casefold()
         for character in snapshot.project.characters:
             if character.name.casefold() == normalized:
-                return {
-                    "character_id": character.character_id,
-                    "name": character.name,
-                    "visual_hint": character.visual_hint,
-                }
+                payload = character.model_dump()
+                return {key: str(value) if isinstance(value, str) else value for key, value in payload.items()}
         return {
             "character_id": "",
             "name": desired_name,
             "visual_hint": f"stylized portrait of {desired_name}",
+            "role_hint": "",
+            "relationship_hint": "",
+            "age_hint": "",
+            "gender_hint": "",
+            "wardrobe_hint": "",
+            "palette_hint": "",
+            "negative_visual_hint": "",
+            "style_tags": [],
         }
 
     def _musetalk_source_prompt_variants(
@@ -764,6 +1120,8 @@ class DeterministicMediaAdapters:
         short_archetype = str(product_preset.get("short_archetype") or "")
         visual_hint = primary_character["visual_hint"]
         name = primary_character["name"]
+        identity_fragment = self._character_visual_fragment(primary_character)
+        negative_identity = self._character_negative_fragment(primary_character)
         lane_hint = self._subtitle_lane_prompt_fragment(shot)
         preset_positive_hint = ""
         preset_negative_hint = ""
@@ -805,7 +1163,7 @@ class DeterministicMediaAdapters:
                     f"front-facing head and shoulders, large centered face filling the frame, both eyes visible, "
                     f"direct gaze into camera, symmetrical face, mouth closed, face dominant in frame, "
                     f"minimal headroom, shoulders near lower frame edge, clear jawline, neutral background, "
-                    f"realistic illustration, {lane_hint}, shot purpose: {shot.purpose}, {visual_hint}"
+                    f"realistic illustration, {lane_hint}, shot purpose: {shot.purpose}, {identity_fragment or visual_hint}"
                 ),
                 "negative_prompt": (
                     f"multiple people, crowd, collage, extra faces, duplicate person, split face, "
@@ -813,7 +1171,8 @@ class DeterministicMediaAdapters:
                     "profile view, side profile, side view, three-quarter view, looking sideways, "
                     "tilted head, mouth open, tiny face, distant camera, wide framing, torso visible, "
                     "extreme close-up, cropped chin, cropped forehead, hands covering face, sunglasses, "
-                    "content inside the subtitle lane, blurry, watermark, text"
+                    f"content inside the subtitle lane, blurry, watermark, text"
+                    f"{', ' + negative_identity if negative_identity else ''}"
                 ),
             },
             {
@@ -823,14 +1182,15 @@ class DeterministicMediaAdapters:
                     f"front-facing head and shoulders, "
                     f"large centered face filling the frame, minimal headroom, shoulders near lower frame edge, "
                     f"looking directly at camera, both eyes visible, neutral expression, mouth closed, "
-                    f"neutral background, realistic illustration, {lane_hint}, {visual_hint}"
+                    f"neutral background, realistic illustration, {lane_hint}, {identity_fragment or visual_hint}"
                 ),
                 "negative_prompt": (
                     f"multiple people, crowd, collage, extra faces, duplicate person, split face, "
                     f"{preset_negative_hint}"
                     "profile view, side view, three-quarter view, tiny face, distant camera, extra headroom, "
                     "torso visible, full body, cropped forehead, cropped chin, hands covering face, "
-                    "sunglasses, blurry, watermark, text"
+                    f"sunglasses, blurry, watermark, text"
+                    f"{', ' + negative_identity if negative_identity else ''}"
                 ),
             },
             {
@@ -840,13 +1200,14 @@ class DeterministicMediaAdapters:
                     f"frontal view, "
                     f"large centered head, direct eye contact, symmetrical face, face occupying most of frame, "
                     f"little empty background, neutral background, realistic illustration, "
-                    f"{lane_hint}, {visual_hint}"
+                    f"{lane_hint}, {identity_fragment or visual_hint}"
                 ),
                 "negative_prompt": (
                     f"multiple people, crowd, collage, {preset_negative_hint}"
                     "profile view, side view, looking away, "
                     "tilted head, mouth open, tiny face, distant shot, torso visible, cropped head, "
-                    "blurry, watermark, text"
+                    f"blurry, watermark, text"
+                    f"{', ' + negative_identity if negative_identity else ''}"
                 ),
             },
         ]
@@ -3771,35 +4132,169 @@ class DeterministicMediaAdapters:
         raw_probe = ffprobe_media(self.ffprobe_binary, raw_output_path)
         raw_summary = summarize_probe(raw_probe)
         raw_duration_sec = float(raw_summary.get("duration_sec") or 0.0)
-        target_duration_sec = max(raw_duration_sec, float(duration_sec or 0.0))
-        hold_duration_sec = max(0.0, target_duration_sec - raw_duration_sec)
-        normalize_filter = f"{self._scale_crop_filter()},fps={self.render_fps}"
-        if hold_duration_sec > 0.01:
-            normalize_filter += f",tpad=stop_mode=clone:stop_duration={hold_duration_sec:.3f}"
-        normalize_filter += ",format=yuv420p"
-        normalize_command = [
-            resolve_binary(self.ffmpeg_binary) or self.ffmpeg_binary,
-            "-y",
-            "-i",
-            str(raw_output_path),
-            "-vf",
-            normalize_filter,
-            "-an",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "18",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            "-t",
-            f"{target_duration_sec:.3f}",
-            str(normalized_output_path),
-        ]
-        normalize_run = run_command(normalize_command, timeout_sec=self.command_timeout_sec)
+        requested_duration_sec = max(raw_duration_sec, float(duration_sec or 0.0))
+        requested_hold_duration_sec = max(0.0, requested_duration_sec - raw_duration_sec)
+        hold_duration_sec = requested_hold_duration_sec
+        hold_duration_cap_sec = self._wan_hold_duration_cap(raw_duration_sec)
+        hold_quality_capped = False
+        if hold_duration_cap_sec is not None and hold_duration_sec > hold_duration_cap_sec:
+            hold_duration_sec = hold_duration_cap_sec
+            hold_quality_capped = True
+        target_duration_sec = raw_duration_sec + hold_duration_sec
+        normalize_commands: dict[str, list[str]] = {}
+        hybrid_plan = self._wan_hybrid_segment_plan(
+            raw_duration_sec=raw_duration_sec,
+            target_duration_sec=requested_duration_sec,
+            storyboard_path=input_image_path or (Path(storyboard_artifact.path) if storyboard_artifact is not None else None),
+            shot=shot,
+        )
+        hybrid_segments: list[dict[str, Any]] = []
+        if hybrid_plan is not None:
+            target_duration_sec = requested_duration_sec
+            lead_path = result_root / "hybrid_lead.mp4"
+            lead_command = self._render_looped_image_clip_command(
+                image_path=Path(hybrid_plan["storyboard_path"]),
+                output_path=lead_path,
+                duration_sec=float(hybrid_plan["lead_duration_sec"]),
+                filter_chain=self._wan_storyboard_motion_filter(phase="lead"),
+            )
+            lead_run = run_command(lead_command, timeout_sec=self.command_timeout_sec)
+            lead_summary = summarize_probe(ffprobe_media(self.ffprobe_binary, lead_path))
+            normalize_commands["hybrid_lead"] = lead_command
+            hybrid_segments.append(
+                {
+                    "label": "storyboard_lead",
+                    "path": str(lead_path),
+                    "duration_sec": float(lead_summary.get("duration_sec") or hybrid_plan["lead_duration_sec"]),
+                    "probe": lead_summary,
+                }
+            )
+
+            center_path = result_root / "hybrid_center.mp4"
+            center_command = [
+                resolve_binary(self.ffmpeg_binary) or self.ffmpeg_binary,
+                "-y",
+                "-i",
+                str(raw_output_path),
+                "-vf",
+                self._wan_center_motion_filter(),
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                "-t",
+                f"{raw_duration_sec:.3f}",
+                str(center_path),
+            ]
+            center_run = run_command(center_command, timeout_sec=self.command_timeout_sec)
+            center_summary = summarize_probe(ffprobe_media(self.ffprobe_binary, center_path))
+            normalize_commands["hybrid_center"] = center_command
+            hybrid_segments.append(
+                {
+                    "label": "wan_center",
+                    "path": str(center_path),
+                    "duration_sec": float(center_summary.get("duration_sec") or raw_duration_sec),
+                    "probe": center_summary,
+                }
+            )
+
+            tail_duration_sec = float(hybrid_plan["tail_duration_sec"])
+            if tail_duration_sec > 0.05:
+                tail_path = result_root / "hybrid_tail.mp4"
+                tail_command = self._render_looped_image_clip_command(
+                    image_path=Path(hybrid_plan["storyboard_path"]),
+                    output_path=tail_path,
+                    duration_sec=tail_duration_sec,
+                    filter_chain=self._wan_storyboard_motion_filter(phase="tail"),
+                )
+                tail_run = run_command(tail_command, timeout_sec=self.command_timeout_sec)
+                tail_summary = summarize_probe(ffprobe_media(self.ffprobe_binary, tail_path))
+                normalize_commands["hybrid_tail"] = tail_command
+                hybrid_segments.append(
+                    {
+                        "label": "storyboard_tail",
+                        "path": str(tail_path),
+                        "duration_sec": float(tail_summary.get("duration_sec") or tail_duration_sec),
+                        "probe": tail_summary,
+                    }
+                )
+            else:
+                tail_run = None
+
+            concat_list_path = result_root / "hybrid_concat.txt"
+            write_text(
+                concat_list_path,
+                "".join(f"file '{Path(segment['path']).as_posix()}'\n" for segment in hybrid_segments),
+            )
+            normalize_command = [
+                resolve_binary(self.ffmpeg_binary) or self.ffmpeg_binary,
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(concat_list_path),
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                "-t",
+                f"{target_duration_sec:.3f}",
+                str(normalized_output_path),
+            ]
+            normalize_run = run_command(normalize_command, timeout_sec=self.command_timeout_sec)
+            normalize_commands["hybrid_concat"] = normalize_command
+            normalize_policy = "hybrid_storyboard_motion"
+            hold_duration_sec = 0.0
+        else:
+            normalize_filter = f"{self._scale_crop_filter()},fps={self.render_fps}"
+            if hold_duration_sec > 0.01:
+                normalize_filter += f",tpad=stop_mode=clone:stop_duration={hold_duration_sec:.3f}"
+            normalize_filter += ",format=yuv420p"
+            normalize_command = [
+                resolve_binary(self.ffmpeg_binary) or self.ffmpeg_binary,
+                "-y",
+                "-i",
+                str(raw_output_path),
+                "-vf",
+                normalize_filter,
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                "-t",
+                f"{target_duration_sec:.3f}",
+                str(normalized_output_path),
+            ]
+            normalize_run = run_command(normalize_command, timeout_sec=self.command_timeout_sec)
+            normalize_commands["normalize"] = normalize_command
+            normalize_policy = (
+                "hold_last_frame_quality_capped"
+                if hold_quality_capped and hold_duration_sec > 0.01
+                else ("hold_last_frame" if hold_duration_sec > 0.01 else "trim_only")
+            )
         normalized_summary = summarize_probe(ffprobe_media(self.ffprobe_binary, normalized_output_path))
         manifest_path = self.artifact_store.write_json(
             project_id,
@@ -3830,12 +4325,15 @@ class DeterministicMediaAdapters:
                 "wan_duration_sec": wan_run.duration_sec,
                 "raw_output_path": str(raw_output_path),
                 "raw_probe": raw_summary,
+                "requested_target_duration_sec": requested_duration_sec,
                 "normalize_target_duration_sec": target_duration_sec,
                 "normalize_hold_duration_sec": hold_duration_sec,
-                "normalize_duration_policy": (
-                    "hold_last_frame" if hold_duration_sec > 0.01 else "trim_only"
-                ),
+                "normalize_hold_duration_cap_sec": hold_duration_cap_sec,
+                "normalize_duration_policy": normalize_policy,
                 "normalize_command": normalize_command,
+                "normalize_commands": normalize_commands,
+                "hybrid_segments": hybrid_segments,
+                "hybrid_plan": hybrid_plan,
                 "normalize_duration_sec": normalize_run.duration_sec,
                 "probe": normalized_summary,
             },
@@ -3866,6 +4364,21 @@ class DeterministicMediaAdapters:
                 ),
             ]
         )
+        for segment in hybrid_segments:
+            result.artifacts.append(
+                ArtifactRecord(
+                    artifact_id=new_id("artifact"),
+                    kind="shot_video_hybrid_segment",
+                    path=str(segment["path"]),
+                    stage="render_shots",
+                    metadata={
+                        "shot_id": shot.shot_id,
+                        "backend": "wan",
+                        "segment_label": segment["label"],
+                        **(segment.get("probe") or {}),
+                    },
+                )
+            )
         result.logs.append(
             {
                 "message": f"rendered shot {shot.shot_id}",
@@ -3874,8 +4387,11 @@ class DeterministicMediaAdapters:
                 "wan_command": " ".join(wan_run.command),
                 "normalize_command": " ".join(normalize_command),
                 "duration_sec": wan_run.duration_sec + normalize_run.duration_sec,
+                "requested_target_duration_sec": requested_duration_sec,
                 "normalize_target_duration_sec": target_duration_sec,
                 "normalize_hold_duration_sec": hold_duration_sec,
+                "normalize_hold_duration_cap_sec": hold_duration_cap_sec,
+                "normalize_duration_policy": normalize_policy,
                 "input_mode": "image_to_video" if input_image_path is not None else "text_to_video",
             }
         )
@@ -7836,6 +8352,102 @@ class DeterministicMediaAdapters:
             raise RuntimeError(f"Wan checkpoint dir not found: {self.wan_ckpt_dir}")
         return self.wan_ckpt_dir
 
+    def _wan_hold_duration_cap(self, raw_duration_sec: float) -> float | None:
+        normalized_task = self.wan_task.strip().lower()
+        normalized_size = self.wan_size.strip().lower()
+        if normalized_task == "t2v-1.3b" and normalized_size == "480*832":
+            return min(max(raw_duration_sec, 0.5), 1.0)
+        return None
+
+    def _wan_hybrid_segment_plan(
+        self,
+        *,
+        raw_duration_sec: float,
+        target_duration_sec: float,
+        storyboard_path: Path | None,
+        shot: ShotPlan,
+    ) -> dict[str, Any] | None:
+        if storyboard_path is None or not storyboard_path.exists():
+            return None
+        if shot.strategy != "hero_insert":
+            return None
+        remaining_duration_sec = max(0.0, target_duration_sec - raw_duration_sec)
+        if remaining_duration_sec < 0.4:
+            return None
+        lead_duration_sec = min(max(remaining_duration_sec * 0.55, 0.35), 0.85)
+        tail_duration_sec = max(0.0, remaining_duration_sec - lead_duration_sec)
+        if 0.0 < tail_duration_sec < 0.22:
+            lead_duration_sec = remaining_duration_sec / 2.0
+            tail_duration_sec = remaining_duration_sec - lead_duration_sec
+        if lead_duration_sec < 0.22 and tail_duration_sec < 0.22:
+            return None
+        return {
+            "storyboard_path": str(storyboard_path),
+            "raw_duration_sec": raw_duration_sec,
+            "target_duration_sec": target_duration_sec,
+            "remaining_duration_sec": remaining_duration_sec,
+            "lead_duration_sec": round(lead_duration_sec, 3),
+            "tail_duration_sec": round(tail_duration_sec, 3),
+        }
+
+    def _wan_storyboard_motion_filter(self, *, phase: str) -> str:
+        if phase == "tail":
+            return (
+                f"{self._scale_crop_filter()},"
+                f"zoompan=z='if(eq(on,0),1.03,min(zoom+0.0017,1.12))':"
+                f"x='iw*0.018':y='ih*0.012':d=1:s={self._render_size()},"
+                f"fps={self.render_fps},format=yuv420p"
+            )
+        return (
+            f"{self._scale_crop_filter()},"
+            f"zoompan=z='if(eq(on,0),1.00,min(zoom+0.0016,1.10))':"
+            f"x='iw*0.010':y='ih*0.006':d=1:s={self._render_size()},"
+            f"fps={self.render_fps},format=yuv420p"
+        )
+
+    def _wan_center_motion_filter(self) -> str:
+        return (
+            f"{self._scale_crop_filter()},"
+            f"fps={self.render_fps},"
+            "unsharp=5:5:0.65:3:3:0.25,"
+            "format=yuv420p"
+        )
+
+    def _render_looped_image_clip_command(
+        self,
+        *,
+        image_path: Path,
+        output_path: Path,
+        duration_sec: float,
+        filter_chain: str,
+    ) -> list[str]:
+        return [
+            resolve_binary(self.ffmpeg_binary) or self.ffmpeg_binary,
+            "-y",
+            "-loop",
+            "1",
+            "-framerate",
+            str(self.render_fps),
+            "-i",
+            str(image_path),
+            "-t",
+            f"{duration_sec:.3f}",
+            "-vf",
+            filter_chain,
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+
     def _wan_uses_image_input(self) -> bool:
         normalized_task = self.wan_task.strip().lower()
         return normalized_task.startswith("i2v") or normalized_task.startswith("flf2v")
@@ -7848,26 +8460,47 @@ class DeterministicMediaAdapters:
         return compact[: limit - 1].rstrip() + "…"
 
     @staticmethod
-    def _wan_prompt(snapshot: ProjectSnapshot, shot: ShotPlan) -> str:
-        character_names = ", ".join(shot.characters[:3]) or "no named character"
+    def _wan_style_fragment(snapshot: ProjectSnapshot) -> str:
+        product_preset = snapshot.project.metadata.get("product_preset") or {}
+        style_direction = product_preset.get("style_direction") or {}
+        prompt_tags = [str(tag).strip() for tag in style_direction.get("prompt_tags") or [] if str(tag).strip()]
+        selected_tag = next(
+            (
+                tag
+                for tag in prompt_tags
+                if "fortnite" in tag.casefold() or "battle royale" in tag.casefold()
+            ),
+            prompt_tags[0] if prompt_tags else "",
+        )
+        parts = [
+            snapshot.project.style,
+            selected_tag,
+            style_direction.get("palette_hint"),
+        ]
+        return DeterministicMediaAdapters._compact_prompt_text(
+            ", ".join(str(part).strip() for part in parts if str(part).strip()),
+            limit=120,
+        )
+
+    def _wan_prompt(self, snapshot: ProjectSnapshot, shot: ShotPlan) -> str:
+        character_names = self._shot_character_prompt_fragment(snapshot, shot, compact=True)
         composition = shot.composition
         prompt_seed_hint = DeterministicMediaAdapters._compact_prompt_text(
             shot.prompt_seed,
-            limit=110,
+            limit=68,
         )
         purpose_hint = DeterministicMediaAdapters._compact_prompt_text(
             shot.purpose,
-            limit=64,
+            limit=36,
         )
+        style_fragment = self._wan_style_fragment(snapshot)
         return (
-            f"{snapshot.project.style}, cinematic animated short, hero insert. "
+            f"{style_fragment}, animated hero insert. "
             f"Purpose: {purpose_hint}. "
             f"Scene beat: {prompt_seed_hint}. Characters: {character_names}. "
-            f"{composition.orientation} {composition.aspect_ratio} frame, {composition.framing.replace('_', ' ')}, "
-            f"subject anchored {composition.subject_anchor.replace('_', ' ')}, "
-            f"eye line at the {composition.eye_line.replace('_', ' ')}, "
-            f"leave the {composition.subtitle_lane} subtitle lane clean. "
-            "High motion clarity, stable subject, strong composition, high-detail animation."
+            f"{composition.orientation} {composition.aspect_ratio}, centered readable action, "
+            f"clean {composition.subtitle_lane} subtitle lane. "
+            "Fortnite-inspired readable duo action, clean silhouettes, one clear payoff motion, stable motion."
         )
 
     @staticmethod

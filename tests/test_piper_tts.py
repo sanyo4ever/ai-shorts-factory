@@ -6,17 +6,19 @@ def test_normalize_text_for_piper_transliterates_ukrainian_latin_text() -> None:
         "Pryvit, yak spravy?",
         language="uk",
     )
-    assert normalized.normalized_text == "привіт, як справи?"
+
+    assert normalized.normalized_text == "\u043f\u0440\u0438\u0432\u0456\u0442, \u044f\u043a \u0441\u043f\u0440\u0430\u0432\u0438?"
     assert normalized.changed is True
     assert normalized.kind == "uk_latn_to_cyrl+lowercase"
 
 
 def test_normalize_text_for_piper_keeps_cyrillic_text() -> None:
     normalized = normalize_text_for_piper(
-        "Привіт, як справи?",
+        "\u041f\u0440\u0438\u0432\u0456\u0442, \u044f\u043a \u0441\u043f\u0440\u0430\u0432\u0438?",
         language="uk",
     )
-    assert normalized.normalized_text == "привіт, як справи?"
+
+    assert normalized.normalized_text == "\u043f\u0440\u0438\u0432\u0456\u0442, \u044f\u043a \u0441\u043f\u0440\u0430\u0432\u0438?"
     assert normalized.changed is True
     assert normalized.kind == "lowercase"
 
@@ -26,6 +28,20 @@ def test_normalize_text_for_piper_leaves_non_uk_text_unchanged() -> None:
         "Hello there",
         language="en",
     )
+
     assert normalized.normalized_text == "Hello there"
     assert normalized.changed is False
     assert normalized.kind == "identity"
+
+
+def test_normalize_text_for_piper_repairs_utf8_mojibake_before_lowercasing() -> None:
+    mojibake = "\u041f\u0440\u0438\u0432\u0456\u0442, \u0442\u0430\u0442\u0443!".encode("utf-8").decode("latin1")
+
+    normalized = normalize_text_for_piper(
+        mojibake,
+        language="uk",
+    )
+
+    assert normalized.normalized_text == "\u043f\u0440\u0438\u0432\u0456\u0442, \u0442\u0430\u0442\u0443!"
+    assert normalized.changed is True
+    assert normalized.kind == "utf8_mojibake_repair+lowercase"

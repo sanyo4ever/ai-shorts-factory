@@ -131,12 +131,18 @@ _SINGLE_CHAR_RULES = {
 def normalize_text_for_piper(text: str, *, language: str) -> PiperTextNormalization:
     normalized_language = (language or "").strip().lower()
     original_text = text
-    collapsed_text = _collapse_whitespace(text)
-    normalized_text = collapsed_text
     normalization_steps: list[str] = []
+    source_text = text
     if normalized_language.startswith("uk"):
-        transliterated_text = _transliterate_ukrainian_latin_segments(collapsed_text)
-        if transliterated_text != collapsed_text:
+        repaired_source_text = _repair_utf8_mojibake(text)
+        if repaired_source_text != text:
+            source_text = repaired_source_text
+            normalization_steps.append("utf8_mojibake_repair")
+    collapsed_text = _collapse_whitespace(source_text)
+    normalized_text = collapsed_text
+    if normalized_language.startswith("uk"):
+        transliterated_text = _transliterate_ukrainian_latin_segments(normalized_text)
+        if transliterated_text != normalized_text:
             normalized_text = transliterated_text
             normalization_steps.append("uk_latn_to_cyrl")
         lowercased_text = normalized_text.lower()
@@ -156,6 +162,31 @@ def normalize_text_for_piper(text: str, *, language: str) -> PiperTextNormalizat
 def _collapse_whitespace(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", text)
     return " ".join(normalized.split())
+
+
+def _repair_utf8_mojibake(text: str) -> str:
+    best_candidate = text
+    best_score = _ukrainian_text_score(text)
+    for source_encoding in ("cp1251", "latin1", "cp1252"):
+        try:
+            candidate = text.encode(source_encoding, errors="strict").decode("utf-8", errors="strict")
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            continue
+        candidate_score = _ukrainian_text_score(candidate)
+        if candidate_score > best_score + 2.0:
+            best_candidate = candidate
+            best_score = candidate_score
+    return best_candidate
+
+
+def _ukrainian_text_score(text: str) -> float:
+    cyrillic_count = sum(1 for char in text if "\u0400" <= char <= "\u04FF")
+    ukrainian_specific_count = sum(1 for char in text if char in "іїєґІЇЄҐ")
+    suspicious_count = sum(1 for char in text if char in "ÐÑÃÂâ€™â€œâ€\uFFFD")
+    ascii_letter_count = sum(1 for char in text if "a" <= char.lower() <= "z")
+    return (cyrillic_count * 1.2) + (ukrainian_specific_count * 1.8) - (suspicious_count * 1.5) - (
+        ascii_letter_count * 0.05
+    )
 
 
 def _transliterate_ukrainian_latin_segments(text: str) -> str:

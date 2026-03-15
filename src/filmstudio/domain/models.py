@@ -72,6 +72,14 @@ class CharacterProfile(BaseModel):
     name: str
     voice_hint: str
     visual_hint: str
+    role_hint: str = ""
+    relationship_hint: str = ""
+    age_hint: str = ""
+    gender_hint: str = ""
+    wardrobe_hint: str = ""
+    palette_hint: str = ""
+    negative_visual_hint: str = ""
+    style_tags: list[str] = Field(default_factory=list)
 
 
 class DialogueLine(BaseModel):

@@ -40,6 +40,10 @@ class PlanningBundle:
 class PlannerService:
     backend_name = "deterministic_local"
     model_name: str | None = None
+    FATHER_ALIASES = ("tato", "dad", "father", "тато", "батько")
+    SON_ALIASES = ("syn", "son", "син", "хлопець", "boy")
+    MOTHER_ALIASES = ("mama", "mom", "mother", "мама", "мати")
+    DAUGHTER_ALIASES = ("dochka", "daughter", "донька", "girl")
     ACTION_SIGNAL_STEMS = (
         "fight",
         "run",
@@ -106,24 +110,38 @@ class PlannerService:
             SafeZonePlan(zone_id="ui_safe", anchor="top", inset_pct=2, height_pct=8, width_pct=96),
         ]
 
-    def _build_shot_composition(self, strategy: str) -> VerticalCompositionPlan:
+    def _build_shot_composition(
+        self,
+        strategy: str,
+        *,
+        multi_speaker_dialogue: bool = False,
+        speaker_turn_index: int = 1,
+    ) -> VerticalCompositionPlan:
         orientation = self._render_orientation()
         aspect_ratio = self._render_aspect_ratio()
         if strategy == "portrait_lipsync":
             subtitle_lane = "bottom"
+            subject_anchor = "upper_center"
+            notes = [
+                "keep the mouth above the caption lane",
+                "prefer a single dominant face",
+            ]
+            if multi_speaker_dialogue:
+                subject_anchor = "left_third" if speaker_turn_index % 2 == 1 else "right_third"
+                notes = [
+                    "keep a single speaking face in frame and leave the partner off-camera",
+                    "protect the caption lane while alternating closeups between speakers",
+                ]
             return VerticalCompositionPlan(
                 orientation=orientation,
                 aspect_ratio=aspect_ratio,
                 framing="close_up",
-                subject_anchor="upper_center",
+                subject_anchor=subject_anchor,
                 eye_line="upper_third",
                 motion_profile="locked",
                 subtitle_lane=subtitle_lane,
                 safe_zones=self._default_safe_zones(subtitle_lane=subtitle_lane),
-                notes=[
-                    "keep the mouth above the caption lane",
-                    "prefer a single dominant face",
-                ],
+                notes=notes,
             )
         if strategy == "portrait_motion":
             subtitle_lane = "bottom"
@@ -173,7 +191,12 @@ class PlannerService:
             ],
         )
 
-    def extract_characters(self, request: ProjectCreateRequest) -> list[CharacterProfile]:
+    def extract_characters(
+        self,
+        request: ProjectCreateRequest,
+        *,
+        product_preset: dict[str, Any] | None = None,
+    ) -> list[CharacterProfile]:
         names = list(dict.fromkeys(request.character_names))
         pattern = re.compile(r"^\s*([^:\n]{2,32}):", re.MULTILINE)
         for match in pattern.findall(request.script):
@@ -184,12 +207,13 @@ class PlannerService:
                 break
         if not names:
             names = ["Narrator", "Hero", "Friend"]
+        resolved_product_preset = product_preset or self._build_product_preset(request)
         return [
-            CharacterProfile(
-                character_id=new_id("char"),
+            self._infer_character_profile(
+                request,
                 name=name,
-                voice_hint=name.lower().replace(" ", "_"),
-                visual_hint=f"stylized short-form character portrait for {name}",
+                all_names=names[:3],
+                product_preset=resolved_product_preset,
             )
             for name in names[:3]
         ]
@@ -208,8 +232,8 @@ class PlannerService:
         request: ProjectCreateRequest,
     ) -> PlanningBundle:
         del project_id
-        characters = self.extract_characters(request)
         product_preset = self._build_product_preset(request)
+        characters = self.extract_characters(request, product_preset=product_preset)
         raw_blocks = [block.strip() for block in re.split(r"\n\s*\n", request.script) if block.strip()]
         if not raw_blocks:
             raw_blocks = [request.script.strip()]
@@ -217,7 +241,12 @@ class PlannerService:
         for index, block in enumerate(raw_blocks[:4], start=1):
             scene_id = f"scene_{index:02d}"
             summary = block.splitlines()[0][:160]
-            shots = self._plan_scene_shots(scene_id, block, characters)
+            shots = self._plan_scene_shots(
+                scene_id,
+                block,
+                characters,
+                request=request,
+            )
             duration_sec = sum(shot.duration_sec for shot in shots)
             scenes.append(
                 ScenePlan(
@@ -339,10 +368,16 @@ class PlannerService:
                     "character_id": character.character_id,
                     "name": character.name,
                     "role": speaker_roles[index] if index < len(speaker_roles) else "speaker",
+                    "role_hint": character.role_hint,
+                    "relationship_hint": character.relationship_hint,
+                    "age_hint": character.age_hint,
+                    "gender_hint": character.gender_hint,
                     "voice_hint": character.voice_hint,
                     "visual_hint": character.visual_hint,
-                    "palette": "to_be_defined",
-                    "wardrobe": "to_be_defined",
+                    "palette": character.palette_hint or product_preset["style_direction"].get("palette_hint"),
+                    "wardrobe": character.wardrobe_hint or "to_be_defined",
+                    "negative_visual_hint": character.negative_visual_hint,
+                    "style_tags": character.style_tags,
                     "speech_style": "derived_from_script",
                     "voice_delivery": voice_direction.get("delivery"),
                 }
@@ -475,6 +510,8 @@ class PlannerService:
         scene_id: str,
         block: str,
         characters: list[CharacterProfile],
+        *,
+        request: ProjectCreateRequest,
     ) -> list[ShotPlan]:
         lines = [line.strip() for line in block.splitlines() if line.strip()]
         dialogue: list[DialogueLine] = []
@@ -505,12 +542,58 @@ class PlannerService:
             purpose = "establishing or narration shot"
         word_count = max(1, len(block.split()))
         if strategy == "hero_insert":
-            duration_sec = max(2, min(4, round(word_count / 6)))
+            if request.target_duration_sec <= 8:
+                duration_sec = max(1, min(2, round(word_count / 10) or 1))
+            else:
+                duration_sec = max(2, min(4, round(word_count / 6)))
         else:
             duration_sec = max(4, min(18, round(word_count / 2.5)))
         shot_character_names = list(dict.fromkeys(line.character_name for line in dialogue if line.character_name))
+        if strategy == "hero_insert":
+            non_narrator_names = [
+                name
+                for name in shot_character_names
+                if name.casefold() != "narrator"
+            ]
+            shot_character_names = non_narrator_names
         if not shot_character_names:
-            shot_character_names = [character.name for character in characters[:3]]
+            shot_character_names = [
+                character.name
+                for character in characters[:3]
+                if not (strategy == "hero_insert" and character.name.casefold() == "narrator")
+            ]
+        if strategy == "portrait_lipsync":
+            grouped_turns = self._group_dialogue_turns(dialogue)
+            unique_speakers = list(dict.fromkeys(line.character_name for line in dialogue if line.character_name))
+            if len(grouped_turns) > 1 and len(unique_speakers) > 1:
+                shots: list[ShotPlan] = []
+                for turn_index, turn_lines in enumerate(grouped_turns[:4], start=1):
+                    focal_character = turn_lines[0].character_name
+                    turn_word_count = max(1, sum(len(line.text.split()) for line in turn_lines))
+                    turn_duration_sec = max(1, min(3, round(turn_word_count / 2.4)))
+                    turn_prompt_lines = list(description_lines)
+                    for turn_line in turn_lines:
+                        turn_prompt_lines.append(f"{turn_line.character_name}: {turn_line.text}")
+                    shots.append(
+                        ShotPlan(
+                            shot_id=new_id("shot"),
+                            scene_id=scene_id,
+                            index=turn_index,
+                            title=f"{scene_id} shot {turn_index}",
+                            strategy="portrait_lipsync",
+                            duration_sec=turn_duration_sec,
+                            purpose="speaker closeup" if turn_index == 1 else "reply closeup",
+                            characters=[focal_character],
+                            dialogue=turn_lines,
+                            prompt_seed="\n".join(turn_prompt_lines)[:200],
+                            composition=self._build_shot_composition(
+                                "portrait_lipsync",
+                                multi_speaker_dialogue=True,
+                                speaker_turn_index=turn_index,
+                            ),
+                        )
+                    )
+                return shots
         shot = ShotPlan(
             shot_id=new_id("shot"),
             scene_id=scene_id,
@@ -546,6 +629,136 @@ class PlannerService:
     def _action_signal_hits(self, text: str) -> list[str]:
         lowered = text.lower()
         return [stem for stem in self.ACTION_SIGNAL_STEMS if stem in lowered]
+
+    @staticmethod
+    def _group_dialogue_turns(dialogue: list[DialogueLine]) -> list[list[DialogueLine]]:
+        turns: list[list[DialogueLine]] = []
+        for line in dialogue:
+            if not turns or turns[-1][0].character_name.casefold() != line.character_name.casefold():
+                turns.append([line])
+            else:
+                turns[-1].append(line)
+        return turns
+
+    def _infer_character_profile(
+        self,
+        request: ProjectCreateRequest,
+        *,
+        name: str,
+        all_names: list[str],
+        product_preset: dict[str, Any],
+    ) -> CharacterProfile:
+        context_text = " ".join(
+            [
+                request.title,
+                request.style,
+                request.script,
+                " ".join(all_names),
+            ]
+        ).casefold()
+        style_direction = product_preset.get("style_direction") or {}
+        preset_tags = [str(tag).strip() for tag in style_direction.get("prompt_tags") or [] if str(tag).strip()]
+        fortnite_style = "fortnite" in context_text
+        normalized_name = name.casefold()
+        role_hint = "speaker"
+        relationship_hint = ""
+        age_hint = "young adult"
+        gender_hint = ""
+        wardrobe_hint = ""
+        negative_visual_hint = ""
+        if any(alias in normalized_name for alias in self.FATHER_ALIASES):
+            role_hint = "father"
+            relationship_hint = "protective father figure"
+            age_hint = "adult in his 30s"
+            gender_hint = "male"
+            wardrobe_hint = "hoodie with tactical builder vest"
+            negative_visual_hint = "woman, girl, feminine makeup, child-sized face, elderly face"
+        elif any(alias in normalized_name for alias in self.SON_ALIASES):
+            role_hint = "son"
+            relationship_hint = "energetic son"
+            age_hint = "preteen boy around 10 to 13"
+            gender_hint = "male"
+            wardrobe_hint = "youth hoodie with lightweight adventure gear"
+            negative_visual_hint = "adult man, beard, woman, elderly face, rugged soldier"
+        elif any(alias in normalized_name for alias in self.MOTHER_ALIASES):
+            role_hint = "mother"
+            relationship_hint = "supportive mother figure"
+            age_hint = "adult in her 30s"
+            gender_hint = "female"
+            wardrobe_hint = "practical jacket with clean silhouette"
+            negative_visual_hint = "man, beard, young boy, elderly face"
+        elif any(alias in normalized_name for alias in self.DAUGHTER_ALIASES):
+            role_hint = "daughter"
+            relationship_hint = "bright daughter"
+            age_hint = "preteen girl around 10 to 13"
+            gender_hint = "female"
+            wardrobe_hint = "youth jacket with playful sporty details"
+            negative_visual_hint = "adult woman, man, beard, elderly face"
+        if role_hint == "father":
+            counterpart = next(
+                (
+                    candidate
+                    for candidate in all_names
+                    if candidate != name and any(alias in candidate.casefold() for alias in self.SON_ALIASES)
+                ),
+                None,
+            )
+            if counterpart:
+                relationship_hint = f"father of {counterpart}"
+        elif role_hint == "son":
+            counterpart = next(
+                (
+                    candidate
+                    for candidate in all_names
+                    if candidate != name and any(alias in candidate.casefold() for alias in self.FATHER_ALIASES)
+                ),
+                None,
+            )
+            if counterpart:
+                relationship_hint = f"son of {counterpart}"
+        palette_hint = str(style_direction.get("palette_hint") or "to_be_defined")
+        style_tags = list(preset_tags)
+        if fortnite_style:
+            style_tags.extend(
+                [
+                    "fortnite-inspired battle royale hero",
+                    "stylized game render",
+                    "clean cel-shaded materials",
+                    "bright readable silhouette",
+                ]
+            )
+            if role_hint == "father":
+                wardrobe_hint = "Fortnite-inspired graphite hoodie, tactical builder vest, utility gloves"
+            elif role_hint == "son":
+                wardrobe_hint = "Fortnite-inspired bright orange hoodie, lightweight tactical straps, youthful sneakers"
+            elif not wardrobe_hint:
+                wardrobe_hint = "Fortnite-inspired stylized action outfit"
+        elif not wardrobe_hint:
+            wardrobe_hint = "clean stylized wardrobe"
+        descriptor_parts = [
+            role_hint if role_hint != "speaker" else "",
+            relationship_hint,
+            age_hint,
+            gender_hint,
+            wardrobe_hint,
+            palette_hint,
+            ", ".join(style_tags[:4]),
+        ]
+        visual_hint = ", ".join(part for part in descriptor_parts if part)
+        return CharacterProfile(
+            character_id=new_id("char"),
+            name=name,
+            voice_hint=name.lower().replace(" ", "_"),
+            visual_hint=visual_hint or f"stylized short-form character portrait for {name}",
+            role_hint=role_hint,
+            relationship_hint=relationship_hint,
+            age_hint=age_hint,
+            gender_hint=gender_hint,
+            wardrobe_hint=wardrobe_hint,
+            palette_hint=palette_hint,
+            negative_visual_hint=negative_visual_hint,
+            style_tags=style_tags[:6],
+        )
 
 
 class OllamaPlannerService(PlannerService):
@@ -660,11 +873,27 @@ class OllamaPlannerService(PlannerService):
                                 "role": "string",
                                 "voice_hint": "string",
                                 "visual_hint": "string",
+                                "role_hint": "string",
+                                "relationship_hint": "string",
+                                "age_hint": "string",
+                                "gender_hint": "string",
+                                "wardrobe_hint": "string",
+                                "palette_hint": "string",
+                                "negative_visual_hint": "string",
+                                "style_tags": ["string"],
                             }
                         ]
                     },
                     "characters": [
-                        {"name": "string", "voice_hint": "string", "visual_hint": "string"}
+                        {
+                            "name": "string",
+                            "voice_hint": "string",
+                            "visual_hint": "string",
+                            "role_hint": "string",
+                            "relationship_hint": "string",
+                            "age_hint": "string",
+                            "gender_hint": "string",
+                        }
                     ],
                     "scenes": [
                         {
@@ -869,19 +1098,50 @@ class OllamaPlannerService(PlannerService):
     ) -> list[CharacterProfile]:
         if not raw_characters:
             return self.extract_characters(request)
+        base_profiles = {
+            profile.name.casefold(): profile for profile in self.extract_characters(request)
+        }
         characters: list[CharacterProfile] = []
         for raw_character in raw_characters[:3]:
             name = str(raw_character.get("name") or "").strip()
             if not name:
                 continue
+            base_profile = base_profiles.get(name.casefold())
             characters.append(
                 CharacterProfile(
                     character_id=new_id("char"),
                     name=name[:60],
                     voice_hint=str(raw_character.get("voice_hint") or name.lower().replace(" ", "_"))[:80],
                     visual_hint=str(
-                        raw_character.get("visual_hint") or f"stylized short-form character portrait for {name}"
+                        raw_character.get("visual_hint")
+                        or (base_profile.visual_hint if base_profile is not None else f"stylized short-form character portrait for {name}")
+                    )[:240],
+                    role_hint=str(raw_character.get("role_hint") or (base_profile.role_hint if base_profile is not None else ""))[:80],
+                    relationship_hint=str(
+                        raw_character.get("relationship_hint")
+                        or (base_profile.relationship_hint if base_profile is not None else "")
+                    )[:120],
+                    age_hint=str(raw_character.get("age_hint") or (base_profile.age_hint if base_profile is not None else ""))[:80],
+                    gender_hint=str(
+                        raw_character.get("gender_hint") or (base_profile.gender_hint if base_profile is not None else "")
+                    )[:40],
+                    wardrobe_hint=str(
+                        raw_character.get("wardrobe_hint")
+                        or (base_profile.wardrobe_hint if base_profile is not None else "")
                     )[:160],
+                    palette_hint=str(
+                        raw_character.get("palette_hint")
+                        or (base_profile.palette_hint if base_profile is not None else "")
+                    )[:120],
+                    negative_visual_hint=str(
+                        raw_character.get("negative_visual_hint")
+                        or (base_profile.negative_visual_hint if base_profile is not None else "")
+                    )[:200],
+                    style_tags=[
+                        str(tag).strip()
+                        for tag in raw_character.get("style_tags", (base_profile.style_tags if base_profile is not None else []))
+                        if str(tag).strip()
+                    ][:6],
                 )
             )
         return characters or self.extract_characters(request)
@@ -914,7 +1174,26 @@ class OllamaPlannerService(PlannerService):
         if not isinstance(payload, dict):
             return base
         if isinstance(payload.get("characters"), list) and payload["characters"]:
-            base["characters"] = payload["characters"][:3]
+            base_characters_by_name = {
+                str(entry.get("name") or "").casefold(): entry
+                for entry in base["characters"]
+                if str(entry.get("name") or "").strip()
+            }
+            merged_characters: list[dict[str, Any]] = []
+            for raw_character in payload["characters"][:3]:
+                if not isinstance(raw_character, dict):
+                    continue
+                name = str(raw_character.get("name") or "").strip()
+                base_entry = base_characters_by_name.get(name.casefold(), {})
+                merged_characters.append(
+                    {
+                        **base_entry,
+                        **{key: value for key, value in raw_character.items() if value not in (None, "", [])},
+                        "name": name or base_entry.get("name"),
+                    }
+                )
+            if merged_characters:
+                base["characters"] = merged_characters
         base["voice_cast_preset"] = product_preset["voice_cast_preset"]
         base["voice_cast_direction"] = product_preset["voice_cast_direction"]
         return base

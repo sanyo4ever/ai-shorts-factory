@@ -540,6 +540,7 @@ def test_render_shots_uses_wan_for_hero_insert(tmp_path, monkeypatch) -> None:
     adapters.wan_repo_path.mkdir(parents=True, exist_ok=True)
     adapters.wan_ckpt_dir.mkdir(parents=True, exist_ok=True)
     (adapters.wan_repo_path / "generate.py").write_text("print('stub')\n", encoding="utf-8")
+    command_calls: list[list[str]] = []
 
     def fake_run_wan_inference(config, *, prompt, output_path, result_root, input_image_path=None, seed=None):
         result_root.mkdir(parents=True, exist_ok=True)
@@ -571,6 +572,7 @@ def test_render_shots_uses_wan_for_hero_insert(tmp_path, monkeypatch) -> None:
         )
 
     def fake_run_command(args, *, timeout_sec=300.0, cwd=None, env=None):
+        command_calls.append(list(args))
         output_path = Path(args[-1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"fake-normalized-video")
@@ -627,10 +629,16 @@ def test_render_shots_uses_wan_for_hero_insert(tmp_path, monkeypatch) -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["backend"] == "wan"
     assert manifest["input_mode"] == "image_to_video"
-    assert manifest["normalize_duration_policy"] == "hold_last_frame"
-    assert manifest["normalize_hold_duration_sec"] > 1.0
-    assert "-t" in manifest["normalize_command"]
-    assert any("tpad=stop_mode=clone" in str(arg) for arg in manifest["normalize_command"])
+    assert manifest["normalize_duration_policy"] == "hybrid_storyboard_motion"
+    assert manifest["normalize_hold_duration_sec"] == 0.0
+    assert manifest["normalize_target_duration_sec"] == pytest.approx(manifest["duration_sec"])
+    assert manifest["hybrid_plan"]["target_duration_sec"] == pytest.approx(manifest["duration_sec"])
+    assert len(manifest["hybrid_segments"]) == 3
+    assert manifest["hybrid_segments"][0]["label"] == "storyboard_lead"
+    assert manifest["hybrid_segments"][1]["label"] == "wan_center"
+    assert manifest["hybrid_segments"][2]["label"] == "storyboard_tail"
+    assert set(manifest["normalize_commands"]) == {"hybrid_lead", "hybrid_center", "hybrid_tail", "hybrid_concat"}
+    assert any("concat" in command for call in command_calls for command in call)
 
 
 def test_wan_prompt_is_compact_for_hero_insert(tmp_path) -> None:
@@ -643,18 +651,22 @@ def test_wan_prompt_is_compact_for_hero_insert(tmp_path) -> None:
     )
     snapshot = service.create_project(
         ProjectCreateRequest(
-            title="Wan prompt compactness",
+            title="Tato and Syn Fortnite rush",
+            style="fortnite_stylized_action",
             script=(
-                "SCENE 1. HERO run po krayu dakhiv, kamera trymae rush i vtyskuie diyu v vertykalnyi kadr.\n"
+                "SCENE 1. TATO and SYN run po krayu dakhiv, kamera trymae rush i vtyskuie diyu v vertykalnyi kadr.\n"
                 "NARRATOR: Hero insert mae zberigaty sylu ataky, chytku syluet i ne peretvoriuvatysia "
                 "na perekaz usiiei sceny v prompti."
             ),
             language="uk",
             video_backend="wan",
+            character_names=["Tato", "Syn"],
         )
     )
+    adapters = DeterministicMediaAdapters(artifact_store)
     shot = snapshot.scenes[0].shots[0]
     shot.strategy = "hero_insert"
+    shot.characters = ["Tato", "Syn"]
     shot.purpose = (
         "short action insert with aggressive forward motion, hero reveal, skyline energy, and a long "
         "operator note that should be compacted before hitting Wan"
@@ -664,12 +676,177 @@ def test_wan_prompt_is_compact_for_hero_insert(tmp_path) -> None:
         "dym i iskry pidkresliuiut trajektoriiu, a narrator prodovzhue detalno opysuvaty vsi mikro-podii."
     )
 
-    prompt = DeterministicMediaAdapters._wan_prompt(snapshot, shot)
+    prompt = adapters._wan_prompt(snapshot, shot)
 
     assert "Dialogue context:" not in prompt
     assert "Scene beat:" in prompt
     assert "Purpose:" in prompt
+    assert "father of Syn" in prompt
+    assert "son of Tato" in prompt
+    assert "Fortnite-inspired readable duo action" in prompt
     assert len(prompt) < 600
+
+
+def test_build_characters_retries_until_reference_quality_gate_passes(tmp_path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="Character reference retries",
+            style="fortnite_stylized_action",
+            script="TATO: Pryvit!",
+            language="uk",
+            visual_backend="comfyui",
+            lipsync_backend="musetalk",
+            character_names=["Tato"],
+        )
+    )
+    adapters = DeterministicMediaAdapters(
+        artifact_store,
+        visual_backend="comfyui",
+        comfyui_checkpoint_name="model.safetensors",
+        lipsync_backend="musetalk",
+        musetalk_python_binary=sys.executable,
+        musetalk_repo_path=runtime_root / "services" / "MuseTalk",
+        ffmpeg_binary="ffmpeg",
+        ffprobe_binary="ffprobe",
+    )
+    adapters.musetalk_repo_path.mkdir(parents=True, exist_ok=True)
+
+    class FakeComfyClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate_image(self, workflow, *, output_node_id="7"):
+            self.calls += 1
+            assert output_node_id == "7"
+            return ComfyUIImageResult(
+                prompt_id=f"prompt_character_{self.calls}",
+                filename=f"character_{self.calls}.png",
+                subfolder="filmstudio/tests",
+                output_type="output",
+                image_bytes=f"attempt-{self.calls}".encode("utf-8"),
+                workflow=workflow,
+                history={f"prompt_character_{self.calls}": {"outputs": {}}},
+                duration_sec=1.0,
+            )
+
+    def fake_run_musetalk_source_probe(config, *, source_media_path, result_root):
+        result_root.mkdir(parents=True, exist_ok=True)
+        probe_path = result_root / "musetalk_source_face_probe.json"
+        stdout_path = result_root / "musetalk_source_face_probe_stdout.log"
+        stderr_path = result_root / "musetalk_source_face_probe_stderr.log"
+        if "attempt_01" in str(result_root):
+            payload = {
+                "backend": "musetalk_face_preflight",
+                "source_path": str(source_media_path),
+                "passed": True,
+                "failure_reasons": [],
+                "warnings": ["multiple_faces_detected"],
+                "checks": {
+                    "face_detected": True,
+                    "landmarks_detected": True,
+                    "semantic_layout_ok": True,
+                    "face_size_ok": True,
+                },
+                "image_width": 768,
+                "image_height": 768,
+                "detected_face_count": 2,
+                "selected_bbox": [220.0, 180.0, 520.0, 540.0],
+                "detections": [
+                    [220.0, 180.0, 520.0, 540.0, 0.99],
+                    [40.0, 80.0, 210.0, 330.0, 0.91],
+                ],
+                "metrics": {
+                    "bbox_width_px": 300.0,
+                    "bbox_height_px": 360.0,
+                    "bbox_area_ratio": 0.11,
+                    "eye_distance_px": 92.0,
+                    "eye_tilt_ratio": 0.02,
+                    "nose_center_offset_ratio": 0.05,
+                },
+            }
+        else:
+            payload = {
+                "backend": "musetalk_face_preflight",
+                "source_path": str(source_media_path),
+                "passed": True,
+                "failure_reasons": [],
+                "warnings": [],
+                "checks": {
+                    "face_detected": True,
+                    "landmarks_detected": True,
+                    "semantic_layout_ok": True,
+                    "face_size_ok": True,
+                },
+                "image_width": 768,
+                "image_height": 768,
+                "detected_face_count": 1,
+                "selected_bbox": [210.0, 150.0, 560.0, 560.0],
+                "detections": [[210.0, 150.0, 560.0, 560.0, 0.99]],
+                "metrics": {
+                    "bbox_width_px": 350.0,
+                    "bbox_height_px": 410.0,
+                    "bbox_area_ratio": 0.22,
+                    "eye_distance_px": 132.0,
+                    "eye_tilt_ratio": 0.01,
+                    "nose_center_offset_ratio": 0.04,
+                },
+            }
+        probe_path.write_text(json.dumps(payload), encoding="utf-8")
+        stdout_path.write_text("probe ok", encoding="utf-8")
+        stderr_path.write_text("", encoding="utf-8")
+        return MuseTalkSourceProbeResult(
+            payload=payload,
+            probe_path=probe_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            command=["python", "-c", "probe"],
+            duration_sec=0.5,
+        )
+
+    adapters._comfyui_client = FakeComfyClient()  # type: ignore[assignment]
+    monkeypatch.setattr("filmstudio.services.media_adapters.resolve_binary", lambda value: value)
+    monkeypatch.setattr(
+        "filmstudio.services.media_adapters.run_musetalk_source_probe",
+        fake_run_musetalk_source_probe,
+    )
+
+    result = adapters.build_characters(snapshot)
+
+    manifest_path = Path(
+        next(
+            artifact.path
+            for artifact in result.artifacts
+            if artifact.kind == "character_generation_manifest"
+        )
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    reference_path = Path(
+        next(
+            artifact.path
+            for artifact in result.artifacts
+            if artifact.kind == "character_reference"
+        )
+    )
+
+    assert manifest["selected_attempt_index"] == 2
+    assert manifest["selected_prompt_variant"] == "passport_portrait"
+    assert manifest["quality_gate_passed"] is True
+    assert manifest["attempt_count"] == 2
+    assert manifest["attempts"][0]["quality_gate_passed"] is False
+    assert manifest["attempts"][0]["quality_gate_reason"] in {
+        "face_isolation_below_target",
+        "face_occupancy_below_target",
+        "secondary_face_detected",
+    }
+    assert manifest["attempts"][1]["quality_gate_passed"] is True
+    assert reference_path.read_bytes() == b"attempt-2"
 
 
 def test_generate_subtitles_builds_layout_aware_ass_track(tmp_path) -> None:

@@ -86,3 +86,73 @@ def test_planner_keeps_dialogue_closeup_when_action_word_only_appears_in_speech(
 
     assert bundle.scenes[0].shots[0].strategy == "portrait_lipsync"
     assert bundle.scenes[0].shots[0].composition.subtitle_lane == "bottom"
+
+
+def test_planner_grounding_enriches_father_son_fortnite_profiles() -> None:
+    planner = PlannerService()
+    request = ProjectCreateRequest(
+        title="Tato i Syn Fortnite rush",
+        style="fortnite_stylized_action",
+        script="TATO: Synu, hotovyi?\nSYN: Tak, tatu!",
+        language="uk",
+        target_duration_sec=5,
+    )
+
+    bundle = planner.build_planning_bundle("proj_test", request)
+    characters_by_name = {
+        entry["name"]: entry
+        for entry in bundle.character_bible["characters"]
+    }
+
+    assert characters_by_name["Tato"]["role_hint"] == "father"
+    assert characters_by_name["Tato"]["gender_hint"] == "male"
+    assert "Fortnite-inspired" in characters_by_name["Tato"]["wardrobe"]
+    assert "father of Syn" in characters_by_name["Tato"]["relationship_hint"]
+    assert characters_by_name["Syn"]["role_hint"] == "son"
+    assert characters_by_name["Syn"]["age_hint"] == "preteen boy around 10 to 13"
+    assert "son of Tato" in characters_by_name["Syn"]["relationship_hint"]
+    assert "fortnite-inspired battle royale hero" in characters_by_name["Syn"]["style_tags"]
+
+
+def test_planner_splits_multi_speaker_dialogue_into_alternating_closeups() -> None:
+    planner = PlannerService()
+    request = ProjectCreateRequest(
+        title="Father son dialogue",
+        style="fortnite_stylized_action",
+        script="TATO: Synu, hotovyi?\nSYN: Tak, tatu!",
+        language="uk",
+        target_duration_sec=5,
+    )
+
+    bundle = planner.build_planning_bundle("proj_test", request)
+    shots = bundle.scenes[0].shots
+
+    assert len(shots) == 2
+    assert [shot.strategy for shot in shots] == ["portrait_lipsync", "portrait_lipsync"]
+    assert shots[0].characters == ["Tato"]
+    assert shots[1].characters == ["Syn"]
+    assert shots[0].composition.subject_anchor == "left_third"
+    assert shots[1].composition.subject_anchor == "right_third"
+    assert shots[0].purpose == "speaker closeup"
+    assert shots[1].purpose == "reply closeup"
+
+
+def test_planner_keeps_narrator_out_of_hero_insert_character_list() -> None:
+    planner = PlannerService()
+    request = ProjectCreateRequest(
+        title="Hero insert narrator guidance",
+        style="fortnite_stylized_action",
+        script=(
+            "SCENE 1. TATO and SYN sprint toward the glowing crown.\n"
+            "NARRATOR: Hero insert mae pokazaty duo rush, crown payoff i vertykalne kompozytsiine chytannia."
+        ),
+        language="uk",
+        target_duration_sec=5,
+        character_names=["Tato", "Syn"],
+    )
+
+    bundle = planner.build_planning_bundle("proj_test", request)
+    shot = bundle.scenes[0].shots[0]
+
+    assert shot.strategy == "hero_insert"
+    assert shot.characters == ["Tato", "Syn"]
