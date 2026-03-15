@@ -214,6 +214,9 @@ def test_project_overview_endpoints_surface_operator_summary() -> None:
     assert overview["summary"]["shot_count"] >= 3
     assert overview["summary"]["character_count"] >= 2
     assert overview["deliverables"]["ready"] is True
+    assert overview["semantic_quality"]["available"] is True
+    assert "metrics" in overview["semantic_quality"]
+    assert "failed_gates" in overview["semantic_quality"]
     assert overview["qc"]["status"] == "passed"
     assert overview["backend_profile"]["tts_backend"] == "piper"
     assert overview["backend_profile"]["visual_backend"] == "deterministic"
@@ -254,6 +257,7 @@ def test_operator_queue_endpoint_surfaces_review_and_rerender_work() -> None:
     queue_payload = queue_response.json()
     assert queue_payload["summary"]["project_count"] >= 1
     assert queue_payload["summary"]["pending_review_shot_count"] >= 1
+    assert isinstance(queue_payload["summary"]["quality_gate_failed_project_count"], int)
     assert any(
         item["project_id"] == project_id and item["action"] == "review" and item["target_kind"] == "shot"
         for item in queue_payload["items"]
@@ -285,6 +289,80 @@ def test_operator_queue_endpoint_surfaces_review_and_rerender_work() -> None:
     project_overview_response = client.get(f"/api/v1/projects/{project_id}/overview")
     assert project_overview_response.status_code == 200
     assert project_overview_response.json()["action"]["next_action"] == "rerender"
+
+
+def test_operator_queue_endpoint_surfaces_review_quality_work() -> None:
+    app = create_app()
+    client = TestClient(app)
+    create_response = client.post(
+        "/api/v1/projects",
+        json={
+            "title": "Semantic quality queue",
+            "script": (
+                "SCENE 1. HERO hovoryt do kamery.\n"
+                "HERO: Pershyi beat.\n\n"
+                "SCENE 2. HERO vryvaietsia v hero insert.\n"
+                "NARRATOR: Druhyi beat.\n\n"
+                "SCENE 3. FRIEND hovoryt do kamery.\n"
+                "FRIEND: Finalnyi beat."
+            ),
+            "language": "uk",
+            "style_preset": "warm_documentary",
+            "voice_cast_preset": "narrator_guest",
+            "music_preset": "documentary_warmth",
+            "short_archetype": "narrated_breakdown",
+        },
+    )
+    assert create_response.status_code == 200
+    project_id = create_response.json()["project"]["project_id"]
+
+    run_response = client.post(f"/api/v1/projects/{project_id}/run")
+    assert run_response.status_code == 200
+    snapshot = run_response.json()
+    shot_ids = [
+        shot["shot_id"]
+        for scene in snapshot["scenes"]
+        for shot in scene["shots"]
+    ]
+
+    for shot_id in shot_ids:
+        review_response = client.post(
+            f"/api/v1/projects/{project_id}/shots/{shot_id}/review",
+            json={
+                "status": "approved",
+                "note": "approved for semantic quality gate test",
+                "reviewer": "qa",
+            },
+        )
+        assert review_response.status_code == 200
+
+    persisted_snapshot = app.state.project_service.require_snapshot(project_id)
+    persisted_snapshot.artifacts = [
+        artifact
+        for artifact in persisted_snapshot.artifacts
+        if artifact.kind != "music_bed"
+    ]
+    app.state.project_service.save_snapshot(persisted_snapshot)
+
+    overview_response = client.get(f"/api/v1/projects/{project_id}/overview")
+    assert overview_response.status_code == 200
+    overview = overview_response.json()
+    assert overview["semantic_quality"]["available"] is True
+    assert overview["semantic_quality"]["gate_passed"] is False
+    assert "audio_mix_clean" in overview["semantic_quality"]["failed_gates"]
+    assert overview["action"]["next_action"] == "review_quality"
+    assert overview["action"]["needs_operator_attention"] is True
+
+    queue_response = client.get("/api/v1/projects/operator-queue")
+    assert queue_response.status_code == 200
+    queue_payload = queue_response.json()
+    assert queue_payload["summary"]["quality_gate_failed_project_count"] >= 1
+    assert any(
+        item["project_id"] == project_id
+        and item["action"] == "review_quality"
+        and "audio_mix_clean" in item["failed_gates"]
+        for item in queue_payload["items"]
+    )
 
 
 def test_review_endpoints_apply_state_and_stage_rerender() -> None:

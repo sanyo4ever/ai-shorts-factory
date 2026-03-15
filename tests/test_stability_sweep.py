@@ -87,13 +87,24 @@ def _ready_operator_surface(
     shot_count: int,
     scene_count: int,
     next_action: str = "review",
+    semantic_quality_gate_passed: bool = True,
+    failed_gates: list[str] | None = None,
 ) -> tuple[dict[str, object], dict[str, object], list[dict[str, object]]]:
     pending_review_shot_count = shot_count if next_action == "review" else 0
     needs_rerender_shot_count = shot_count if next_action == "rerender" else 0
+    failed_quality_gates = list(failed_gates or [])
+    if not semantic_quality_gate_passed and not failed_quality_gates:
+        failed_quality_gates = ["shot_variety"]
     overview = {
         "project_id": project_id,
         "status": "completed",
         "deliverables": {"ready": True},
+        "semantic_quality": {
+            "available": True,
+            "gate_passed": semantic_quality_gate_passed,
+            "failed_gates": failed_quality_gates,
+            "metrics": {},
+        },
         "qc": {"status": "passed"},
         "review": {
             "summary": {
@@ -105,7 +116,7 @@ def _ready_operator_surface(
         },
         "action": {
             "next_action": next_action,
-            "needs_operator_attention": next_action in {"review", "rerender"},
+            "needs_operator_attention": next_action in {"review", "rerender", "review_quality"},
         },
     }
     action = "rerender" if next_action == "rerender" else "review"
@@ -121,11 +132,42 @@ def _ready_operator_surface(
         }
         for index in range(queue_item_count)
     ]
+    if next_action == "review_quality":
+        queue_items.append(
+            {
+                "project_id": project_id,
+                "target_kind": "project",
+                "target_id": project_id,
+                "action": "review_quality",
+                "review_status": None,
+                "failed_gates": failed_quality_gates,
+            }
+        )
     queue_summary = {
         "project_count": 1,
         "queue_item_count": len(queue_items),
+        "quality_gate_failed_project_count": 0 if semantic_quality_gate_passed else 1,
     }
     return overview, queue_summary, queue_items
+
+
+def _ready_semantic_quality() -> dict[str, object]:
+    return {
+        "available": True,
+        "gate_passed": True,
+        "metric_count": 6,
+        "passed_metric_count": 6,
+        "overall_rate": 1.0,
+        "failed_gates": [],
+        "metrics": {
+            "subtitle_readability": {"rate": 1.0, "passed": True},
+            "script_coverage": {"rate": 1.0, "passed": True},
+            "shot_variety": {"rate": 1.0, "passed": True},
+            "portrait_identity_consistency": {"rate": 1.0, "passed": True},
+            "audio_mix_clean": {"rate": 1.0, "passed": True},
+            "archetype_payoff": {"rate": 1.0, "passed": True},
+        },
+    }
 
 
 def test_default_product_readiness_cases_cover_release_gate_v3_categories() -> None:
@@ -1291,6 +1333,7 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
                     "target_matches_actual": True,
                 },
                 "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=3),
+                "semantic_quality": _ready_semantic_quality(),
                 "backend_profile": {
                     "visual_backend": "comfyui",
                     "video_backend": "wan",
@@ -1347,6 +1390,7 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
                     "target_matches_actual": True,
                 },
                 "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=2),
+                "semantic_quality": _ready_semantic_quality(),
                 "backend_profile": {
                     "visual_backend": "comfyui",
                     "video_backend": "wan",
@@ -1391,6 +1435,13 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
     assert aggregate["operator_overview_ready_runs"] == 2
     assert aggregate["operator_queue_ready_runs"] == 2
     assert aggregate["operator_surface_ready_runs"] == 2
+    assert aggregate["semantic_quality_gate_runs"] == 2
+    assert aggregate["subtitle_readability_runs"] == 2
+    assert aggregate["script_coverage_runs"] == 2
+    assert aggregate["shot_variety_runs"] == 2
+    assert aggregate["portrait_identity_consistency_runs"] == 2
+    assert aggregate["audio_mix_clean_runs"] == 2
+    assert aggregate["archetype_payoff_runs"] == 2
     assert aggregate["product_ready_runs"] == 1
     assert aggregate["style_preset_counts"] == {"broadcast_panel": 2}
     assert aggregate["voice_cast_preset_counts"] == {"duo_contrast": 1, "trio_panel": 1}
@@ -1549,6 +1600,7 @@ def test_run_product_readiness_campaign_writes_report(tmp_path, monkeypatch) -> 
                 "target_matches_actual": True,
             },
             "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=3),
+            "semantic_quality": _ready_semantic_quality(),
             "backend_profile": {
                 "visual_backend": "comfyui",
                 "video_backend": "wan",
@@ -1699,6 +1751,7 @@ def test_hydrate_seeded_product_readiness_runs_reuses_saved_project_snapshot(tmp
                 "target_matches_actual": True,
             },
             "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=3),
+            "semantic_quality": _ready_semantic_quality(),
             "backend_profile": {
                 "visual_backend": "comfyui",
                 "video_backend": "wan",
@@ -1823,6 +1876,7 @@ def test_run_product_readiness_campaign_writes_report_for_seed_only_resume(tmp_p
         "music_summary": {"backend": "ace_step", "manifest_available": True, "music_bed_exists": True},
         "render_summary": {"actual_resolution": "720x1280", "subtitle_burned_in": True, "target_matches_actual": True},
         "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=3),
+        "semantic_quality": _ready_semantic_quality(),
         "backend_profile": {"visual_backend": "comfyui", "video_backend": "wan", "music_backend": "ace_step"},
         "operator_overview": _ready_operator_surface(project_id="proj_seeded", shot_count=2, scene_count=3)[0],
         "operator_queue_summary": _ready_operator_surface(project_id="proj_seeded", shot_count=2, scene_count=3)[1],
@@ -2000,6 +2054,7 @@ def test_run_product_readiness_campaign_resume_skips_existing_case(tmp_path, mon
                 "target_matches_actual": True,
             },
             "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=3),
+            "semantic_quality": _ready_semantic_quality(),
             "backend_profile": {
                 "visual_backend": "comfyui",
                 "video_backend": "wan",
@@ -2065,6 +2120,7 @@ def test_run_product_readiness_campaign_resume_skips_existing_case(tmp_path, mon
                             "target_matches_actual": True,
                         },
                         "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=3),
+                        "semantic_quality": _ready_semantic_quality(),
                         "backend_profile": {
                             "visual_backend": "comfyui",
                             "video_backend": "wan",
@@ -2254,6 +2310,7 @@ def test_run_product_readiness_campaign_replace_existing_case(tmp_path, monkeypa
                 "target_matches_actual": True,
             },
             "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=3),
+            "semantic_quality": _ready_semantic_quality(),
             "backend_profile": {
                 "visual_backend": "comfyui",
                 "video_backend": "wan",
@@ -2322,6 +2379,7 @@ def test_run_product_readiness_campaign_replace_existing_case(tmp_path, monkeypa
                             "target_matches_actual": True,
                         },
                         "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=3),
+                        "semantic_quality": _ready_semantic_quality(),
                         "backend_profile": {
                             "visual_backend": "comfyui",
                             "video_backend": "wan",

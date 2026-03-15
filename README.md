@@ -48,6 +48,8 @@ The current codebase restores:
 - a selective rerender loop that can restart a project from a chosen stage for selected scenes or shots instead of rerunning the whole project from intake
 - a review loop with scene or shot approval, `needs_rerender` state, revision-aware invalidation after new outputs, and a canonical `review_manifest.json` that is also packaged into deliverables
 - an operator-facing project overview and queue surface that merges review state, deliverables readiness, QC, rerender state, and backend profile into one API contract
+- a shared semantic-quality layer that scores subtitle readability, script coverage, shot variety, portrait identity consistency, audio-mix cleanliness, and preset-archetype payoff
+- semantic quality is now part of the operator surface itself: project overview includes a normalized `semantic_quality` block, and the queue can emit project-level `review_quality` work when the quality gate fails
 - real `FFmpeg` shot composition and final portrait render assembly with a default `720x1280` master profile
 - `ffprobe`-backed QC on the produced media artifacts
 - filesystem-backed GPU lease tracking for single-GPU scheduling visibility
@@ -70,6 +72,7 @@ Current verified one-box milestones on this workstation:
 - the broader presetized release-gate suite under `runtime/campaigns/product_readiness_v6_preset_suite_v3/` completed `6/6` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, `portrait_retry_free_rate=1.0`, `portrait_warning_free_rate=1.0`, `product_preset_match_rate=1.0`, and `qc_finding_counts={}`
 - the current release-gate v2 suite under `runtime/campaigns/product_readiness_v8_release_gate_v2_green/` completed `8/8` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, `suite_product_ready_case_coverage_met=true`, `suite_product_ready_category_coverage_met=true`, `deliverables_ready_rate=1.0`, and `qc_finding_counts={}`
 - the current release-gate v3 suite under `runtime/campaigns/product_readiness_v10_release_gate_v3_green/` completed `10/10` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, `product_preset_match_rate=1.0`, `deliverables_ready_rate=1.0`, `operator_overview_ready_rate=1.0`, `operator_queue_ready_rate=1.0`, `operator_surface_ready_rate=1.0`, and `qc_finding_counts={}`
+- the current semantic-quality release gate under `runtime/campaigns/product_readiness_v10_semantic_gate_v4_green/` completed `10/10` with `semantic_quality_gate_rate=1.0`, `subtitle_readability_rate=1.0`, `script_coverage_rate=1.0`, `shot_variety_rate=1.0`, `portrait_identity_consistency_rate=1.0`, `audio_mix_clean_rate=1.0`, `archetype_payoff_rate=1.0`, and `qc_finding_counts={}`
 
 ## License
 
@@ -223,7 +226,7 @@ Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/projects/<proje
 Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/projects/operator-queue"
 ```
 
-`overview` merges product preset, backend profile, scene and shot counts, review summary, deliverables readiness, latest QC, rerender scope, and temporal state into one stable read-model. `operator-queue` gives the actionable cross-project view: pending-review shots, `needs_rerender` targets, and project-level QC failures.
+`overview` merges product preset, backend profile, scene and shot counts, review summary, deliverables readiness, semantic-quality state, latest QC, rerender scope, and temporal state into one stable read-model. `operator-queue` gives the actionable cross-project view: pending-review shots, `needs_rerender` targets, project-level QC failures, and `review_quality` work when a completed project still misses the semantic gate.
 
 This path is the best starting point for anyone cloning the repo for the first time because it exercises the real control plane, worker, manifests, and final render flow without requiring every optional backend to be bootstrapped first.
 
@@ -263,7 +266,7 @@ Run the broader product-readiness suite on the verified one-box stack:
 python scripts/run_product_readiness_campaign.py --campaign-name product_readiness_v10_release_gate_v3_green
 ```
 
-The product-readiness runner uses curated multi-scene vertical-short cases, writes a report under `runtime/campaigns/<campaign_name>/stability_report.json`, and tracks category-aware readiness metrics such as `product_ready_rate`, topology expectations, suite-level strategy or lane coverage, per-backend participation, deliverables readiness, preset-contract coverage, and now operator-surface coverage through project overview and operator-queue readiness. The current verified reference run on this workstation is `runtime/campaigns/product_readiness_v10_release_gate_v3_green/`, which completed `10/10` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, `portrait_retry_free_rate=1.0`, `portrait_warning_free_rate=1.0`, `deliverables_ready_rate=1.0`, `operator_overview_ready_rate=1.0`, `operator_queue_ready_rate=1.0`, `operator_surface_ready_rate=1.0`, `suite_product_ready_case_coverage_met=true`, `suite_product_ready_category_coverage_met=true`, `product_preset_match_rate=1.0`, and `qc_finding_counts={}`.
+The product-readiness runner uses curated multi-scene vertical-short cases, writes a report under `runtime/campaigns/<campaign_name>/stability_report.json`, and tracks category-aware readiness metrics such as `product_ready_rate`, topology expectations, suite-level strategy or lane coverage, per-backend participation, deliverables readiness, preset-contract coverage, operator-surface coverage, and now semantic-quality coverage across subtitle readability, script coverage, shot variety, portrait identity consistency, audio mix, and archetype payoff. The current verified reference run on this workstation is `runtime/campaigns/product_readiness_v10_semantic_gate_v4_green/`, which completed `10/10` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, `semantic_quality_gate_rate=1.0`, `subtitle_readability_rate=1.0`, `script_coverage_rate=1.0`, `shot_variety_rate=1.0`, `portrait_identity_consistency_rate=1.0`, `audio_mix_clean_rate=1.0`, `archetype_payoff_rate=1.0`, `deliverables_ready_rate=1.0`, `operator_overview_ready_rate=1.0`, `operator_queue_ready_rate=1.0`, `operator_surface_ready_rate=1.0`, `suite_product_ready_case_coverage_met=true`, `suite_product_ready_category_coverage_met=true`, `product_preset_match_rate=1.0`, and `qc_finding_counts={}`.
 
 The runner also supports resumable, replace-in-place, and seeded-hydration flows for long campaigns:
 

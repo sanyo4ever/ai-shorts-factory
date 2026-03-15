@@ -13,6 +13,7 @@ from filmstudio.domain.models import (
     ProjectSnapshot,
     utc_now,
 )
+from filmstudio.services.semantic_quality import build_semantic_quality_summary
 from filmstudio.worker.runtime_factory import build_local_runtime
 
 
@@ -1094,6 +1095,7 @@ def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
     music_summary = extract_music_summary(snapshot)
     render_summary = extract_final_render_summary(snapshot)
     deliverables_summary = extract_deliverables_summary(snapshot)
+    semantic_quality = build_semantic_quality_summary(snapshot)
     character_names = [
         str(character.name).strip()
         for character in snapshot.project.characters
@@ -1169,6 +1171,7 @@ def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
         "music_summary": music_summary,
         "render_summary": render_summary,
         "deliverables_summary": deliverables_summary,
+        "semantic_quality": semantic_quality,
     }
 
 
@@ -1272,6 +1275,20 @@ def _run_has_ready_deliverables(run: dict[str, Any]) -> bool:
     )
 
 
+def _run_has_semantic_quality_gate_passed(run: dict[str, Any]) -> bool:
+    semantic_quality = run.get("semantic_quality", {})
+    if not isinstance(semantic_quality, dict):
+        return False
+    failed_gates = semantic_quality.get("failed_gates", [])
+    metrics = semantic_quality.get("metrics", {})
+    return bool(
+        semantic_quality.get("available")
+        and semantic_quality.get("gate_passed")
+        and isinstance(failed_gates, list)
+        and isinstance(metrics, dict)
+    )
+
+
 def _run_has_operator_overview_ready(run: dict[str, Any]) -> bool:
     overview = run.get("operator_overview", {})
     if not isinstance(overview, dict):
@@ -1280,6 +1297,7 @@ def _run_has_operator_overview_ready(run: dict[str, Any]) -> bool:
     deliverables_payload = overview.get("deliverables", {})
     qc_payload = overview.get("qc", {})
     action_payload = overview.get("action", {})
+    semantic_quality_payload = overview.get("semantic_quality", {})
     if not isinstance(review_payload, dict):
         return False
     if not isinstance(deliverables_payload, dict):
@@ -1288,8 +1306,12 @@ def _run_has_operator_overview_ready(run: dict[str, Any]) -> bool:
         return False
     if not isinstance(action_payload, dict):
         return False
+    if not isinstance(semantic_quality_payload, dict):
+        return False
     review_summary = review_payload.get("summary", {})
     if not isinstance(review_summary, dict):
+        return False
+    if not isinstance(semantic_quality_payload.get("failed_gates", []), list):
         return False
     pending_review_shot_count = int(review_summary.get("pending_review_shot_count") or 0)
     needs_rerender_shot_count = int(review_summary.get("needs_rerender_shot_count") or 0)
@@ -1298,11 +1320,14 @@ def _run_has_operator_overview_ready(run: dict[str, Any]) -> bool:
         expected_action = "rerender"
     elif pending_review_shot_count > 0:
         expected_action = "review"
+    elif not bool(semantic_quality_payload.get("gate_passed")):
+        expected_action = "review_quality"
     return bool(
         deliverables_payload.get("ready")
         and qc_payload.get("status") == "passed"
+        and semantic_quality_payload.get("available")
         and action_payload.get("next_action") == expected_action
-        and action_payload.get("needs_operator_attention") is (expected_action in {"review", "rerender"})
+        and action_payload.get("needs_operator_attention") is (expected_action in {"review", "rerender", "review_quality"})
     )
 
 
@@ -1319,25 +1344,31 @@ def _run_has_operator_queue_ready(run: dict[str, Any]) -> bool:
     review_summary = ((overview.get("review") or {}).get("summary") or {})
     if not isinstance(review_summary, dict):
         return False
+    semantic_quality = overview.get("semantic_quality", {})
+    if not isinstance(semantic_quality, dict):
+        return False
     project_id = str(run.get("project_id") or "").strip()
     pending_review_shot_count = int(review_summary.get("pending_review_shot_count") or 0)
     needs_rerender_shot_count = int(review_summary.get("needs_rerender_shot_count") or 0)
-    expected_min_queue_items = pending_review_shot_count + needs_rerender_shot_count
+    quality_gate_failed = not bool(semantic_quality.get("gate_passed"))
+    expected_min_queue_items = pending_review_shot_count + needs_rerender_shot_count + (1 if quality_gate_failed else 0)
     project_items = [
         item
         for item in queue_items
         if isinstance(item, dict) and str(item.get("project_id") or "").strip() == project_id
     ]
+    quality_items = [
+        item
+        for item in project_items
+        if str(item.get("action") or "").strip() == "review_quality"
+    ]
     if expected_min_queue_items == 0:
-        return bool(
-            int(queue_summary.get("project_count") or 0) == 1
-            and int(queue_summary.get("queue_item_count") or 0) == 0
-            and not project_items
-        )
+        return bool(int(queue_summary.get("project_count") or 0) == 1 and int(queue_summary.get("queue_item_count") or 0) == 0 and not project_items)
     return bool(
         int(queue_summary.get("project_count") or 0) == 1
         and int(queue_summary.get("queue_item_count") or 0) >= expected_min_queue_items
         and len(project_items) >= expected_min_queue_items
+        and ((not quality_gate_failed) or bool(quality_items))
     )
 
 
@@ -1362,6 +1393,7 @@ def _run_meets_product_readiness_requirements(run: dict[str, Any]) -> bool:
         and (not expected_music_backend or actual_music_backend == expected_music_backend)
         and _run_matches_expected_product_preset(run)
         and _run_has_ready_deliverables(run)
+        and _run_has_semantic_quality_gate_passed(run)
         and _run_has_operator_overview_ready(run)
         and _run_has_operator_queue_ready(run)
     )
@@ -1773,6 +1805,14 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
     operator_overview_ready_runs = 0
     operator_queue_ready_runs = 0
     operator_surface_ready_runs = 0
+    semantic_quality_gate_runs = 0
+    subtitle_readability_runs = 0
+    script_coverage_runs = 0
+    shot_variety_runs = 0
+    portrait_identity_consistency_runs = 0
+    audio_mix_clean_runs = 0
+    archetype_payoff_runs = 0
+    semantic_quality_overall_rate_sum = 0.0
     product_ready_runs = 0
 
     for run in runs:
@@ -1866,6 +1906,25 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
             operator_queue_ready_runs += 1
         if _run_has_operator_overview_ready(run) and _run_has_operator_queue_ready(run):
             operator_surface_ready_runs += 1
+        semantic_quality = run.get("semantic_quality", {})
+        if isinstance(semantic_quality, dict):
+            semantic_quality_overall_rate_sum += float(semantic_quality.get("overall_rate") or 0.0)
+            metrics = semantic_quality.get("metrics", {})
+            if _run_has_semantic_quality_gate_passed(run):
+                semantic_quality_gate_runs += 1
+            if isinstance(metrics, dict):
+                if bool((metrics.get("subtitle_readability") or {}).get("passed")):
+                    subtitle_readability_runs += 1
+                if bool((metrics.get("script_coverage") or {}).get("passed")):
+                    script_coverage_runs += 1
+                if bool((metrics.get("shot_variety") or {}).get("passed")):
+                    shot_variety_runs += 1
+                if bool((metrics.get("portrait_identity_consistency") or {}).get("passed")):
+                    portrait_identity_consistency_runs += 1
+                if bool((metrics.get("audio_mix_clean") or {}).get("passed")):
+                    audio_mix_clean_runs += 1
+                if bool((metrics.get("archetype_payoff") or {}).get("passed")):
+                    archetype_payoff_runs += 1
 
         backend_profile = run.get("backend_profile", {})
         if isinstance(backend_profile, dict):
@@ -1935,6 +1994,26 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
         "operator_queue_ready_rate": _rate(operator_queue_ready_runs, len(runs)),
         "operator_surface_ready_runs": operator_surface_ready_runs,
         "operator_surface_ready_rate": _rate(operator_surface_ready_runs, len(runs)),
+        "semantic_quality_gate_runs": semantic_quality_gate_runs,
+        "semantic_quality_gate_rate": _rate(semantic_quality_gate_runs, len(runs)),
+        "subtitle_readability_runs": subtitle_readability_runs,
+        "subtitle_readability_rate": _rate(subtitle_readability_runs, len(runs)),
+        "script_coverage_runs": script_coverage_runs,
+        "script_coverage_rate": _rate(script_coverage_runs, len(runs)),
+        "shot_variety_runs": shot_variety_runs,
+        "shot_variety_rate": _rate(shot_variety_runs, len(runs)),
+        "portrait_identity_consistency_runs": portrait_identity_consistency_runs,
+        "portrait_identity_consistency_rate": _rate(portrait_identity_consistency_runs, len(runs)),
+        "audio_mix_clean_runs": audio_mix_clean_runs,
+        "audio_mix_clean_rate": _rate(audio_mix_clean_runs, len(runs)),
+        "archetype_payoff_runs": archetype_payoff_runs,
+        "archetype_payoff_rate": _rate(archetype_payoff_runs, len(runs)),
+        "semantic_quality_overall_rate_mean": round(
+            semantic_quality_overall_rate_sum / len(runs),
+            4,
+        )
+        if runs
+        else 0.0,
         "product_ready_runs": product_ready_runs,
         "product_ready_rate": _rate(product_ready_runs, len(runs)),
         "style_preset_counts": dict(style_preset_counts),
