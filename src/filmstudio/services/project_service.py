@@ -29,6 +29,7 @@ from filmstudio.services.review_manifest import (
     build_scene_revision_compare,
     build_shot_revision_compare,
 )
+from filmstudio.services.revision_release import build_revision_release_summary
 from filmstudio.services.semantic_quality import build_semantic_quality_summary
 from filmstudio.storage.artifact_store import ArtifactStore
 from filmstudio.storage.sqlite_store import SqliteSnapshotStore
@@ -438,6 +439,7 @@ class ProjectService:
         review_summary: dict[str, object],
         deliverables_ready: bool,
         semantic_quality_gate_passed: bool,
+        revision_release_gate_passed: bool,
     ) -> str:
         if project_status in {"failed", "blocked"} or qc_status == "failed":
             return "resolve_qc"
@@ -447,6 +449,8 @@ class ProjectService:
             return "review"
         if project_status == "completed" and not semantic_quality_gate_passed:
             return "review_quality"
+        if project_status == "completed" and not revision_release_gate_passed:
+            return "review_release"
         if project_status == "completed" and deliverables_ready:
             return "deliver"
         if project_status in {"queued", "running", "recovery_queued"}:
@@ -460,6 +464,7 @@ class ProjectService:
         latest_recovery = self._latest_recovery_plan(snapshot)
         temporal_view = self.build_temporal_progress_view(snapshot)
         semantic_quality = build_semantic_quality_summary(snapshot)
+        revision_release = build_revision_release_summary(snapshot)
         deliverables_named = dict(deliverables_view.get("named") or {})
         missing_required_deliverables = [
             kind
@@ -472,6 +477,7 @@ class ProjectService:
             review_summary=review_summary,
             deliverables_ready=bool(deliverables_view["ready"]),
             semantic_quality_gate_passed=bool(semantic_quality.get("gate_passed")),
+            revision_release_gate_passed=bool(revision_release.get("gate_passed")),
         )
         return {
             "project_id": snapshot.project.project_id,
@@ -496,7 +502,14 @@ class ProjectService:
                 "approved_revision_locked_shot_count": int(
                     review_summary.get("approved_revision_locked_shot_count") or 0
                 ),
+                "release_ready_shot_count": int(
+                    revision_release.get("release_ready_shot_count") or 0
+                ),
+                "release_ready_scene_count": int(
+                    revision_release.get("release_ready_scene_count") or 0
+                ),
             },
+            "revision_release": revision_release,
             "deliverables": {
                 "ready": bool(deliverables_view["ready"]),
                 "missing_required": missing_required_deliverables,
@@ -541,7 +554,7 @@ class ProjectService:
             },
             "action": {
                 "next_action": next_action,
-                "needs_operator_attention": next_action in {"resolve_qc", "rerender", "review", "review_quality"},
+                "needs_operator_attention": next_action in {"resolve_qc", "rerender", "review", "review_quality", "review_release"},
             },
         }
 
@@ -565,6 +578,15 @@ class ProjectService:
                 if isinstance(semantic_quality, dict)
                 else []
             )
+            revision_release = overview.get("revision_release", {})
+            revision_release_failed_gates = (
+                list(revision_release.get("failed_gates", []))
+                if isinstance(revision_release, dict)
+                else []
+            )
+            review_summary = ((overview.get("review") or {}).get("summary") or {})
+            pending_review_shot_count = int(review_summary.get("pending_review_shot_count") or 0)
+            needs_rerender_shot_count = int(review_summary.get("needs_rerender_shot_count") or 0)
             if snapshot.project.status in {"failed", "blocked"} or (
                 latest_qc is not None and latest_qc.status == "failed"
             ):
@@ -596,6 +618,23 @@ class ProjectService:
                         "review_status": None,
                         "reason": "semantic_quality_gate_failed",
                         "failed_gates": semantic_quality_failed_gates,
+                        "updated_at": snapshot.project.updated_at,
+                    }
+                )
+
+            if revision_release_failed_gates and pending_review_shot_count == 0 and needs_rerender_shot_count == 0:
+                items.append(
+                    {
+                        "priority": 2,
+                        "action": "review_release",
+                        "target_kind": "project",
+                        "target_id": snapshot.project.project_id,
+                        "project_id": snapshot.project.project_id,
+                        "project_title": snapshot.project.title,
+                        "project_status": snapshot.project.status,
+                        "review_status": None,
+                        "reason": "revision_release_gate_failed",
+                        "failed_gates": revision_release_failed_gates,
                         "updated_at": snapshot.project.updated_at,
                     }
                 )
@@ -687,6 +726,13 @@ class ProjectService:
                         overview
                         for overview in project_overviews
                         if not bool((overview.get("semantic_quality") or {}).get("gate_passed"))
+                    ]
+                ),
+                "revision_release_failed_project_count": len(
+                    [
+                        overview
+                        for overview in project_overviews
+                        if not bool((overview.get("revision_release") or {}).get("gate_passed"))
                     ]
                 ),
                 "queue_item_count": len(items),

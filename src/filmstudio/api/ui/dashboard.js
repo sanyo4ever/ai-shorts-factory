@@ -622,6 +622,7 @@ function renderCampaignComparison(detail) {
   const regressions = comparison.case_diff?.regressed || [];
   const improvements = comparison.case_diff?.improved || [];
   const semanticRegressions = comparison.case_diff?.semantic_regressed || [];
+  const revisionReleaseRegressions = comparison.case_diff?.revision_release_regressed || [];
   const deliverableRegressions = comparison.case_diff?.deliverables_regressed || [];
   const operatorRegressions = comparison.case_diff?.operator_attention_regressed || [];
   const backendChanges = comparison.backend_changes || [];
@@ -645,6 +646,7 @@ function renderCampaignComparison(detail) {
         <span>${escapeHtml(String(semanticRegressions.length))} semantic regressions</span>
       </div>
       <div class="chip-row">
+        <span class="chip">revision regressions ${escapeHtml(String(revisionReleaseRegressions.length))}</span>
         <span class="chip">deliverable regressions ${escapeHtml(String(deliverableRegressions.length))}</span>
         <span class="chip">operator regressions ${escapeHtml(String(operatorRegressions.length))}</span>
         <span class="chip">preset changes ${escapeHtml(String(presetChanges.length))}</span>
@@ -675,6 +677,11 @@ function renderCampaignComparison(detail) {
                       ${
                         item.semantic_failures_added?.length
                           ? `<span>semantic +${escapeHtml(item.semantic_failures_added.join(", "))}</span>`
+                          : ""
+                      }
+                      ${
+                        item.revision_release_failures_added?.length
+                          ? `<span>revision +${escapeHtml(item.revision_release_failures_added.join(", "))}</span>`
                           : ""
                       }
                       ${item.deliverables_regressed ? "<span>deliverables regressed</span>" : ""}
@@ -718,6 +725,7 @@ function renderCampaignReleaseDesk() {
             </div>
             <div class="meta-row">
               <span>semantic regressions ${escapeHtml(String(baselineSummary.semantic_regression_count || 0))}</span>
+              <span>revision regressions ${escapeHtml(String(baselineSummary.revision_release_regression_count || 0))}</span>
               <span>deliverable regressions ${escapeHtml(String(baselineSummary.deliverable_regression_count || 0))}</span>
               <span>operator regressions ${escapeHtml(String(baselineSummary.operator_attention_regression_count || 0))}</span>
             </div>
@@ -754,6 +762,7 @@ function renderCampaignCases(detail) {
     .map((row) => {
       const backendProfile = row.backend_profile || {};
       const preset = row.product_preset || {};
+      const revisionReleasePassed = row.revision_release?.gate_passed;
       return `
         <article class="queue-item">
           <div class="card-topline">
@@ -783,6 +792,7 @@ function renderCampaignCases(detail) {
                 ? `<span class="chip">${escapeHtml(row.project_id)}</span>`
                 : ""
             }
+            <span class="chip">${revisionReleasePassed ? "revision release ready" : "revision release review"}</span>
           </div>
           <div class="card-actions">
             ${
@@ -805,6 +815,7 @@ function renderQueue() {
     <span>${escapeHtml(String(summary.pending_review_shot_count || 0))} pending review</span>
     <span>${escapeHtml(String(summary.needs_rerender_shot_count || 0))} need rerender</span>
     <span>${escapeHtml(String(summary.failed_qc_project_count || 0))} QC failures</span>
+    <span>${escapeHtml(String(summary.revision_release_failed_project_count || 0))} revision release</span>
   `;
   if (!items.length) {
     elements.queueList.innerHTML = `<div class="muted-copy">Queue is clear.</div>`;
@@ -866,6 +877,7 @@ function renderProjectList() {
       const preset = overview.product_preset || {};
       const nextAction = overview.action?.next_action || "inspect";
       const semanticPassed = overview.semantic_quality?.gate_passed;
+      const revisionReleasePassed = overview.revision_release?.gate_passed;
       return `
         <article class="project-card${selected ? " is-selected" : ""}" data-project-id="${escapeHtml(overview.project_id)}">
           <div class="card-headline">
@@ -890,6 +902,9 @@ function renderProjectList() {
             <span class="badge ${semanticPassed ? "quality-pass" : "quality-fail"}">
               semantic ${semanticPassed ? "green" : "review"}
             </span>
+            <span class="badge ${revisionReleasePassed ? "quality-pass" : "quality-fail"}">
+              revision ${revisionReleasePassed ? "ready" : "review"}
+            </span>
             <span class="badge ${overview.deliverables?.ready ? "quality-pass" : "quality-fail"}">
               ${overview.deliverables?.ready ? "deliverables ready" : "deliverables pending"}
             </span>
@@ -913,7 +928,7 @@ function renderProjectDetail() {
   renderVideoPanel(detail.overview, detail.deliverables);
   renderSemanticQuality(detail.overview.semantic_quality || {});
   renderDeliverables(detail.deliverables);
-  renderReviewSummary(detail.review);
+  renderReviewSummary(detail.review, detail.overview.revision_release || {});
   renderReviewFocus(detail.review);
   renderReviewCompare(detail.reviewCompare?.payload || null);
   renderReviewScenes(detail.review);
@@ -930,6 +945,7 @@ function renderProjectHero(overview) {
   const preset = overview.product_preset || {};
   const backends = overview.backend_profile || {};
   const summary = overview.summary || {};
+  const revisionRelease = overview.revision_release || {};
   elements.projectHero.innerHTML = `
     <div class="hero-layout">
       <div class="hero-copy">
@@ -951,6 +967,9 @@ function renderProjectHero(overview) {
           </span>
           <span class="badge ${overview.semantic_quality?.gate_passed ? "quality-pass" : "quality-fail"}">
             semantic ${overview.semantic_quality?.gate_passed ? "passed" : "review"}
+          </span>
+          <span class="badge ${revisionRelease?.gate_passed ? "quality-pass" : "quality-fail"}">
+            revision ${revisionRelease?.gate_passed ? "ready" : "review"}
           </span>
         </div>
       </div>
@@ -1068,12 +1087,15 @@ function renderDeliverables(deliverables) {
     .join("");
 }
 
-function renderReviewSummary(review) {
+function renderReviewSummary(review, revisionRelease) {
   const summary = review?.summary || {};
+  const releaseSummary = revisionRelease || {};
   elements.reviewSummary.innerHTML = `
     <span>${escapeHtml(String(summary.pending_review_shot_count || 0))} pending shots</span>
     <span>${escapeHtml(String(summary.needs_rerender_shot_count || 0))} rerender shots</span>
     <span>${escapeHtml(String(summary.approved_shot_count || 0))} approved shots</span>
+    <span>${escapeHtml(String(releaseSummary.release_ready_shot_count || 0))} release-ready shots</span>
+    <span>${releaseSummary.gate_passed ? "revision release ready" : "revision release review"}</span>
   `;
 }
 

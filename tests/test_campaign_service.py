@@ -12,6 +12,7 @@ def _sample_run(
     status: str = "completed",
     qc_status: str = "passed",
     semantic_gate_passed: bool = True,
+    revision_release_gate_passed: bool = True,
     deliverables_ready: bool = True,
     operator_attention: bool = False,
     project_id: str | None = None,
@@ -29,10 +30,20 @@ def _sample_run(
             "gate_passed": semantic_gate_passed,
             "failed_gates": [] if semantic_gate_passed else ["audio_mix_clean"],
         },
+        "revision_release": {
+            "available": True,
+            "gate_passed": revision_release_gate_passed,
+            "failed_gates": [] if revision_release_gate_passed else ["scene_canonical_artifacts_incomplete"],
+        },
         "deliverables_summary": {
             "ready": deliverables_ready,
         },
         "operator_overview": {
+            "revision_release": {
+                "available": True,
+                "gate_passed": revision_release_gate_passed,
+                "failed_gates": [] if revision_release_gate_passed else ["scene_canonical_artifacts_incomplete"],
+            },
             "action": {
                 "next_action": "review" if operator_attention else "ship",
                 "needs_operator_attention": operator_attention,
@@ -341,6 +352,7 @@ def test_campaign_compare_surfaces_release_detail_regressions(tmp_path: Path) ->
                 status="completed",
                 qc_status="passed",
                 semantic_gate_passed=False,
+                revision_release_gate_passed=False,
                 deliverables_ready=False,
                 operator_attention=True,
             )
@@ -356,8 +368,12 @@ def test_campaign_compare_surfaces_release_detail_regressions(tmp_path: Path) ->
     assert comparison is not None
     assert comparison["status"] == "regression"
     assert comparison["summary"]["semantic_regression_count"] == 1
+    assert comparison["summary"]["revision_release_regression_count"] == 1
     assert comparison["summary"]["deliverable_regression_count"] == 1
     assert comparison["summary"]["operator_attention_regression_count"] == 1
     assert comparison["case_diff"]["changed"][0]["semantic_failures_added"] == ["audio_mix_clean"]
+    assert comparison["case_diff"]["changed"][0]["revision_release_failures_added"] == [
+        "scene_canonical_artifacts_incomplete"
+    ]
     assert comparison["case_diff"]["changed"][0]["deliverables_regressed"] is True
     assert comparison["case_diff"]["changed"][0]["operator_attention_regressed"] is True
