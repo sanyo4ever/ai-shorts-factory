@@ -46,6 +46,7 @@ ShortArchetype = Literal[
 CampaignReleaseStatus = Literal["candidate", "canonical", "superseded"]
 ReviewStatus = Literal["pending_review", "approved", "needs_rerender"]
 ReviewTargetKind = Literal["scene", "shot"]
+ReviewReasonCode = Literal["general", "visual", "timing", "subtitle", "audio", "identity"]
 RerenderStage = Literal[
     "build_characters",
     "generate_storyboards",
@@ -119,8 +120,11 @@ class ReviewState(BaseModel):
     reviewer: str | None = None
     note: str | None = None
     reason: str | None = None
+    reason_code: ReviewReasonCode = "general"
     output_revision: int = 0
     approved_revision: int | None = None
+    last_reviewed_revision: int | None = None
+    canonical_revision_locked_at: str | None = None
     canonical_artifacts: list[dict[str, Any]] = Field(default_factory=list)
     last_review_id: str | None = None
 
@@ -228,6 +232,8 @@ class ReviewRecord(BaseModel):
     reviewer: str = "operator"
     note: str | None = None
     reason: str | None = None
+    reason_code: ReviewReasonCode = "general"
+    reviewed_revision: int | None = None
     output_revision: int | None = None
     approved_revision: int | None = None
     canonical_artifacts: list[dict[str, Any]] = Field(default_factory=list)
@@ -268,7 +274,9 @@ class ReviewUpdateRequest(BaseModel):
     status: ReviewStatus
     note: str = ""
     reason: str = ""
+    reason_code: ReviewReasonCode = "general"
     reviewer: str = "operator"
+    target_revision: int | None = None
     request_rerender: bool = False
     start_stage: RerenderStage = "render_shots"
     run_immediately: bool = False

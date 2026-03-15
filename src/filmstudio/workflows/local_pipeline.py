@@ -513,12 +513,17 @@ class LocalPipelineEngine:
             snapshot = self.project_service.require_snapshot(project_id)
         except KeyError:
             return
-        changed_shot_ids = {
-            str(artifact.metadata.get("shot_id"))
+        changed_artifacts = [
+            artifact
             for artifact in snapshot.artifacts
-            if artifact.kind in {"shot_video", "shot_lipsync_video"}
+            if artifact.kind in {"shot_video", "shot_render_manifest", "shot_lipsync_video", "lipsync_manifest"}
             and artifact.metadata.get("shot_id")
             and self._artifact_created_after(artifact.created_at, run_started_at)
+        ]
+        changed_shot_ids = {
+            str(artifact.metadata.get("shot_id"))
+            for artifact in changed_artifacts
+            if artifact.metadata.get("shot_id")
         }
         if not changed_shot_ids:
             return
@@ -527,13 +532,22 @@ class LocalPipelineEngine:
             for shot in scene.shots:
                 if shot.shot_id not in changed_shot_ids:
                     continue
+                next_output_revision = shot.review.output_revision + 1
+                for artifact in changed_artifacts:
+                    if artifact.metadata.get("shot_id") != shot.shot_id:
+                        continue
+                    artifact.metadata["output_revision"] = next_output_revision
+                    artifact.metadata.setdefault("scene_id", scene.scene_id)
                 shot.review.status = "pending_review"
                 shot.review.updated_at = utc_now()
                 shot.review.reviewer = None
                 shot.review.note = None
                 shot.review.reason = "new_output_revision"
-                shot.review.output_revision += 1
+                shot.review.reason_code = "general"
+                shot.review.output_revision = next_output_revision
                 shot.review.approved_revision = None
+                shot.review.last_reviewed_revision = None
+                shot.review.canonical_revision_locked_at = None
                 shot.review.canonical_artifacts = []
                 shot.review.last_review_id = None
                 changed_scene_ids.add(scene.scene_id)

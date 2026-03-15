@@ -14,6 +14,7 @@ from filmstudio.domain.models import (
     QCReportRecord,
     RecoveryPlanRecord,
     ReviewRecord,
+    ReviewReasonCode,
     ReviewState,
     ReviewUpdateRequest,
     SelectiveRerenderRequest,
@@ -22,7 +23,12 @@ from filmstudio.domain.models import (
 )
 from filmstudio.domain.service_contracts import PIPELINE_STAGE_ORDER, STAGE_QUEUE_MAP
 from filmstudio.services.planner_service import PlannerService, PlanningBundle
-from filmstudio.services.review_manifest import build_review_manifest, build_review_summary
+from filmstudio.services.review_manifest import (
+    build_review_manifest,
+    build_review_summary,
+    build_scene_revision_compare,
+    build_shot_revision_compare,
+)
 from filmstudio.services.semantic_quality import build_semantic_quality_summary
 from filmstudio.storage.artifact_store import ArtifactStore
 from filmstudio.storage.sqlite_store import SqliteSnapshotStore
@@ -353,8 +359,38 @@ class ProjectService:
             raise KeyError(kind)
         return item
 
+    @staticmethod
+    def resolve_artifact(
+        snapshot: ProjectSnapshot,
+        artifact_id: str,
+    ) -> ArtifactRecord:
+        for artifact in snapshot.artifacts:
+            if artifact.artifact_id == artifact_id:
+                return artifact
+        raise KeyError(artifact_id)
+
     def build_review_view(self, snapshot: ProjectSnapshot) -> dict[str, object]:
         return build_review_manifest(snapshot)
+
+    def build_shot_review_compare(
+        self,
+        snapshot: ProjectSnapshot,
+        shot_id: str,
+        *,
+        left: str = "current",
+        right: str = "previous",
+    ) -> dict[str, object]:
+        return build_shot_revision_compare(snapshot, shot_id, left=left, right=right)
+
+    def build_scene_review_compare(
+        self,
+        snapshot: ProjectSnapshot,
+        scene_id: str,
+        *,
+        left: str = "current",
+        right: str = "approved",
+    ) -> dict[str, object]:
+        return build_scene_revision_compare(snapshot, scene_id, left=left, right=right)
 
     @staticmethod
     def _latest_qc_report(snapshot: ProjectSnapshot) -> QCReportRecord | None:
@@ -456,6 +492,10 @@ class ProjectService:
             "review": {
                 "summary": review_summary,
                 "recent_review_count": min(len(snapshot.review_records), 20),
+                "compare_ready_shot_count": int(review_summary.get("compare_ready_shot_count") or 0),
+                "approved_revision_locked_shot_count": int(
+                    review_summary.get("approved_revision_locked_shot_count") or 0
+                ),
             },
             "deliverables": {
                 "ready": bool(deliverables_view["ready"]),
@@ -575,6 +615,9 @@ class ProjectService:
                             "project_status": snapshot.project.status,
                             "review_status": scene.review.status,
                             "reason": scene.review.reason or "needs_rerender",
+                            "reason_code": scene.review.reason_code,
+                            "current_revision": scene.review.output_revision,
+                            "approved_revision": scene.review.approved_revision,
                             "updated_at": scene.review.updated_at,
                         }
                     )
@@ -598,6 +641,16 @@ class ProjectService:
                             "project_status": snapshot.project.status,
                             "review_status": shot.review.status,
                             "reason": shot.review.reason or shot.review.status,
+                            "reason_code": shot.review.reason_code,
+                            "current_revision": shot.review.output_revision,
+                            "approved_revision": shot.review.approved_revision,
+                            "compare_ready": (
+                                bool(shot.review.output_revision > 1)
+                                or (
+                                    shot.review.approved_revision is not None
+                                    and shot.review.approved_revision != shot.review.output_revision
+                                )
+                            ),
                             "updated_at": shot.review.updated_at,
                         }
                     )
@@ -645,6 +698,24 @@ class ProjectService:
     def build_operator_queue(self) -> dict[str, object]:
         return self.build_operator_queue_for_snapshots(self.snapshot_store.list_snapshots())
 
+    @staticmethod
+    def _resolve_review_target_revision(
+        *,
+        current_revision: int,
+        payload: ReviewUpdateRequest,
+        target_label: str,
+    ) -> int:
+        target_revision = (
+            current_revision
+            if payload.target_revision is None
+            else int(payload.target_revision)
+        )
+        if target_revision != current_revision:
+            raise RuntimeError(
+                f"{target_label} review target_revision={target_revision} does not match current revision {current_revision}."
+            )
+        return target_revision
+
     def apply_shot_review(
         self,
         project_id: str,
@@ -655,6 +726,11 @@ class ProjectService:
         scene, shot = self._find_scene_and_shot(snapshot, shot_id)
         review_id = new_id("review")
         previous_status = shot.review.status
+        reviewed_revision = self._resolve_review_target_revision(
+            current_revision=shot.review.output_revision,
+            payload=payload,
+            target_label=f"Shot {shot_id}",
+        )
         shot.review = self._updated_review_state(
             shot.review,
             review_id=review_id,
@@ -662,11 +738,13 @@ class ProjectService:
             reviewer=payload.reviewer,
             note=payload.note,
             reason=payload.reason,
+            reason_code=payload.reason_code,
             canonical_artifacts=(
                 self._canonical_shot_artifacts(snapshot, shot_id)
                 if payload.status == "approved"
                 else []
             ),
+            reviewed_revision=reviewed_revision,
         )
         snapshot.review_records.append(
             ReviewRecord(
@@ -680,6 +758,8 @@ class ProjectService:
                 reviewer=payload.reviewer,
                 note=payload.note.strip() or None,
                 reason=payload.reason.strip() or payload.status,
+                reason_code=payload.reason_code,
+                reviewed_revision=reviewed_revision,
                 output_revision=shot.review.output_revision,
                 approved_revision=shot.review.approved_revision,
                 canonical_artifacts=list(shot.review.canonical_artifacts),
@@ -711,6 +791,11 @@ class ProjectService:
         scene = self._find_scene(snapshot, scene_id)
         review_id = new_id("review")
         previous_status = scene.review.status
+        reviewed_revision = self._resolve_review_target_revision(
+            current_revision=max((shot.review.output_revision for shot in scene.shots), default=0),
+            payload=payload,
+            target_label=f"Scene {scene_id}",
+        )
         for shot in scene.shots:
             shot.review = self._updated_review_state(
                 shot.review,
@@ -719,11 +804,13 @@ class ProjectService:
                 reviewer=payload.reviewer,
                 note=payload.note,
                 reason=payload.reason,
+                reason_code=payload.reason_code,
                 canonical_artifacts=(
                     self._canonical_shot_artifacts(snapshot, shot.shot_id)
                     if payload.status == "approved"
                     else []
                 ),
+                reviewed_revision=shot.review.output_revision,
             )
         scene.review = self._updated_review_state(
             scene.review,
@@ -732,12 +819,14 @@ class ProjectService:
             reviewer=payload.reviewer,
             note=payload.note,
             reason=payload.reason,
+            reason_code=payload.reason_code,
             canonical_artifacts=(
                 self._canonical_scene_artifacts(snapshot, scene_id)
                 if payload.status == "approved"
                 else []
             ),
             output_revision=max((shot.review.output_revision for shot in scene.shots), default=0),
+            reviewed_revision=reviewed_revision,
         )
         snapshot.review_records.append(
             ReviewRecord(
@@ -750,10 +839,17 @@ class ProjectService:
                 reviewer=payload.reviewer,
                 note=payload.note.strip() or None,
                 reason=payload.reason.strip() or payload.status,
+                reason_code=payload.reason_code,
+                reviewed_revision=reviewed_revision,
                 output_revision=scene.review.output_revision,
                 approved_revision=scene.review.approved_revision,
                 canonical_artifacts=list(scene.review.canonical_artifacts),
-                metadata={"shot_ids": [shot.shot_id for shot in scene.shots]},
+                metadata={
+                    "shot_ids": [shot.shot_id for shot in scene.shots],
+                    "shot_reviewed_revisions": {
+                        shot.shot_id: shot.review.output_revision for shot in scene.shots
+                    },
+                },
             )
         )
         self._sync_scene_review_states(snapshot, scene_ids={scene_id}, preserve_explicit_scene_state=True)
@@ -929,22 +1025,32 @@ class ProjectService:
         reviewer: str,
         note: str,
         reason: str,
+        reason_code: ReviewReasonCode,
         canonical_artifacts: list[dict[str, object]],
         output_revision: int | None = None,
+        reviewed_revision: int | None = None,
     ) -> ReviewState:
         next_output_revision = state.output_revision if output_revision is None else output_revision
+        next_reviewed_revision = (
+            next_output_revision
+            if reviewed_revision is None
+            else reviewed_revision
+        )
         next_state = ReviewState(
             status=status,
             updated_at=utc_now(),
             reviewer=reviewer.strip() or None,
             note=note.strip() or None,
             reason=reason.strip() or status,
+            reason_code=reason_code,
             output_revision=next_output_revision,
             approved_revision=(
                 next_output_revision
                 if status == "approved"
                 else None
             ),
+            last_reviewed_revision=next_reviewed_revision,
+            canonical_revision_locked_at=utc_now() if status == "approved" else None,
             canonical_artifacts=list(canonical_artifacts),
             last_review_id=review_id,
         )
@@ -991,8 +1097,18 @@ class ProjectService:
                 reviewer=reviewer,
                 note=note,
                 reason=reason,
+                reason_code=scene.review.reason_code or "general",
                 canonical_artifacts=canonical_artifacts,
                 output_revision=max((shot.review.output_revision for shot in scene.shots), default=0),
+                reviewed_revision=max(
+                    (
+                        shot.review.last_reviewed_revision
+                        or shot.review.approved_revision
+                        or shot.review.output_revision
+                        for shot in scene.shots
+                    ),
+                    default=0,
+                ),
             )
 
     @staticmethod

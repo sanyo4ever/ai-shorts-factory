@@ -190,6 +190,17 @@
                   <input id="reviewer-input" type="text" value="operator">
                 </label>
                 <label class="field">
+                  <span>Review Reason</span>
+                  <select id="review-reason-code">
+                    <option value="general" selected>general</option>
+                    <option value="visual">visual</option>
+                    <option value="timing">timing</option>
+                    <option value="subtitle">subtitle</option>
+                    <option value="audio">audio</option>
+                    <option value="identity">identity</option>
+                  </select>
+                </label>
+                <label class="field">
                   <span>Rerender Stage</span>
                   <select id="rerender-stage-select">
                     <option value="build_characters">build_characters</option>
@@ -203,11 +214,20 @@
                     <option value="run_qc">run_qc</option>
                   </select>
                 </label>
+                <label class="field">
+                  <span>Compare Against</span>
+                  <select id="review-compare-target">
+                    <option value="previous" selected>previous</option>
+                    <option value="approved">approved</option>
+                    <option value="current">current</option>
+                  </select>
+                </label>
               </div>
               <label class="field">
                 <span>Operator Note</span>
                 <textarea id="review-note-input" rows="4" placeholder="Record why this shot is approved or why it should rerender."></textarea>
               </label>
+              <div id="review-compare-panel" class="compare-panel"></div>
               <div class="toolbar">
                 <button id="approve-focus-button" class="button button-primary" type="button">Approve Focus</button>
                 <button id="mark-rerender-button" class="button button-warning" type="button">Flag Rerender</button>

@@ -56,7 +56,10 @@ function cacheElements() {
   elements.reviewScenes = byId("review-scenes");
   elements.reviewFocus = byId("review-focus");
   elements.reviewerInput = byId("reviewer-input");
+  elements.reviewReasonCode = byId("review-reason-code");
   elements.reviewNoteInput = byId("review-note-input");
+  elements.reviewCompareTarget = byId("review-compare-target");
+  elements.reviewComparePanel = byId("review-compare-panel");
   elements.rerenderStageSelect = byId("rerender-stage-select");
   elements.approveFocusButton = byId("approve-focus-button");
   elements.markRerenderButton = byId("mark-rerender-button");
@@ -159,7 +162,13 @@ function bindEvents() {
       id: focusButton.dataset.reviewFocusId,
       sceneId: focusButton.dataset.reviewSceneId || null,
       title: focusButton.dataset.reviewTitle || null,
-    });
+    }).catch(handleError);
+  });
+  elements.reviewCompareTarget.addEventListener("change", () => {
+    if (!state.selectedProjectId || !state.selectedTarget) {
+      return;
+    }
+    loadFocusedCompare(state.selectedProjectId, { force: true }).catch(handleError);
   });
   elements.createProjectForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -305,40 +314,80 @@ async function loadProjectDetail(projectId, { force = false } = {}) {
     fetchJson(`/api/v1/projects/${projectId}/review`),
     fetchJson(`/api/v1/projects/${projectId}/deliverables`),
   ]);
-  state.projectDetails.set(projectId, { overview, review, deliverables });
+  state.projectDetails.set(projectId, { overview, review, deliverables, reviewCompare: null });
   primeFocusedTarget(review);
+  await loadFocusedCompare(projectId, { force: true });
   renderChrome();
   renderProjectDetail();
 }
 
 function primeFocusedTarget(review) {
-  if (state.selectedTarget) {
+  const resolved = resolveFocusedTarget(review);
+  if (!resolved) {
+    state.selectedTarget = null;
     return;
   }
-  const scenes = Array.isArray(review?.scenes) ? review.scenes : [];
-  for (const scene of scenes) {
-    const pendingShot = Array.isArray(scene.shots)
-      ? scene.shots.find((shot) => shot.review?.status !== "approved")
-      : null;
-    if (pendingShot) {
-      state.selectedTarget = {
-        kind: "shot",
-        id: pendingShot.shot_id,
-        sceneId: pendingShot.scene_id,
-        title: pendingShot.title,
-      };
-      return;
-    }
+  state.selectedTarget = {
+    kind: resolved.kind,
+    id: resolved.id,
+    sceneId: resolved.sceneId || null,
+    title: resolved.title || null,
+  };
+}
+
+function defaultReviewCompareTarget(target) {
+  return target?.kind === "scene" ? "approved" : "previous";
+}
+
+function allowedReviewCompareTargets(target) {
+  return target?.kind === "scene"
+    ? ["approved", "current"]
+    : ["previous", "approved", "current"];
+}
+
+function normalizeReviewCompareTarget(target, selector) {
+  const allowed = allowedReviewCompareTargets(target);
+  return allowed.includes(selector) ? selector : defaultReviewCompareTarget(target);
+}
+
+function syncReviewCompareTargetOptions(target, selectedValue = null) {
+  const allowed = allowedReviewCompareTargets(target);
+  const labels = {
+    previous: "previous revision",
+    approved: "approved revision",
+    current: "current revision",
+  };
+  elements.reviewCompareTarget.innerHTML = allowed
+    .map((value) => {
+      const selected = value === selectedValue ? " selected" : "";
+      return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(labels[value] || value)}</option>`;
+    })
+    .join("");
+  elements.reviewCompareTarget.value = normalizeReviewCompareTarget(target, selectedValue || allowed[0]);
+}
+
+async function loadFocusedCompare(projectId, { force = false } = {}) {
+  const target = state.selectedTarget;
+  const detail = state.projectDetails.get(projectId);
+  if (!detail || !target) {
+    renderReviewCompare(null);
+    return;
   }
-  const firstScene = scenes[0];
-  if (firstScene) {
-    state.selectedTarget = {
-      kind: "scene",
-      id: firstScene.scene_id,
-      sceneId: firstScene.scene_id,
-      title: firstScene.title,
-    };
+  const right = normalizeReviewCompareTarget(target, elements.reviewCompareTarget?.value || "");
+  syncReviewCompareTargetOptions(target, right);
+  const cacheKey = `${target.kind}:${target.id}:${right}`;
+  if (!force && detail.reviewCompare?.cacheKey === cacheKey) {
+    renderReviewCompare(detail.reviewCompare.payload);
+    return;
   }
+  const baseUrl =
+    target.kind === "shot"
+      ? `/api/v1/projects/${projectId}/shots/${target.id}/compare`
+      : `/api/v1/projects/${projectId}/scenes/${target.id}/compare`;
+  const payload = await fetchJson(`${baseUrl}?left=current&right=${encodeURIComponent(right)}`);
+  detail.reviewCompare = { cacheKey, payload };
+  state.projectDetails.set(projectId, detail);
+  renderReviewCompare(payload);
 }
 
 async function selectProject(projectId, target = null) {
@@ -827,6 +876,7 @@ function renderProjectDetail() {
   renderDeliverables(detail.deliverables);
   renderReviewSummary(detail.review);
   renderReviewFocus(detail.review);
+  renderReviewCompare(detail.reviewCompare?.payload || null);
   renderReviewScenes(detail.review);
 }
 
@@ -992,9 +1042,15 @@ function renderReviewFocus(review) {
   const target = resolveFocusedTarget(review);
   if (!target) {
     elements.reviewFocus.innerHTML = `<div class="muted-copy">Select a scene or shot from the review stack.</div>`;
+    elements.reviewComparePanel.innerHTML = `<div class="muted-copy">Revision compare becomes available after you focus a scene or shot.</div>`;
     return;
   }
   state.selectedTarget = target;
+  elements.reviewReasonCode.value = target.review?.reason_code || "general";
+  syncReviewCompareTargetOptions(
+    target,
+    normalizeReviewCompareTarget(target, elements.reviewCompareTarget?.value || ""),
+  );
   const status = target.review?.status || "pending_review";
   elements.reviewFocus.innerHTML = `
     <div class="card-topline">
@@ -1007,6 +1063,8 @@ function renderReviewFocus(review) {
     <div class="meta-row">
       ${target.kind === "shot" ? `<span>scene ${escapeHtml(target.sceneId || "")}</span>` : ""}
       <span>revision ${escapeHtml(String(target.review?.output_revision || 0))}</span>
+      <span>approved ${escapeHtml(String(target.review?.approved_revision ?? "none"))}</span>
+      <span>reason ${escapeHtml(target.review?.reason_code || "general")}</span>
       <span>${escapeHtml(target.review?.reviewer || "operator")}</span>
     </div>
     ${
@@ -1190,10 +1248,167 @@ function renderFailedGates(failedGates) {
     .join("")}</div>`;
 }
 
-function setFocusedTarget(target) {
+function renderReviewCompare(compare) {
+  if (!compare) {
+    elements.reviewComparePanel.innerHTML = `<div class="muted-copy">Revision compare not loaded yet.</div>`;
+    return;
+  }
+  if (compare.target_kind === "scene") {
+    const summary = compare.summary || {};
+    const shots = Array.isArray(compare.shots) ? compare.shots : [];
+    elements.reviewComparePanel.innerHTML = `
+      <div class="card-topline">
+        <div>
+          <strong class="card-title">Scene Compare</strong>
+          <p>${escapeHtml(compare.title || compare.scene_id || "scene")}</p>
+        </div>
+        <span class="badge ${summary.compare_ready ? "quality-pass" : "quality-fail"}">
+          ${summary.compare_ready ? "compare ready" : "single revision"}
+        </span>
+      </div>
+      <div class="mini-summary">
+        <span>${escapeHtml(String(summary.comparable_shot_count || 0))} comparable shots</span>
+        <span>${escapeHtml(String(summary.revision_delta_shot_count || 0))} changed shots</span>
+        <span>${escapeHtml(String(summary.approved_revision_locked_shot_count || 0))} locked approvals</span>
+      </div>
+      <div class="scene-stack">
+        ${shots
+          .map((shotCompare) => {
+            const comparison = shotCompare.comparison || {};
+            return `
+              <article class="compare-card">
+                <div class="card-topline">
+                  <div>
+                    <strong class="card-title">${escapeHtml(shotCompare.title || shotCompare.shot_id)}</strong>
+                    <p>${escapeHtml(shotCompare.shot_id || "")}</p>
+                  </div>
+                  <span class="badge ${comparison.available ? "quality-pass" : "quality-fail"}">
+                    ${comparison.available ? "comparable" : "single revision"}
+                  </span>
+                </div>
+                <div class="meta-row">
+                  <span>current ${escapeHtml(String(shotCompare.review?.output_revision || 0))}</span>
+                  <span>approved ${escapeHtml(String(shotCompare.review?.approved_revision ?? "none"))}</span>
+                </div>
+                <div class="chip-row">
+                  ${(comparison.changed_artifact_kinds || [])
+                    .map((kind) => `<span class="chip">${escapeHtml(kind)}</span>`)
+                    .join("") || `<span class="muted-copy">No artifact delta.</span>`}
+                </div>
+              </article>
+            `;
+          })
+          .join("")}
+      </div>
+    `;
+    return;
+  }
+  const comparison = compare.comparison || {};
+  const left = compare.left_revision || null;
+  const right = compare.right_revision || null;
+  elements.reviewComparePanel.innerHTML = `
+    <div class="card-topline">
+      <div>
+        <strong class="card-title">Revision Compare</strong>
+        <p>${escapeHtml(compare.title || compare.shot_id || "shot")}</p>
+      </div>
+      <span class="badge ${comparison.available ? "quality-pass" : "quality-fail"}">
+        ${comparison.available ? "side by side" : "single revision"}
+      </span>
+    </div>
+    <div class="mini-summary">
+      <span>left ${escapeHtml(compare.left_alias || "current")} · r${escapeHtml(String(left?.revision ?? "none"))}</span>
+      <span>right ${escapeHtml(compare.right_alias || "previous")} · r${escapeHtml(String(right?.revision ?? "none"))}</span>
+      <span>${escapeHtml(String((comparison.changed_artifact_kinds || []).length))} artifact deltas</span>
+    </div>
+    <div class="chip-row">
+      ${(comparison.changed_artifact_kinds || [])
+        .map((kind) => `<span class="chip">${escapeHtml(kind)}</span>`)
+        .join("") || `<span class="muted-copy">No changed artifact kinds detected.</span>`}
+    </div>
+    <div class="compare-grid">
+      ${renderRevisionCard(compare.left_alias || "left", left)}
+      ${renderRevisionCard(compare.right_alias || "right", right)}
+    </div>
+  `;
+}
+
+function renderRevisionCard(label, revision) {
+  if (!revision) {
+    return `
+      <article class="compare-card">
+        <div class="card-topline">
+          <strong class="card-title">${escapeHtml(label)}</strong>
+          <span class="badge quality-fail">missing</span>
+        </div>
+        <p class="muted-copy">No revision is available for this selector.</p>
+      </article>
+    `;
+  }
+  const primaryVideo = revision.primary_video || null;
+  const reviewEvents = Array.isArray(revision.review_events) ? revision.review_events : [];
+  return `
+    <article class="compare-card">
+      <div class="card-topline">
+        <div>
+          <strong class="card-title">${escapeHtml(label)}</strong>
+          <p>revision ${escapeHtml(String(revision.revision))}</p>
+        </div>
+        <span class="badge ${revision.status === "approved" ? "quality-pass" : "badge-status-review"}">
+          ${escapeHtml(revision.status || "historical")}
+        </span>
+      </div>
+      ${
+        primaryVideo?.download_url
+          ? `
+            <div class="compare-video">
+              <video controls preload="metadata">
+                <source src="${escapeHtml(primaryVideo.download_url)}" type="video/mp4">
+              </video>
+            </div>
+          `
+          : `<p class="muted-copy">No canonical video artifact stored for this revision.</p>`
+      }
+      <div class="meta-row">
+        <span>${escapeHtml(String(revision.artifact_count || 0))} artifacts</span>
+        <span>${escapeHtml(String(revision.review_event_count || 0))} review events</span>
+        <span>${escapeHtml(String(revision.created_at || ""))}</span>
+      </div>
+      <div class="chip-row">
+        ${(revision.artifacts || [])
+          .map((artifact) =>
+            artifact.download_url
+              ? `<a class="chip" href="${escapeHtml(artifact.download_url)}" target="_blank" rel="noreferrer">${escapeHtml(artifact.kind)}</a>`
+              : `<span class="chip">${escapeHtml(artifact.kind)}</span>`,
+          )
+          .join("") || `<span class="muted-copy">No stored artifacts.</span>`}
+      </div>
+      ${
+        reviewEvents.length
+          ? `
+            <div class="meta-row">
+              ${reviewEvents
+                .slice(-2)
+                .map(
+                  (event) =>
+                    `<span>${escapeHtml(event.status || "review")} · ${escapeHtml(
+                      event.reason_code || event.reason || "general",
+                    )} · r${escapeHtml(String(event.reviewed_revision ?? event.output_revision ?? "n/a"))}</span>`,
+                )
+                .join("")}
+            </div>
+          `
+          : ""
+      }
+    </article>
+  `;
+}
+
+async function setFocusedTarget(target) {
   state.selectedTarget = target;
   const detail = getSelectedDetail();
   renderReviewFocus(detail?.review);
+  await loadFocusedCompare(state.selectedProjectId, { force: true });
   renderReviewScenes(detail?.review);
 }
 
@@ -1204,8 +1419,15 @@ async function applyFocusedReview({ status, requestRerender = false, runImmediat
   }
   const note = elements.reviewNoteInput.value.trim();
   const reviewer = elements.reviewerInput.value.trim() || "operator";
+  const reasonCode = elements.reviewReasonCode.value || "general";
   const startStage = elements.rerenderStageSelect.value;
   const target = state.selectedTarget;
+  const detail = getSelectedDetail();
+  const comparePayload = detail?.reviewCompare?.payload || null;
+  const targetRevision =
+    comparePayload?.left_revision?.revision ??
+    target.review?.output_revision ??
+    0;
   const url =
     target.kind === "shot"
       ? `/api/v1/projects/${state.selectedProjectId}/shots/${target.id}/review`
@@ -1218,14 +1440,16 @@ async function applyFocusedReview({ status, requestRerender = false, runImmediat
       status,
       note,
       reason: note || status,
+      reason_code: reasonCode,
       reviewer,
+      target_revision: targetRevision,
       request_rerender: requestRerender,
       run_immediately: runImmediately,
       start_stage: startStage,
     }),
   });
-  const detail = state.projectDetails.get(state.selectedProjectId) || {};
-  state.projectDetails.set(state.selectedProjectId, { ...detail, review: reviewResponse });
+  const existingDetail = state.projectDetails.get(state.selectedProjectId) || {};
+  state.projectDetails.set(state.selectedProjectId, { ...existingDetail, review: reviewResponse });
   await loadProjectDetail(state.selectedProjectId, { force: true });
   elements.reviewNoteInput.value = "";
   setStatus(`Updated ${target.kind} ${target.id}.`, "success", 1800);

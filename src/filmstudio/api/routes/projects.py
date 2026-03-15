@@ -88,6 +88,50 @@ def get_review(request: Request, project_id: str):
     return request.app.state.project_service.build_review_view(snapshot)
 
 
+@router.get("/{project_id}/shots/{shot_id}/compare")
+def compare_shot_revisions(
+    request: Request,
+    project_id: str,
+    shot_id: str,
+    left: str = "current",
+    right: str = "previous",
+):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        return request.app.state.project_service.build_shot_review_compare(
+            snapshot,
+            shot_id,
+            left=left,
+            right=right,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Shot not found") from None
+
+
+@router.get("/{project_id}/scenes/{scene_id}/compare")
+def compare_scene_revisions(
+    request: Request,
+    project_id: str,
+    scene_id: str,
+    left: str = "current",
+    right: str = "approved",
+):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        return request.app.state.project_service.build_scene_review_compare(
+            snapshot,
+            scene_id,
+            left=left,
+            right=right,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Scene not found") from None
+
+
 @router.post("/{project_id}/run")
 def run_project(request: Request, project_id: str):
     try:
@@ -261,6 +305,21 @@ def get_artifacts(request: Request, project_id: str):
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return snapshot.artifacts
+
+
+@router.get("/{project_id}/artifacts/{artifact_id}/download")
+def download_artifact(request: Request, project_id: str, artifact_id: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        artifact = request.app.state.project_service.resolve_artifact(snapshot, artifact_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Artifact not found") from None
+    path = Path(str(artifact.path))
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Artifact file missing")
+    return FileResponse(path, filename=path.name, content_disposition_type="inline")
 
 
 @router.get("/{project_id}/qc-reports")

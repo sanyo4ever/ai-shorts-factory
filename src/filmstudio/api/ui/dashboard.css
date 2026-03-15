@@ -68,7 +68,9 @@ button {
 .quality-grid,
 .deliverables-list,
 .preset-preview,
-.video-preview {
+.video-preview,
+.compare-panel,
+.compare-grid {
   display: grid;
   gap: 16px;
 }
@@ -400,6 +402,28 @@ button {
   object-fit: cover;
 }
 
+.compare-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.compare-card {
+  padding: 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(31, 38, 48, 0.08);
+  background: rgba(255, 255, 255, 0.66);
+  display: grid;
+  gap: 12px;
+}
+
+.compare-video video {
+  width: 100%;
+  display: block;
+  border-radius: 16px;
+  background: #0d1116;
+  aspect-ratio: 9 / 16;
+  object-fit: cover;
+}
+
 .focus-card {
   min-height: 120px;
 }
@@ -486,7 +510,8 @@ button {
   .hero-layout,
   .form-grid,
   .quality-grid,
-  .metric-grid {
+  .metric-grid,
+  .compare-grid {
     grid-template-columns: 1fr;
   }
 

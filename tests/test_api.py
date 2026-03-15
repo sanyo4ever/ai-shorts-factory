@@ -588,6 +588,8 @@ def test_review_endpoints_apply_state_and_stage_rerender() -> None:
         },
     )
     assert approve_response.status_code == 200
+    approved_review_payload = approve_response.json()
+    assert approved_review_payload["summary"]["approved_revision_locked_shot_count"] >= 1
     approved_payload = approve_response.json()
     approved_shot = next(
         shot
@@ -616,6 +618,93 @@ def test_review_endpoints_apply_state_and_stage_rerender() -> None:
     assert project_response.status_code == 200
     project_payload = project_response.json()
     assert project_payload["project"]["metadata"]["active_rerender_scope"]["scene_ids"] == [scene_id]
+
+
+def test_review_compare_and_artifact_download_endpoints() -> None:
+    client = TestClient(create_app())
+    create_response = client.post(
+        "/api/v1/projects",
+        json={
+            "title": "Revision compare",
+            "script": "SCENE 1. HERO hovoryt.\nHERO: Pershyi shot.\n\nSCENE 2. FRIEND hovoryt.\nFRIEND: Druhyi shot.",
+            "language": "uk",
+        },
+    )
+    assert create_response.status_code == 200
+    project_id = create_response.json()["project"]["project_id"]
+
+    run_response = client.post(f"/api/v1/projects/{project_id}/run")
+    assert run_response.status_code == 200
+    first_snapshot = run_response.json()
+    shot_id = first_snapshot["scenes"][0]["shots"][0]["shot_id"]
+    scene_id = first_snapshot["scenes"][0]["scene_id"]
+    current_revision = first_snapshot["scenes"][0]["shots"][0]["review"]["output_revision"]
+
+    approve_response = client.post(
+        f"/api/v1/projects/{project_id}/shots/{shot_id}/review",
+        json={
+            "status": "approved",
+            "note": "lock current revision",
+            "reviewer": "qa",
+            "reason_code": "visual",
+            "target_revision": current_revision,
+        },
+    )
+    assert approve_response.status_code == 200
+
+    invalid_review_response = client.post(
+        f"/api/v1/projects/{project_id}/shots/{shot_id}/review",
+        json={
+            "status": "approved",
+            "note": "wrong revision",
+            "reviewer": "qa",
+            "target_revision": current_revision + 1,
+        },
+    )
+    assert invalid_review_response.status_code == 400
+    assert "target_revision" in invalid_review_response.json()["detail"]
+
+    rerender_response = client.post(
+        f"/api/v1/projects/{project_id}/rerender",
+        json={
+            "start_stage": "render_shots",
+            "shot_ids": [shot_id],
+            "reason": "compare_after_rerender",
+            "run_immediately": True,
+        },
+    )
+    assert rerender_response.status_code == 200
+
+    review_response = client.get(f"/api/v1/projects/{project_id}/review")
+    assert review_response.status_code == 200
+    review_payload = review_response.json()
+    assert review_payload["summary"]["compare_ready_shot_count"] >= 1
+
+    shot_compare_response = client.get(
+        f"/api/v1/projects/{project_id}/shots/{shot_id}/compare",
+        params={"left": "current", "right": "previous"},
+    )
+    assert shot_compare_response.status_code == 200
+    shot_compare = shot_compare_response.json()
+    assert shot_compare["comparison"]["available"] is True
+    assert shot_compare["left_revision"]["revision"] == current_revision + 1
+    assert shot_compare["right_revision"]["revision"] == current_revision
+    assert shot_compare["comparison"]["video_changed"] is True
+
+    scene_compare_response = client.get(
+        f"/api/v1/projects/{project_id}/scenes/{scene_id}/compare",
+        params={"left": "current", "right": "previous"},
+    )
+    assert scene_compare_response.status_code == 200
+    scene_compare = scene_compare_response.json()
+    assert scene_compare["summary"]["shot_count"] >= 1
+    assert scene_compare["summary"]["comparable_shot_count"] >= 1
+
+    artifact_download_url = shot_compare["left_revision"]["primary_video"]["download_url"]
+    artifact_download_response = client.get(artifact_download_url)
+    assert artifact_download_response.status_code == 200
+    assert artifact_download_response.content
+    assert "inline" in artifact_download_response.headers.get("content-disposition", "")
 
 
 def test_create_project_rejects_unknown_planner_backend() -> None:

@@ -303,7 +303,18 @@ def test_rerendered_shot_returns_to_pending_review_with_new_output_revision(tmp_
     assert rerendered_shot.review.status == "pending_review"
     assert rerendered_shot.review.output_revision == previous_revision + 1
     assert rerendered_shot.review.approved_revision is None
+    assert rerendered_shot.review.last_reviewed_revision is None
+    assert rerendered_shot.review.reason_code == "general"
+    assert rerendered_shot.review.canonical_revision_locked_at is None
     assert rerendered_snapshot.project.metadata["last_rerender_scope"]["shot_ids"] == [shot_id]
+    rerendered_artifacts = [
+        artifact
+        for artifact in rerendered_snapshot.artifacts
+        if artifact.metadata.get("shot_id") == shot_id
+        and artifact.kind in {"shot_video", "shot_render_manifest", "shot_lipsync_video", "lipsync_manifest"}
+        and artifact.metadata.get("output_revision") == previous_revision + 1
+    ]
+    assert rerendered_artifacts
 
 
 def test_stage_service_requirements_follow_backend_profile(tmp_path) -> None:
