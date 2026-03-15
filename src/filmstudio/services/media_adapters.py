@@ -755,6 +755,7 @@ class DeterministicMediaAdapters:
     ) -> list[dict[str, str]]:
         product_preset = snapshot.project.metadata.get("product_preset") or {}
         style_preset = str(product_preset.get("style_preset") or "")
+        short_archetype = str(product_preset.get("short_archetype") or "")
         visual_hint = primary_character["visual_hint"]
         name = primary_character["name"]
         lane_hint = self._subtitle_lane_prompt_fragment(shot)
@@ -779,6 +780,16 @@ class DeterministicMediaAdapters:
                 "companion silhouette, background person, over-the-shoulder observer, "
                 "double exposure, second face behind subject, "
             )
+        elif style_preset == "kinetic_graphic" and short_archetype == "dialogue_pivot":
+            preset_positive_hint = (
+                "single anchor presenter only, no duplicate silhouette, "
+                "graphic close-up with one dominant face, no second figure in frame, "
+            )
+            preset_negative_hint = (
+                "duplicate silhouette, second figure, split composition, mirrored face, "
+                "ghosted duplicate, side companion, "
+            )
+            direct_portrait_first_presets.add(style_preset)
         variants = [
             {
                 "label": "studio_headshot",

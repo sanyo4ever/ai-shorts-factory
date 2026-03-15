@@ -363,6 +363,45 @@ DEFAULT_PRODUCT_READINESS_CASES: tuple[FullDryRunCase, ...] = (
             "HERO: Yakshcho tsei rytm trymayetsia vid pershoho kadru do finalnoho renderu, produkt hotovyi do launch-kampanii."
         ),
     ),
+    FullDryRunCase(
+        slug="myth_busting_reframe",
+        title="Product Readiness Myth Busting Reframe",
+        category="myth_busting",
+        style_preset="kinetic_graphic",
+        voice_cast_preset="duo_contrast",
+        music_preset="countdown_drive",
+        short_archetype="dialogue_pivot",
+        expected_character_count_min=2,
+        expected_speaker_count_min=2,
+        script=(
+            "SCENE 1. HOST zukhvalo dyvytsia v kameru i formuljuie poshyrenyi mif.\n"
+            "HOST: Dosi bahato khto vvazhaie, shcho lokalna AI-studiia ce odyn prompt i odne vypadkove video.\n\n"
+            "SCENE 2. HERO vryvaietsia u kadr kriz grafichni splesky, kamera trymaie odyn dominantnyi syluet i chytkyi rush vhoru.\n"
+            "NARRATOR: Same hero insert mae pokazaty, shcho kerovanyi rytm, a ne khaos, robyt resultaty povtorjuvanymy.\n\n"
+            "SCENE 3. Hrafichna resolution-card z check-listom zakryvaie mif, kamera trymaie chytku vertykalnu infografiku bez drugoho talking-head close-up.\n"
+            "NARRATOR: Pravylna vidpovid - tse pipeline z review, rerender i hotovym deliverables package, a ne odnorazovyi eksperiment."
+        ),
+    ),
+    FullDryRunCase(
+        slug="case_study_turnaround",
+        title="Product Readiness Case Study Turnaround",
+        category="case_study",
+        style_preset="warm_documentary",
+        voice_cast_preset="narrator_guest",
+        music_preset="documentary_warmth",
+        short_archetype="narrated_breakdown",
+        expected_character_count_min=2,
+        expected_speaker_count_min=2,
+        script=(
+            "SCENE 1. NARRATOR spokiino zadaye keis, a HERO pokazuye gotovyi vertical short na monitori.\n"
+            "NARRATOR: U tsomu keisi komandi potriben ne demo-shot, a korotkyi product-grade roluk z review-ready artefaktamy.\n"
+            "HERO: Tomu my odrazu planuiemo style preset, holosy, muzyku i subtitle-safe kompozytsiiu.\n\n"
+            "SCENE 2. HERO vryvaietsia uzdovzh assembly-line z ekranamy, robyt rush kriz svitlo, rozrizaye prostir yak atak reveal i trymaie dynamichnyi vertykalnyi framing bez vtraty caption zone.\n"
+            "NARRATOR: Hero insert tut mae daty rush, reveal i impuls ataky, ale vse odno zalyshytysia v kerovanomu contracti.\n\n"
+            "SCENE 3. HERO povertaetsia do kamery i fiksuie rezultat.\n"
+            "HERO: Kintsevyi znak yakosti - ne tilky final.mp4, a povnyi handoff z review_manifest i deliverables package."
+        ),
+    ),
 )
 
 
@@ -897,6 +936,83 @@ def extract_final_render_summary(snapshot: ProjectSnapshot) -> dict[str, Any]:
     }
 
 
+def extract_deliverables_summary(snapshot: ProjectSnapshot) -> dict[str, Any]:
+    latest_by_kind: dict[str, Path] = {}
+    for artifact in snapshot.artifacts:
+        artifact_path = Path(artifact.path)
+        if artifact_path.exists():
+            latest_by_kind[artifact.kind] = artifact_path
+
+    review_manifest_path = latest_by_kind.get("review_manifest")
+    deliverables_manifest_path = latest_by_kind.get("deliverables_manifest")
+    deliverables_package_path = latest_by_kind.get("deliverables_package")
+    poster_path = latest_by_kind.get("poster")
+    preview_sheet_path = latest_by_kind.get("scene_preview_sheet")
+    project_archive_path = latest_by_kind.get("project_archive")
+
+    review_payload = (
+        json.loads(review_manifest_path.read_text(encoding="utf-8"))
+        if review_manifest_path is not None
+        else {}
+    )
+    review_summary = (
+        review_payload.get("summary")
+        if isinstance(review_payload, dict) and isinstance(review_payload.get("summary"), dict)
+        else {}
+    )
+    deliverables_payload = (
+        json.loads(deliverables_manifest_path.read_text(encoding="utf-8"))
+        if deliverables_manifest_path is not None
+        else {}
+    )
+    deliverable_items = (
+        deliverables_payload.get("items")
+        if isinstance(deliverables_payload, dict) and isinstance(deliverables_payload.get("items"), list)
+        else []
+    )
+    total_shot_count = sum(len(scene.shots) for scene in snapshot.scenes)
+    total_scene_count = len(snapshot.scenes)
+    review_status_total = (
+        int(review_summary.get("pending_review_shot_count") or 0)
+        + int(review_summary.get("approved_shot_count") or 0)
+        + int(review_summary.get("needs_rerender_shot_count") or 0)
+    )
+    review_summary_consistent = bool(review_summary) and (
+        int(review_summary.get("shot_count") or -1) == total_shot_count
+        and int(review_summary.get("scene_count") or -1) == total_scene_count
+        and review_status_total == total_shot_count
+    )
+    package_ready = all(
+        (
+            review_manifest_path is not None,
+            deliverables_manifest_path is not None,
+            deliverables_package_path is not None,
+            poster_path is not None,
+            preview_sheet_path is not None,
+            project_archive_path is not None,
+        )
+    )
+    return {
+        "review_manifest_available": review_manifest_path is not None,
+        "review_manifest_path": str(review_manifest_path) if review_manifest_path is not None else None,
+        "deliverables_manifest_available": deliverables_manifest_path is not None,
+        "deliverables_manifest_path": (
+            str(deliverables_manifest_path) if deliverables_manifest_path is not None else None
+        ),
+        "deliverables_package_available": deliverables_package_path is not None,
+        "deliverables_package_path": (
+            str(deliverables_package_path) if deliverables_package_path is not None else None
+        ),
+        "poster_available": poster_path is not None,
+        "scene_preview_sheet_available": preview_sheet_path is not None,
+        "project_archive_available": project_archive_path is not None,
+        "deliverables_manifest_item_count": len(deliverable_items),
+        "review_summary": review_summary,
+        "review_summary_consistent": review_summary_consistent,
+        "package_ready": package_ready,
+    }
+
+
 def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
     jobs_by_id = {job.job_id: job for job in snapshot.jobs}
     lipsync_attempts = [
@@ -938,6 +1054,7 @@ def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
     subtitle_summary = extract_subtitle_lane_summary(snapshot)
     music_summary = extract_music_summary(snapshot)
     render_summary = extract_final_render_summary(snapshot)
+    deliverables_summary = extract_deliverables_summary(snapshot)
     character_names = [
         str(character.name).strip()
         for character in snapshot.project.characters
@@ -1012,6 +1129,7 @@ def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
         "subtitle_visibility_clean": subtitle_visibility_clean,
         "music_summary": music_summary,
         "render_summary": render_summary,
+        "deliverables_summary": deliverables_summary,
     }
 
 
@@ -1102,6 +1220,19 @@ def _run_matches_expected_product_preset(run: dict[str, Any]) -> bool:
     return True
 
 
+def _run_has_ready_deliverables(run: dict[str, Any]) -> bool:
+    deliverables_summary = run.get("deliverables_summary", {})
+    if not isinstance(deliverables_summary, dict):
+        return False
+    return bool(
+        deliverables_summary.get("review_manifest_available")
+        and deliverables_summary.get("deliverables_manifest_available")
+        and deliverables_summary.get("deliverables_package_available")
+        and deliverables_summary.get("review_summary_consistent")
+        and deliverables_summary.get("package_ready")
+    )
+
+
 def _run_meets_product_readiness_requirements(run: dict[str, Any]) -> bool:
     portrait_shots = [shot for shot in run.get("portrait_shots", []) if isinstance(shot, dict)]
     wan_shots = [shot for shot in run.get("wan_shots", []) if isinstance(shot, dict)]
@@ -1122,6 +1253,7 @@ def _run_meets_product_readiness_requirements(run: dict[str, Any]) -> bool:
         and bool(run.get("subtitle_visibility_clean"))
         and (not expected_music_backend or actual_music_backend == expected_music_backend)
         and _run_matches_expected_product_preset(run)
+        and _run_has_ready_deliverables(run)
     )
 
 
@@ -1442,6 +1574,15 @@ def aggregate_subtitle_lane_results(
 def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]]) -> dict[str, Any]:
     runs = list(run_summaries)
     base = aggregate_full_dry_run_results(runs)
+    expected_case_slug_set = {
+        str(run.get("case_slug") or "").strip()
+        for run in runs
+        if str(run.get("case_slug") or "").strip()
+    }
+    expected_case_category_set = {
+        str(run.get("case_category") or "uncategorized")
+        for run in runs
+    }
     expected_strategy_set = {
         str(strategy)
         for run in runs
@@ -1474,6 +1615,9 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
         for run in runs
         if str(run.get("expected_short_archetype") or "").strip()
     }
+    case_slug_counts: Counter[str] = Counter()
+    completed_case_slug_counts: Counter[str] = Counter()
+    product_ready_case_slug_counts: Counter[str] = Counter()
     category_counts: Counter[str] = Counter()
     completed_category_counts: Counter[str] = Counter()
     product_ready_category_counts: Counter[str] = Counter()
@@ -1511,12 +1655,22 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
     subtitle_visibility_clean_runs = 0
     portrait_retry_free_runs = 0
     portrait_warning_free_runs = 0
+    review_manifest_runs = 0
+    deliverables_manifest_runs = 0
+    deliverables_package_runs = 0
+    review_surface_consistent_runs = 0
+    deliverables_ready_runs = 0
     product_ready_runs = 0
 
     for run in runs:
+        case_slug = str(run.get("case_slug") or "").strip()
         category = str(run.get("case_category") or "uncategorized")
+        if case_slug:
+            case_slug_counts.update([case_slug])
         category_counts.update([category])
         if str(run.get("status") or "") == "completed":
+            if case_slug:
+                completed_case_slug_counts.update([case_slug])
             completed_category_counts.update([category])
         if bool(run.get("subtitle_visibility_clean")):
             subtitle_visibility_clean_runs += 1
@@ -1581,6 +1735,19 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
         if _run_matches_expected_product_preset(run):
             product_preset_match_runs += 1
 
+        deliverables_summary = run.get("deliverables_summary", {})
+        if isinstance(deliverables_summary, dict):
+            if bool(deliverables_summary.get("review_manifest_available")):
+                review_manifest_runs += 1
+            if bool(deliverables_summary.get("deliverables_manifest_available")):
+                deliverables_manifest_runs += 1
+            if bool(deliverables_summary.get("deliverables_package_available")):
+                deliverables_package_runs += 1
+            if bool(deliverables_summary.get("review_summary_consistent")):
+                review_surface_consistent_runs += 1
+            if bool(deliverables_summary.get("package_ready")):
+                deliverables_ready_runs += 1
+
         backend_profile = run.get("backend_profile", {})
         if isinstance(backend_profile, dict):
             for key, counter in backend_profile_counters.items():
@@ -1590,10 +1757,15 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
 
         if _run_meets_product_readiness_requirements(run):
             product_ready_runs += 1
+            if case_slug:
+                product_ready_case_slug_counts.update([case_slug])
             product_ready_category_counts.update([category])
 
     return {
         **base,
+        "case_slug_counts": dict(case_slug_counts),
+        "completed_case_slug_counts": dict(completed_case_slug_counts),
+        "product_ready_case_slug_counts": dict(product_ready_case_slug_counts),
         "case_category_counts": dict(category_counts),
         "completed_case_category_counts": dict(completed_category_counts),
         "product_ready_case_category_counts": dict(product_ready_category_counts),
@@ -1628,6 +1800,16 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
         "portrait_retry_free_rate": _rate(portrait_retry_free_runs, len(runs)),
         "portrait_warning_free_runs": portrait_warning_free_runs,
         "portrait_warning_free_rate": _rate(portrait_warning_free_runs, len(runs)),
+        "review_manifest_runs": review_manifest_runs,
+        "review_manifest_rate": _rate(review_manifest_runs, len(runs)),
+        "deliverables_manifest_runs": deliverables_manifest_runs,
+        "deliverables_manifest_rate": _rate(deliverables_manifest_runs, len(runs)),
+        "deliverables_package_runs": deliverables_package_runs,
+        "deliverables_package_rate": _rate(deliverables_package_runs, len(runs)),
+        "review_surface_consistent_runs": review_surface_consistent_runs,
+        "review_surface_consistent_rate": _rate(review_surface_consistent_runs, len(runs)),
+        "deliverables_ready_runs": deliverables_ready_runs,
+        "deliverables_ready_rate": _rate(deliverables_ready_runs, len(runs)),
         "product_ready_runs": product_ready_runs,
         "product_ready_rate": _rate(product_ready_runs, len(runs)),
         "style_preset_counts": dict(style_preset_counts),
@@ -1635,6 +1817,24 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
         "music_preset_counts": dict(music_preset_counts),
         "short_archetype_counts": dict(short_archetype_counts),
         "suite_expected_strategy_set": sorted(expected_strategy_set),
+        "suite_case_slug_set": sorted(expected_case_slug_set),
+        "suite_completed_case_coverage_met": all(
+            int(completed_case_slug_counts.get(slug) or 0) > 0
+            for slug in expected_case_slug_set
+        ),
+        "suite_product_ready_case_coverage_met": all(
+            int(product_ready_case_slug_counts.get(slug) or 0) > 0
+            for slug in expected_case_slug_set
+        ),
+        "suite_case_category_set": sorted(expected_case_category_set),
+        "suite_case_category_coverage_met": all(
+            int(completed_category_counts.get(category) or 0) > 0
+            for category in expected_case_category_set
+        ),
+        "suite_product_ready_category_coverage_met": all(
+            int(product_ready_category_counts.get(category) or 0) > 0
+            for category in expected_case_category_set
+        ),
         "suite_expected_strategy_coverage_met": all(
             int(base["strategy_counts"].get(strategy) or 0) > 0
             for strategy in expected_strategy_set

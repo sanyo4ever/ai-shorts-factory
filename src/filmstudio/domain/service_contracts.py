@@ -20,10 +20,10 @@ PIPELINE_STAGE_ORDER = [
     "build_characters",
     "generate_storyboards",
     "synthesize_dialogue",
-    "generate_music",
     "render_shots",
     "apply_lipsync",
     "generate_subtitles",
+    "generate_music",
     "compose_project",
     "run_qc",
 ]
@@ -33,10 +33,10 @@ STAGE_QUEUE_MAP = {
     "build_characters": GPU_LIGHT.name,
     "generate_storyboards": GPU_LIGHT.name,
     "synthesize_dialogue": CPU_LIGHT.name,
-    "generate_music": GPU_LIGHT.name,
     "render_shots": GPU_HEAVY.name,
     "apply_lipsync": GPU_HEAVY.name,
     "generate_subtitles": CPU_LIGHT.name,
+    "generate_music": GPU_LIGHT.name,
     "compose_project": RENDER_IO.name,
     "run_qc": QC.name,
 }

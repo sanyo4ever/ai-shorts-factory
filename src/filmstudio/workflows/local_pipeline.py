@@ -184,16 +184,34 @@ class LocalPipelineEngine:
                 "gpu_lease": attempt.metadata.get("gpu_lease"),
             },
         )
-        service_context = (
-            self.runtime_service_manager.manage_services(
-                self._required_managed_services(snapshot, stage)
-            )
-            if self.runtime_service_manager is not None
-            else nullcontext([])
-        )
         managed_services: list[object] = []
         try:
-            with service_context as managed_services:
+            persistent_services: list[object] = []
+            transient_services: list[object] = []
+            if self.runtime_service_manager is not None:
+                required_services = self._required_managed_services(snapshot, stage)
+                persistent_service_names = self._persistent_managed_services(
+                    snapshot,
+                    stage,
+                    required_services,
+                )
+                transient_service_names = [
+                    name for name in required_services if name not in persistent_service_names
+                ]
+                if persistent_service_names:
+                    persistent_services = self.runtime_service_manager.ensure_services(
+                        persistent_service_names
+                    )
+                transient_context = (
+                    self.runtime_service_manager.manage_services(transient_service_names)
+                    if transient_service_names
+                    else nullcontext([])
+                )
+            else:
+                transient_context = nullcontext([])
+
+            with transient_context as transient_services:
+                managed_services = [*persistent_services, *list(transient_services)]
                 attempt.metadata["managed_services"] = [
                     record.to_dict() if hasattr(record, "to_dict") else record
                     for record in managed_services
@@ -252,6 +270,7 @@ class LocalPipelineEngine:
                 },
             )
             self.project_service.save_snapshot(snapshot)
+            self._release_elapsed_project_services(snapshot.project.project_id, stage)
             self.logger.info(
                 "Completed stage",
                 extra={
@@ -337,20 +356,102 @@ class LocalPipelineEngine:
             return ["comfyui"]
         return []
 
-    @staticmethod
-    def _project_managed_services(snapshot: ProjectSnapshot) -> list[str]:
-        visual_backend = str(snapshot.project.metadata.get("visual_backend") or "deterministic")
-        tts_backend = str(snapshot.project.metadata.get("tts_backend") or "deterministic")
-        music_backend = str(snapshot.project.metadata.get("music_backend") or "deterministic")
+    @classmethod
+    def _persistent_managed_services(
+        cls,
+        snapshot: ProjectSnapshot,
+        stage: str,
+        required_service_names: list[str],
+    ) -> list[str]:
+        persistent_service_names: list[str] = []
+        for name in required_service_names:
+            if cls._should_keep_service_alive(snapshot, stage, name):
+                persistent_service_names.append(name)
+        return persistent_service_names
 
+    @staticmethod
+    def _should_keep_service_alive(snapshot: ProjectSnapshot, stage: str, service_name: str) -> bool:
+        if service_name != "comfyui":
+            return False
+        visual_backend = str(snapshot.project.metadata.get("visual_backend") or "deterministic")
+        lipsync_backend = str(snapshot.project.metadata.get("lipsync_backend") or "deterministic")
+        return (
+            visual_backend == "comfyui"
+            and lipsync_backend == "musetalk"
+            and stage in {
+                "build_characters",
+                "generate_storyboards",
+                "apply_lipsync",
+            }
+        )
+
+    @classmethod
+    def _project_managed_services(cls, snapshot: ProjectSnapshot) -> list[str]:
         service_names: list[str] = []
-        if visual_backend == "comfyui":
+        visual_backend = str(snapshot.project.metadata.get("visual_backend") or "deterministic")
+        lipsync_backend = str(snapshot.project.metadata.get("lipsync_backend") or "deterministic")
+        released_service_names = set(snapshot.project.metadata.get("released_managed_services") or [])
+        if visual_backend == "comfyui" and lipsync_backend == "musetalk":
             service_names.append("comfyui")
-        if tts_backend == "chatterbox":
-            service_names.append("chatterbox")
-        if music_backend == "ace_step":
-            service_names.append("ace_step")
-        return service_names
+        return [name for name in service_names if name not in released_service_names]
+
+    @staticmethod
+    def _releasable_project_services(snapshot: ProjectSnapshot, stage: str) -> list[str]:
+        visual_backend = str(snapshot.project.metadata.get("visual_backend") or "deterministic")
+        lipsync_backend = str(snapshot.project.metadata.get("lipsync_backend") or "deterministic")
+        if stage == "apply_lipsync" and visual_backend == "comfyui" and lipsync_backend == "musetalk":
+            return ["comfyui"]
+        return []
+
+    def _release_elapsed_project_services(self, project_id: str, stage: str) -> None:
+        if self.runtime_service_manager is None:
+            return
+        try:
+            snapshot = self.project_service.require_snapshot(project_id)
+            released_service_names = set(snapshot.project.metadata.get("released_managed_services") or [])
+            service_names = [
+                name
+                for name in self._releasable_project_services(snapshot, stage)
+                if name not in released_service_names
+            ]
+            if not service_names:
+                return
+            release_records = self.runtime_service_manager.stop_services(service_names)
+            snapshot = self.project_service.require_snapshot(project_id)
+            release_log = list(snapshot.project.metadata.get("managed_service_releases") or [])
+            release_log.append(
+                {
+                    "stage": stage,
+                    "released_at": utc_now(),
+                    "services": [
+                        record.to_dict() if hasattr(record, "to_dict") else record
+                        for record in release_records
+                    ],
+                }
+            )
+            snapshot.project.metadata["managed_service_releases"] = release_log[-10:]
+            snapshot.project.metadata["released_managed_services"] = sorted(
+                {*released_service_names, *service_names}
+            )
+            self.project_service.save_snapshot(snapshot)
+            self.logger.info(
+                "Released elapsed project services",
+                extra={
+                    "service": "local_pipeline",
+                    "project_id": project_id,
+                    "stage": stage,
+                    "managed_services": snapshot.project.metadata["managed_service_releases"][-1]["services"],
+                },
+            )
+        except Exception:
+            self.logger.exception(
+                "Elapsed project service release failed",
+                extra={
+                    "service": "local_pipeline",
+                    "project_id": project_id,
+                    "stage": stage,
+                },
+            )
 
     def _cleanup_project_services(self, project_id: str) -> None:
         if self.runtime_service_manager is None:

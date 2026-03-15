@@ -1,7 +1,6 @@
 import json
 import sys
 import zipfile
-from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -829,6 +828,7 @@ def test_stage_execution_records_managed_services(tmp_path) -> None:
             title="Managed service stage",
             script="HERO: Pryvit!",
             visual_backend="comfyui",
+            lipsync_backend="musetalk",
         )
     )
     manager = _RecordingRuntimeServiceManager()
@@ -851,6 +851,44 @@ def test_stage_execution_records_managed_services(tmp_path) -> None:
     latest_attempt = updated_snapshot.job_attempts[-1]
     assert manager.calls == [["comfyui"]]
     assert latest_attempt.metadata["managed_services"][0]["name"] == "comfyui"
+    assert latest_attempt.metadata["managed_services"][0]["stopped_by_manager"] is False
+
+
+def test_transient_stage_services_stop_after_stage(tmp_path) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="Transient managed service stage",
+            script="HERO: Pryvit!",
+            music_backend="ace_step",
+        )
+    )
+    manager = _RecordingRuntimeServiceManager()
+    engine = LocalPipelineEngine(
+        service,
+        DeterministicMediaAdapters(artifact_store),
+        AttemptLogStore(runtime_root / "logs"),
+        gpu_lease_store=GpuLeaseStore(runtime_root / "manifests" / "gpu_leases"),
+        runtime_service_manager=manager,
+    )
+
+    engine._execute_stage(
+        snapshot,
+        "generate_music",
+        lambda current_snapshot: StageExecutionResult(logs=[{"message": "ok"}]),
+        engine.adapters,
+    )
+
+    updated_snapshot = service.require_snapshot(snapshot.project.project_id)
+    latest_attempt = updated_snapshot.job_attempts[-1]
+    assert manager.calls == [["ace_step"]]
+    assert latest_attempt.metadata["managed_services"][0]["name"] == "ace_step"
     assert latest_attempt.metadata["managed_services"][0]["stopped_by_manager"] is True
 
 
@@ -987,16 +1025,25 @@ class _RecordingRuntimeServiceManager:
         self.calls: list[list[str]] = []
         self.stop_calls: list[list[str]] = []
 
-    @contextmanager
+    def ensure_services(self, service_names: list[str]):
+        self.calls.append(list(service_names))
+        return [_RecordingManagedServiceRecord(name) for name in service_names]
+
     def manage_services(self, service_names: list[str]):
         self.calls.append(list(service_names))
         records = [_RecordingManagedServiceRecord(name) for name in service_names]
-        try:
-            yield records
-        finally:
-            for record in records:
-                record.stopped_by_manager = True
-                record.running_after_stop = False
+
+        class _Context:
+            def __enter__(self_inner):
+                return records
+
+            def __exit__(self_inner, exc_type, exc, tb):
+                for record in records:
+                    record.stopped_by_manager = True
+                    record.running_after_stop = False
+                return False
+
+        return _Context()
 
     def stop_services(self, service_names: list[str]):
         self.stop_calls.append(list(service_names))
@@ -1075,6 +1122,7 @@ def test_project_run_cleans_up_managed_services_after_completion(tmp_path) -> No
             title="Managed cleanup success",
             script="HERO: Pryvit!",
             visual_backend="comfyui",
+            lipsync_backend="musetalk",
             tts_backend="chatterbox",
             music_backend="ace_step",
         )
@@ -1091,15 +1139,13 @@ def test_project_run_cleans_up_managed_services_after_completion(tmp_path) -> No
     final_snapshot = engine.run_project(snapshot.project.project_id)
 
     assert final_snapshot.project.status == "completed"
-    assert manager.stop_calls == [["comfyui", "chatterbox", "ace_step"]]
-    cleanup = final_snapshot.project.metadata["managed_service_cleanup"]
-    assert [record["name"] for record in cleanup["services"]] == [
-        "comfyui",
-        "chatterbox",
-        "ace_step",
-    ]
-    assert all(record["stopped_by_manager"] is True for record in cleanup["services"])
-    assert all(record["running_after_stop"] is False for record in cleanup["services"])
+    assert manager.stop_calls == [["comfyui"]]
+    releases = final_snapshot.project.metadata["managed_service_releases"]
+    assert releases[-1]["stage"] == "apply_lipsync"
+    assert [record["name"] for record in releases[-1]["services"]] == ["comfyui"]
+    assert all(record["stopped_by_manager"] is True for record in releases[-1]["services"])
+    assert all(record["running_after_stop"] is False for record in releases[-1]["services"])
+    assert "managed_service_cleanup" not in final_snapshot.project.metadata
 
 
 def test_project_run_cleans_up_managed_services_after_failure(tmp_path) -> None:
@@ -1115,6 +1161,7 @@ def test_project_run_cleans_up_managed_services_after_failure(tmp_path) -> None:
             title="Managed cleanup failure",
             script="HERO: Pryvit!",
             visual_backend="comfyui",
+            lipsync_backend="musetalk",
         )
     )
     manager = _RecordingRuntimeServiceManager()
@@ -3990,6 +4037,44 @@ def test_musetalk_source_prompt_variants_prioritize_direct_portrait_for_warm_doc
     ]
     assert "single on-camera subject only" in variants[0]["positive_prompt"]
     assert "double exposure" in variants[0]["negative_prompt"]
+
+
+def test_musetalk_source_prompt_variants_prioritize_direct_portrait_for_kinetic_dialogue_pivot(
+    tmp_path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="MuseTalk kinetic dialogue pivot prompt ordering",
+            script="HOST: Pryvit!",
+            language="uk",
+            style_preset="kinetic_graphic",
+            short_archetype="dialogue_pivot",
+            lipsync_backend="musetalk",
+        )
+    )
+    shot = next(shot for scene in snapshot.scenes for shot in scene.shots if shot.dialogue)
+    adapters = DeterministicMediaAdapters(artifact_store)
+
+    variants = adapters._musetalk_source_prompt_variants(
+        snapshot,
+        shot,
+        {"character_id": "", "name": "Host", "visual_hint": "stylized portrait of Host"},
+    )
+
+    assert [variant["label"] for variant in variants] == [
+        "direct_portrait",
+        "studio_headshot",
+        "passport_portrait",
+    ]
+    assert "single anchor presenter only" in variants[0]["positive_prompt"]
+    assert "duplicate silhouette" in variants[0]["negative_prompt"]
 
 
 def test_prepare_musetalk_source_reuses_prior_successful_source_reference(tmp_path, monkeypatch) -> None:

@@ -18,6 +18,7 @@ from filmstudio.domain.models import (
 )
 from filmstudio.worker.runtime_factory import build_local_runtime
 from filmstudio.worker.stability_sweep import (
+    DEFAULT_PRODUCT_READINESS_CASES,
     FullDryRunCase,
     WanBudgetProfile,
     aggregate_full_dry_run_results,
@@ -26,6 +27,7 @@ from filmstudio.worker.stability_sweep import (
     aggregate_wan_hero_shot_results,
     aggregate_subtitle_lane_results,
     aggregate_stability_results,
+    extract_deliverables_summary,
     extract_final_render_summary,
     extract_music_summary,
     extract_portrait_shot_summary,
@@ -38,6 +40,62 @@ from filmstudio.worker.stability_sweep import (
     run_wan_budget_ladder_campaign,
     summarize_project_run,
 )
+
+
+def _ready_deliverables_summary(*, shot_count: int, scene_count: int) -> dict[str, object]:
+    return {
+        "review_manifest_available": True,
+        "review_manifest_path": "runtime/artifacts/proj_test/renders/review_manifest.json",
+        "deliverables_manifest_available": True,
+        "deliverables_manifest_path": "runtime/artifacts/proj_test/renders/deliverables_manifest.json",
+        "deliverables_package_available": True,
+        "deliverables_package_path": "runtime/artifacts/proj_test/renders/deliverables_package.zip",
+        "poster_available": True,
+        "scene_preview_sheet_available": True,
+        "project_archive_available": True,
+        "deliverables_manifest_item_count": 7,
+        "review_summary": {
+            "scene_count": scene_count,
+            "shot_count": shot_count,
+            "scene_status_counts": {
+                "pending_review": scene_count,
+                "approved": 0,
+                "needs_rerender": 0,
+            },
+            "shot_status_counts": {
+                "pending_review": shot_count,
+                "approved": 0,
+                "needs_rerender": 0,
+            },
+            "all_shots_approved": False,
+            "pending_review_scene_count": scene_count,
+            "pending_review_shot_count": shot_count,
+            "needs_rerender_scene_count": 0,
+            "needs_rerender_shot_count": 0,
+            "approved_scene_count": 0,
+            "approved_shot_count": 0,
+        },
+        "review_summary_consistent": True,
+        "package_ready": True,
+    }
+
+
+def test_default_product_readiness_cases_cover_release_gate_v2_categories() -> None:
+    categories = {case.category for case in DEFAULT_PRODUCT_READINESS_CASES}
+    slugs = [case.slug for case in DEFAULT_PRODUCT_READINESS_CASES]
+
+    assert len(DEFAULT_PRODUCT_READINESS_CASES) == 8
+    assert len(slugs) == len(set(slugs))
+    assert categories == {
+        "solo_creator",
+        "duo_dialogue",
+        "three_voice_panel",
+        "narrated_breakdown",
+        "countdown_list",
+        "hero_teaser",
+        "myth_busting",
+        "case_study",
+    }
 
 
 def test_build_local_runtime_wires_configured_lipsync_backend(tmp_path, monkeypatch) -> None:
@@ -378,6 +436,159 @@ def test_extract_music_and_render_summary_read_manifests(tmp_path) -> None:
     }
     assert summary["music_summary"]["backend"] == "ace_step"
     assert summary["render_summary"]["target_matches_actual"] is True
+
+
+def test_extract_deliverables_summary_reads_review_and_package_artifacts(tmp_path) -> None:
+    project_root = tmp_path / "artifacts" / "proj_123"
+    render_dir = project_root / "renders"
+    render_dir.mkdir(parents=True, exist_ok=True)
+    poster_path = render_dir / "poster.png"
+    poster_path.write_bytes(b"png")
+    preview_sheet_path = render_dir / "scene_preview_sheet.json"
+    preview_sheet_path.write_text(json.dumps({"scenes": []}), encoding="utf-8")
+    project_archive_path = render_dir / "project_archive.json"
+    project_archive_path.write_text(json.dumps({"project_id": "proj_123"}), encoding="utf-8")
+    review_manifest_path = render_dir / "review_manifest.json"
+    review_manifest_path.write_text(
+        json.dumps(
+            {
+                "summary": {
+                    "scene_count": 1,
+                    "shot_count": 2,
+                    "scene_status_counts": {
+                        "pending_review": 1,
+                        "approved": 0,
+                        "needs_rerender": 0,
+                    },
+                    "shot_status_counts": {
+                        "pending_review": 2,
+                        "approved": 0,
+                        "needs_rerender": 0,
+                    },
+                    "all_shots_approved": False,
+                    "pending_review_scene_count": 1,
+                    "pending_review_shot_count": 2,
+                    "needs_rerender_scene_count": 0,
+                    "needs_rerender_shot_count": 0,
+                    "approved_scene_count": 0,
+                    "approved_shot_count": 0,
+                }
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    deliverables_manifest_path = render_dir / "deliverables_manifest.json"
+    deliverables_manifest_path.write_text(
+        json.dumps(
+            {
+                "items": [
+                    {"kind": "final_video"},
+                    {"kind": "poster"},
+                    {"kind": "review_manifest"},
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    deliverables_package_path = render_dir / "deliverables_package.zip"
+    deliverables_package_path.write_bytes(b"zip")
+
+    snapshot = ProjectSnapshot(
+        project=ProjectRecord(
+            project_id="proj_123",
+            title="Deliverables summary",
+            script="HERO: Pryvit.",
+            language="uk",
+            style="stylized_short",
+            target_duration_sec=120,
+            estimated_duration_sec=12,
+            status="completed",
+        ),
+        scenes=[
+            ScenePlan(
+                scene_id="scene_01",
+                index=1,
+                title="Intro",
+                summary="Deliverables test",
+                duration_sec=12,
+                shots=[
+                    ShotPlan(
+                        shot_id="shot_01",
+                        scene_id="scene_01",
+                        index=1,
+                        title="Portrait",
+                        strategy="portrait_lipsync",
+                        duration_sec=6,
+                        purpose="intro",
+                        prompt_seed="seed_1",
+                    ),
+                    ShotPlan(
+                        shot_id="shot_02",
+                        scene_id="scene_01",
+                        index=2,
+                        title="Hero insert",
+                        strategy="hero_insert",
+                        duration_sec=6,
+                        purpose="proof",
+                        prompt_seed="seed_2",
+                    ),
+                ],
+            )
+        ],
+        artifacts=[
+            ArtifactRecord(
+                artifact_id=new_id("artifact"),
+                kind="poster",
+                path=str(poster_path),
+                stage="compose_project",
+            ),
+            ArtifactRecord(
+                artifact_id=new_id("artifact"),
+                kind="scene_preview_sheet",
+                path=str(preview_sheet_path),
+                stage="compose_project",
+            ),
+            ArtifactRecord(
+                artifact_id=new_id("artifact"),
+                kind="project_archive",
+                path=str(project_archive_path),
+                stage="compose_project",
+            ),
+            ArtifactRecord(
+                artifact_id=new_id("artifact"),
+                kind="review_manifest",
+                path=str(review_manifest_path),
+                stage="compose_project",
+            ),
+            ArtifactRecord(
+                artifact_id=new_id("artifact"),
+                kind="deliverables_manifest",
+                path=str(deliverables_manifest_path),
+                stage="compose_project",
+            ),
+            ArtifactRecord(
+                artifact_id=new_id("artifact"),
+                kind="deliverables_package",
+                path=str(deliverables_package_path),
+                stage="compose_project",
+            ),
+        ],
+        qc_reports=[],
+    )
+
+    summary = extract_deliverables_summary(snapshot)
+
+    assert summary["review_manifest_available"] is True
+    assert summary["deliverables_manifest_available"] is True
+    assert summary["deliverables_package_available"] is True
+    assert summary["poster_available"] is True
+    assert summary["scene_preview_sheet_available"] is True
+    assert summary["project_archive_available"] is True
+    assert summary["review_summary_consistent"] is True
+    assert summary["package_ready"] is True
+    assert summary["deliverables_manifest_item_count"] == 3
 
 
 def test_load_full_dry_run_cases_reads_expected_fields(tmp_path) -> None:
@@ -975,6 +1186,7 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
     aggregate = aggregate_product_readiness_results(
         [
             {
+                "case_slug": "duo_dialogue_pivot",
                 "status": "completed",
                 "qc_status": "passed",
                 "qc_findings": [],
@@ -1015,6 +1227,7 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
                     "subtitle_burned_in": True,
                     "target_matches_actual": True,
                 },
+                "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=3),
                 "backend_profile": {
                     "visual_backend": "comfyui",
                     "video_backend": "wan",
@@ -1025,6 +1238,7 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
                 },
             },
             {
+                "case_slug": "three_voice_roundtable",
                 "status": "completed",
                 "qc_status": "passed",
                 "qc_findings": [],
@@ -1065,6 +1279,7 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
                     "subtitle_burned_in": True,
                     "target_matches_actual": True,
                 },
+                "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=2),
                 "backend_profile": {
                     "visual_backend": "comfyui",
                     "video_backend": "wan",
@@ -1078,8 +1293,11 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
     )
 
     assert aggregate["total_runs"] == 2
+    assert aggregate["case_slug_counts"] == {"duo_dialogue_pivot": 1, "three_voice_roundtable": 1}
     assert aggregate["case_category_counts"] == {"duo_dialogue": 1, "three_voice_panel": 1}
+    assert aggregate["completed_case_slug_counts"] == {"duo_dialogue_pivot": 1, "three_voice_roundtable": 1}
     assert aggregate["completed_case_category_counts"] == {"duo_dialogue": 1, "three_voice_panel": 1}
+    assert aggregate["product_ready_case_slug_counts"] == {"duo_dialogue_pivot": 1}
     assert aggregate["product_ready_case_category_counts"] == {"duo_dialogue": 1}
     assert aggregate["expected_scene_runs"] == 1
     assert aggregate["expected_character_runs"] == 1
@@ -1095,6 +1313,11 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
     assert aggregate["subtitle_visibility_clean_runs"] == 1
     assert aggregate["portrait_retry_free_runs"] == 1
     assert aggregate["portrait_warning_free_runs"] == 1
+    assert aggregate["review_manifest_runs"] == 2
+    assert aggregate["deliverables_manifest_runs"] == 2
+    assert aggregate["deliverables_package_runs"] == 2
+    assert aggregate["review_surface_consistent_runs"] == 2
+    assert aggregate["deliverables_ready_runs"] == 2
     assert aggregate["product_ready_runs"] == 1
     assert aggregate["style_preset_counts"] == {"broadcast_panel": 2}
     assert aggregate["voice_cast_preset_counts"] == {"duo_contrast": 1, "trio_panel": 1}
@@ -1102,6 +1325,12 @@ def test_aggregate_product_readiness_results_counts_category_and_topology_requir
     assert aggregate["short_archetype_counts"] == {"dialogue_pivot": 1, "expert_panel": 1}
     assert aggregate["backend_profile_counts"]["video_backend"] == {"wan": 2}
     assert aggregate["backend_profile_counts"]["music_backend"] == {"ace_step": 2}
+    assert aggregate["suite_case_slug_set"] == ["duo_dialogue_pivot", "three_voice_roundtable"]
+    assert aggregate["suite_completed_case_coverage_met"] is True
+    assert aggregate["suite_product_ready_case_coverage_met"] is False
+    assert aggregate["suite_case_category_set"] == ["duo_dialogue", "three_voice_panel"]
+    assert aggregate["suite_case_category_coverage_met"] is True
+    assert aggregate["suite_product_ready_category_coverage_met"] is False
 
 
 def test_run_product_readiness_campaign_writes_report(tmp_path, monkeypatch) -> None:
@@ -1220,6 +1449,7 @@ def test_run_product_readiness_campaign_writes_report(tmp_path, monkeypatch) -> 
                 "subtitle_burned_in": True,
                 "target_matches_actual": True,
             },
+            "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=3),
             "backend_profile": {
                 "visual_backend": "comfyui",
                 "video_backend": "wan",
@@ -1260,7 +1490,10 @@ def test_run_product_readiness_campaign_writes_report(tmp_path, monkeypatch) -> 
     assert created_payloads[0].music_backend == settings.music_backend
     assert report["aggregate"]["product_ready_runs"] == 1
     assert report["aggregate"]["product_preset_match_runs"] == 1
+    assert report["aggregate"]["deliverables_ready_runs"] == 1
+    assert report["aggregate"]["review_surface_consistent_runs"] == 1
     assert report["aggregate"]["case_category_counts"] == {"three_voice_panel": 1}
+    assert report["aggregate"]["suite_product_ready_case_coverage_met"] is True
     assert (runtime_root / "campaigns" / "product_readiness_test" / "stability_report.json").exists()
 
 
@@ -1380,6 +1613,7 @@ def test_run_product_readiness_campaign_resume_skips_existing_case(tmp_path, mon
                 "subtitle_burned_in": True,
                 "target_matches_actual": True,
             },
+            "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=3),
             "backend_profile": {
                 "visual_backend": "comfyui",
                 "video_backend": "wan",
@@ -1444,6 +1678,7 @@ def test_run_product_readiness_campaign_resume_skips_existing_case(tmp_path, mon
                             "subtitle_burned_in": True,
                             "target_matches_actual": True,
                         },
+                        "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=3),
                         "backend_profile": {
                             "visual_backend": "comfyui",
                             "video_backend": "wan",
@@ -1487,6 +1722,7 @@ def test_run_product_readiness_campaign_resume_skips_existing_case(tmp_path, mon
     assert created_payloads[0].title == "Resume Case"
     assert report["skipped_case_slugs"] == ["already_done"]
     assert report["aggregate"]["total_runs"] == 2
+    assert report["aggregate"]["suite_completed_case_coverage_met"] is True
 
 
 def test_run_product_readiness_campaign_replace_existing_case(tmp_path, monkeypatch) -> None:
@@ -1605,6 +1841,7 @@ def test_run_product_readiness_campaign_replace_existing_case(tmp_path, monkeypa
                 "subtitle_burned_in": True,
                 "target_matches_actual": True,
             },
+            "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=3),
             "backend_profile": {
                 "visual_backend": "comfyui",
                 "video_backend": "wan",
@@ -1672,6 +1909,7 @@ def test_run_product_readiness_campaign_replace_existing_case(tmp_path, monkeypa
                             "subtitle_burned_in": True,
                             "target_matches_actual": True,
                         },
+                        "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=3),
                         "backend_profile": {
                             "visual_backend": "comfyui",
                             "video_backend": "wan",
@@ -1715,6 +1953,7 @@ def test_run_product_readiness_campaign_replace_existing_case(tmp_path, monkeypa
     assert report["replaced_case_slugs"] == ["narrated_breakdown_blueprint"]
     assert report["skipped_case_slugs"] == []
     assert report["aggregate"]["portrait_retry_free_runs"] == 1
+    assert report["aggregate"]["deliverables_ready_runs"] == 1
     assert report["aggregate"]["qc_finding_counts"] == {}
     assert not existing_run_path.exists()
 

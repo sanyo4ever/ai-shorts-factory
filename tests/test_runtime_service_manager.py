@@ -36,3 +36,34 @@ def test_start_if_needed_uses_no_capture_for_detached_service_start(tmp_path, mo
     assert record.started_by_manager is True
     assert record.running_after_start is True
     assert record.latest_pid == 12345
+
+
+def test_ensure_services_starts_each_service_once(tmp_path, monkeypatch) -> None:
+    manager = RuntimeServiceManager(runtime_root=tmp_path / "runtime", repo_root=tmp_path)
+    calls: list[str] = []
+    original_start_if_needed = manager._start_if_needed
+
+    def fake_start_if_needed(name: str):  # type: ignore[no-untyped-def]
+        calls.append(name)
+        return original_start_if_needed(name)
+
+    running_states = {
+        "comfyui": iter([False, True]),
+        "chatterbox": iter([False, True]),
+    }
+    monkeypatch.setattr(
+        manager,
+        "_is_running",
+        lambda spec: next(running_states[spec.name]),
+    )
+    monkeypatch.setattr(manager, "_latest_pid", lambda spec: 12345)
+    monkeypatch.setattr(manager, "_start_if_needed", fake_start_if_needed)
+    monkeypatch.setattr(
+        "filmstudio.services.runtime_service_manager.run_command",
+        lambda *args, **kwargs: CommandResult(args=[], returncode=0, stdout="", stderr="", duration_sec=0.1),
+    )
+
+    records = manager.ensure_services(["comfyui", "chatterbox", "comfyui"])
+
+    assert calls == ["comfyui", "chatterbox"]
+    assert [record.name for record in records] == ["comfyui", "chatterbox"]

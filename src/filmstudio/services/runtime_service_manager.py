@@ -114,6 +114,15 @@ class RuntimeServiceManager:
                 if record.started_by_manager:
                     self._stop_record(record)
 
+    def ensure_services(self, service_names: list[str]) -> list[ManagedServiceRecord]:
+        if not self.enabled:
+            return []
+
+        records: list[ManagedServiceRecord] = []
+        for name in self._normalize_service_names(service_names):
+            records.append(self._start_if_needed(name))
+        return records
+
     def stop_services(self, service_names: list[str]) -> list[ManagedServiceRecord]:
         if not self.enabled:
             return []
