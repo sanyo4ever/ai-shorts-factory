@@ -47,6 +47,7 @@ class CampaignService:
             if registry_path is not None
             else self.campaign_root / "release_registry.json"
         )
+        self.baseline_manifest_path = self.registry_path.parent / "current_baseline_manifest.json"
 
     def list_campaigns(
         self,
@@ -102,7 +103,10 @@ class CampaignService:
             "highlights": highlights,
             "families": family_items,
             "campaigns": campaigns[:12],
-            "release_management": release_overview,
+            "release_management": {
+                **release_overview,
+                "baseline_manifest": self.get_release_baseline(),
+            },
         }
 
     def build_release_overview(
@@ -144,6 +148,19 @@ class CampaignService:
             "candidates": candidates,
             "history": list(registry.get("history") or [])[:12],
         }
+
+    def get_release_baseline(self, *, generate_if_missing: bool = False) -> dict[str, object] | None:
+        if self.baseline_manifest_path.exists():
+            payload = self._load_report(self.baseline_manifest_path)
+            if payload is not None:
+                return payload
+        if not generate_if_missing:
+            return None
+        payload = self._build_release_baseline_manifest()
+        if payload is None:
+            return None
+        self._save_baseline_manifest(payload)
+        return payload
 
     def get_campaign(
         self,
@@ -228,6 +245,13 @@ class CampaignService:
         improvements = []
         added_cases = []
         removed_cases = []
+        semantic_regressions = []
+        semantic_improvements = []
+        deliverable_regressions = []
+        deliverable_improvements = []
+        operator_attention_regressions = []
+        operator_attention_improvements = []
+        preset_changes = []
         for slug in all_case_slugs:
             left_case = left_cases.get(slug)
             right_case = right_cases.get(slug)
@@ -254,24 +278,101 @@ class CampaignService:
             assert left_case is not None and right_case is not None
             left_status = str(left_case.get("status") or "unknown")
             right_status = str(right_case.get("status") or "unknown")
-            if left_status == right_status:
+            semantic_changes = self._diff_semantic_quality(
+                left_case.get("semantic_quality"),
+                right_case.get("semantic_quality"),
+            )
+            left_deliverables_ready = bool((left_case.get("deliverables") or {}).get("ready"))
+            right_deliverables_ready = bool((right_case.get("deliverables") or {}).get("ready"))
+            deliverables_changed = left_deliverables_ready != right_deliverables_ready
+            left_operator_attention = bool(
+                ((left_case.get("operator_overview") or {}).get("action") or {}).get("needs_operator_attention")
+            )
+            right_operator_attention = bool(
+                ((right_case.get("operator_overview") or {}).get("action") or {}).get("needs_operator_attention")
+            )
+            operator_attention_changed = left_operator_attention != right_operator_attention
+            qc_finding_delta = len(left_case.get("qc_findings") or []) - len(right_case.get("qc_findings") or [])
+            case_backend_changes = self._diff_backend_profiles(
+                left_case.get("backend_profile"),
+                right_case.get("backend_profile"),
+            )
+            case_preset_changes = self._diff_named_profile(
+                left_case.get("product_preset"),
+                right_case.get("product_preset"),
+            )
+            detail_changed = any(
+                [
+                    left_status != right_status,
+                    bool(semantic_changes["added"]),
+                    bool(semantic_changes["resolved"]),
+                    deliverables_changed,
+                    operator_attention_changed,
+                    qc_finding_delta != 0,
+                    bool(case_backend_changes),
+                    bool(case_preset_changes),
+                ]
+            )
+            if not detail_changed:
                 continue
             change = {
                 "slug": slug,
                 "title": left_case.get("title") or right_case.get("title"),
                 "left_status": left_status,
                 "right_status": right_status,
+                "left_project_id": left_case.get("project_id"),
+                "right_project_id": right_case.get("project_id"),
+                "left_project_url": left_case.get("project_url"),
+                "right_project_url": right_case.get("project_url"),
+                "semantic_failures_added": semantic_changes["added"],
+                "semantic_failures_resolved": semantic_changes["resolved"],
+                "deliverables_regressed": not left_deliverables_ready and right_deliverables_ready,
+                "deliverables_improved": left_deliverables_ready and not right_deliverables_ready,
+                "operator_attention_regressed": left_operator_attention and not right_operator_attention,
+                "operator_attention_improved": not left_operator_attention and right_operator_attention,
+                "qc_finding_delta": qc_finding_delta,
+                "backend_changes": case_backend_changes,
+                "preset_changes": case_preset_changes,
             }
             case_changes.append(change)
             if self._case_rank(left_status) > self._case_rank(right_status):
                 improvements.append(change)
             elif self._case_rank(left_status) < self._case_rank(right_status):
                 regressions.append(change)
+            if change["semantic_failures_added"]:
+                semantic_regressions.append(change)
+            if change["semantic_failures_resolved"]:
+                semantic_improvements.append(change)
+            if change["deliverables_regressed"]:
+                deliverable_regressions.append(change)
+            if change["deliverables_improved"]:
+                deliverable_improvements.append(change)
+            if change["operator_attention_regressed"]:
+                operator_attention_regressions.append(change)
+            if change["operator_attention_improved"]:
+                operator_attention_improvements.append(change)
+            if case_preset_changes:
+                preset_changes.append(
+                    {
+                        "slug": slug,
+                        "title": change["title"],
+                        "changes": case_preset_changes,
+                    }
+                )
 
         comparison_status = "unchanged"
-        if regressions:
+        if regressions or semantic_regressions or deliverable_regressions or operator_attention_regressions:
             comparison_status = "regression"
-        elif improvements or added_cases or backend_changes or categories_left != categories_right:
+        elif (
+            improvements
+            or semantic_improvements
+            or deliverable_improvements
+            or operator_attention_improvements
+            or added_cases
+            or backend_changes
+            or preset_changes
+            or categories_left != categories_right
+        ):
             comparison_status = "improvement"
 
         return {
@@ -288,15 +389,30 @@ class CampaignService:
                 "changed": case_changes,
                 "regressed": regressions,
                 "improved": improvements,
+                "semantic_regressed": semantic_regressions,
+                "semantic_improved": semantic_improvements,
+                "deliverables_regressed": deliverable_regressions,
+                "deliverables_improved": deliverable_improvements,
+                "operator_attention_regressed": operator_attention_regressions,
+                "operator_attention_improved": operator_attention_improvements,
                 "added": added_cases,
                 "removed": removed_cases,
             },
+            "preset_changes": preset_changes,
             "summary": {
                 "regression_count": len(regressions),
                 "improvement_count": len(improvements),
+                "semantic_regression_count": len(semantic_regressions),
+                "semantic_improvement_count": len(semantic_improvements),
+                "deliverable_regression_count": len(deliverable_regressions),
+                "deliverable_improvement_count": len(deliverable_improvements),
+                "operator_attention_regression_count": len(operator_attention_regressions),
+                "operator_attention_improvement_count": len(operator_attention_improvements),
+                "case_detail_change_count": len(case_changes),
                 "added_case_count": len(added_cases),
                 "removed_case_count": len(removed_cases),
                 "backend_change_count": len(backend_changes),
+                "preset_change_count": len(preset_changes),
             },
         }
 
@@ -371,6 +487,7 @@ class CampaignService:
         registry["records"] = records
         registry["history"] = history[:50]
         self._save_registry(registry)
+        self._sync_release_baseline_manifest()
         updated = self.get_campaign(campaign_name, compare_to=resolved_compare_to)
         assert updated is not None
         return updated
@@ -753,6 +870,50 @@ class CampaignService:
         return changes
 
     @staticmethod
+    def _diff_named_profile(
+        left: object,
+        right: object,
+    ) -> list[dict[str, object]]:
+        left_profile = dict(left or {})
+        right_profile = dict(right or {})
+        changes: list[dict[str, object]] = []
+        for key in sorted(set(left_profile) | set(right_profile)):
+            left_value = left_profile.get(key)
+            right_value = right_profile.get(key)
+            if left_value == right_value:
+                continue
+            changes.append(
+                {
+                    "field": key,
+                    "left": left_value,
+                    "right": right_value,
+                }
+            )
+        return changes
+
+    @staticmethod
+    def _diff_semantic_quality(
+        left: object,
+        right: object,
+    ) -> dict[str, list[str]]:
+        left_quality = dict(left or {})
+        right_quality = dict(right or {})
+        left_failures = {
+            str(item)
+            for item in (left_quality.get("failed_gates") or [])
+            if str(item).strip()
+        }
+        right_failures = {
+            str(item)
+            for item in (right_quality.get("failed_gates") or [])
+            if str(item).strip()
+        }
+        return {
+            "added": sorted(left_failures - right_failures),
+            "resolved": sorted(right_failures - left_failures),
+        }
+
+    @staticmethod
     def _case_rank(status: str) -> int:
         order = {
             "missing": 0,
@@ -799,12 +960,93 @@ class CampaignService:
                 bullets.append(
                     f"Improvements: {comparison['summary']['improvement_count']}"
                 )
+            if comparison.get("summary", {}).get("semantic_regression_count"):
+                bullets.append(
+                    f"Semantic regressions: {comparison['summary']['semantic_regression_count']}"
+                )
+            if comparison.get("summary", {}).get("deliverable_regression_count"):
+                bullets.append(
+                    f"Deliverable regressions: {comparison['summary']['deliverable_regression_count']}"
+                )
+            if comparison.get("summary", {}).get("operator_attention_regression_count"):
+                bullets.append(
+                    f"Operator regressions: {comparison['summary']['operator_attention_regression_count']}"
+                )
         return {
             "status": status,
             "headline": headline,
             "comparison_status": comparison_status,
             "bullets": bullets,
         }
+
+    def _build_release_baseline_manifest(self) -> dict[str, object] | None:
+        release_overview = self.build_release_overview()
+        current_canonical = release_overview.get("current_canonical")
+        if not current_canonical:
+            return None
+        current_name = str(current_canonical.get("campaign_name") or "")
+        compare_to = (
+            (current_canonical.get("release") or {}).get("compared_to")
+            or ((release_overview.get("previous_canonical") or {}).get("campaign_name"))
+        )
+        detail = self.get_campaign(current_name, compare_to=str(compare_to) if compare_to else None)
+        if detail is None:
+            return None
+        comparison = detail.get("comparison") or {}
+        case_diffs = {
+            str(item.get("slug")): item
+            for item in (comparison.get("case_diff", {}).get("changed") or [])
+        }
+        case_matrix = []
+        for row in detail.get("case_table", []):
+            slug = str(row.get("slug") or "")
+            delta = dict(case_diffs.get(slug) or {})
+            case_matrix.append(
+                {
+                    "slug": slug,
+                    "title": row.get("title"),
+                    "category": row.get("category"),
+                    "status": row.get("status"),
+                    "project_id": row.get("project_id"),
+                    "project_url": row.get("project_url"),
+                    "delta": delta,
+                    "has_regression": slug in {
+                        str(item.get("slug"))
+                        for item in (comparison.get("case_diff", {}).get("regressed") or [])
+                    },
+                    "has_improvement": slug in {
+                        str(item.get("slug"))
+                        for item in (comparison.get("case_diff", {}).get("improved") or [])
+                    },
+                }
+            )
+        return {
+            "generated_at": utc_now(),
+            "manifest_path": str(self.baseline_manifest_path),
+            "current_canonical": detail.get("summary"),
+            "previous_canonical": release_overview.get("previous_canonical"),
+            "comparison": {
+                "status": comparison.get("status"),
+                "summary": comparison.get("summary") or {},
+            },
+            "release_summary": detail.get("release_summary") or {},
+            "case_matrix": case_matrix,
+        }
+
+    def _save_baseline_manifest(self, payload: dict[str, object]) -> None:
+        self.baseline_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        self.baseline_manifest_path.write_text(
+            json.dumps(payload, indent=2),
+            encoding="utf-8",
+        )
+
+    def _sync_release_baseline_manifest(self) -> None:
+        payload = self._build_release_baseline_manifest()
+        if payload is None:
+            if self.baseline_manifest_path.exists():
+                self.baseline_manifest_path.unlink()
+            return
+        self._save_baseline_manifest(payload)
 
     @staticmethod
     def _derive_status(

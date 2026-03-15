@@ -49,7 +49,7 @@ The current codebase restores:
 - a review loop with scene or shot approval, typed review reasons, revision-aware invalidation after new outputs, explicit revision-compare surfaces, and a canonical `review_manifest.json` that is also packaged into deliverables
 - an operator-facing project overview and queue surface that merges review state, deliverables readiness, QC, rerender state, and backend profile into one API contract
 - a built-in operator dashboard at `/studio` that consumes those API surfaces directly for create, run, review, side-by-side revision compare, rerender, preview, download workflows, and campaign visibility
-- release-management surfaces for campaigns: drilldown, baseline promotion, regression comparison, and operator-facing release summaries through both API and dashboard
+- release-management surfaces for campaigns: drilldown, baseline promotion, canonical baseline manifests, richer case-level regression comparison, and operator-facing release summaries through both API and dashboard
 - a shared semantic-quality layer that scores subtitle readability, script coverage, shot variety, portrait identity consistency, audio-mix cleanliness, and preset-archetype payoff
 - semantic quality is now part of the operator surface itself: project overview includes a normalized `semantic_quality` block, and the queue can emit project-level `review_quality` work when the quality gate fails
 - real `FFmpeg` shot composition and final portrait render assembly with a default `720x1280` master profile
@@ -275,6 +275,14 @@ Invoke-RestMethod `
 
 That release-management layer persists registry state under the runtime manifests, tracks `candidate`, `canonical`, and `superseded` campaigns, exposes campaign drilldown plus comparison data through the dashboard, and keeps one explicit current canonical baseline for the operator release flow.
 
+The current canonical baseline is also materialized as a first-class manifest:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/campaigns/release/baseline"
+```
+
+That payload exposes the current canonical campaign, the previous canonical it was compared against, the current comparison summary, and a case matrix with per-case regression or improvement flags. It is the operator-facing handoff surface for release promotion on this workstation.
+
 This path is the best starting point for anyone cloning the repo for the first time because it exercises the real control plane, worker, manifests, and final render flow without requiring every optional backend to be bootstrapped first.
 
 ## Optional Live Backends
@@ -453,6 +461,7 @@ set FILMSTUDIO_GPU_LEASE_WAIT_TIMEOUT_SEC=300.0
 - `GET /api/v1/campaigns`
 - `GET /api/v1/campaigns/overview`
 - `GET /api/v1/campaigns/compare`
+- `GET /api/v1/campaigns/release/baseline`
 - `GET /api/v1/campaigns/{campaign_name}`
 - `POST /api/v1/campaigns/{campaign_name}/release`
 - `GET /api/v1/projects/{project_id}`

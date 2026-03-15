@@ -621,7 +621,11 @@ function renderCampaignComparison(detail) {
   const changedCases = comparison.case_diff?.changed || [];
   const regressions = comparison.case_diff?.regressed || [];
   const improvements = comparison.case_diff?.improved || [];
+  const semanticRegressions = comparison.case_diff?.semantic_regressed || [];
+  const deliverableRegressions = comparison.case_diff?.deliverables_regressed || [];
+  const operatorRegressions = comparison.case_diff?.operator_attention_regressed || [];
   const backendChanges = comparison.backend_changes || [];
+  const presetChanges = comparison.preset_changes || [];
   const metricDeltas = (comparison.metric_deltas || [])
     .filter((item) => Math.abs(Number(item.delta || 0)) > 0)
     .slice(0, 6);
@@ -638,6 +642,12 @@ function renderCampaignComparison(detail) {
         <span>${escapeHtml(String(regressions.length))} regressions</span>
         <span>${escapeHtml(String(improvements.length))} improvements</span>
         <span>${escapeHtml(String(backendChanges.length))} backend changes</span>
+        <span>${escapeHtml(String(semanticRegressions.length))} semantic regressions</span>
+      </div>
+      <div class="chip-row">
+        <span class="chip">deliverable regressions ${escapeHtml(String(deliverableRegressions.length))}</span>
+        <span class="chip">operator regressions ${escapeHtml(String(operatorRegressions.length))}</span>
+        <span class="chip">preset changes ${escapeHtml(String(presetChanges.length))}</span>
       </div>
       ${
         metricDeltas.length
@@ -662,6 +672,14 @@ function renderCampaignComparison(detail) {
                     </div>
                     <div class="meta-row">
                       <span>${escapeHtml(item.slug)}</span>
+                      ${
+                        item.semantic_failures_added?.length
+                          ? `<span>semantic +${escapeHtml(item.semantic_failures_added.join(", "))}</span>`
+                          : ""
+                      }
+                      ${item.deliverables_regressed ? "<span>deliverables regressed</span>" : ""}
+                      ${item.operator_attention_regressed ? "<span>operator attention added</span>" : ""}
+                      ${item.qc_finding_delta ? `<span>QC Δ ${escapeHtml(String(item.qc_finding_delta))}</span>` : ""}
                     </div>
                   </article>
                 `,
@@ -682,12 +700,33 @@ function renderCampaignReleaseDesk() {
   const previousCanonical = releaseManagement.previous_canonical || null;
   const recommended = releaseManagement.recommended_canonical || null;
   const candidates = Array.isArray(releaseManagement.candidates) ? releaseManagement.candidates : [];
+  const baselineManifest = releaseManagement.baseline_manifest || null;
+  const baselineSummary = baselineManifest?.comparison?.summary || {};
   elements.campaignReleaseDesk.innerHTML = `
     <article class="queue-item">
       <div class="meta-row">
         <span>${currentCanonical ? `canonical ${escapeHtml(currentCanonical.campaign_name)}` : "no canonical baseline"}</span>
         <span>${previousCanonical ? `previous ${escapeHtml(previousCanonical.campaign_name)}` : "no previous baseline"}</span>
       </div>
+      ${
+        baselineManifest
+          ? `
+            <div class="chip-row">
+              <span class="chip">baseline ${escapeHtml(baselineManifest.current_canonical?.campaign_name || "canonical")}</span>
+              <span class="chip">comparison ${escapeHtml(baselineManifest.comparison?.status || "none")}</span>
+              <span class="chip">case deltas ${escapeHtml(String(baselineSummary.case_detail_change_count || 0))}</span>
+            </div>
+            <div class="meta-row">
+              <span>semantic regressions ${escapeHtml(String(baselineSummary.semantic_regression_count || 0))}</span>
+              <span>deliverable regressions ${escapeHtml(String(baselineSummary.deliverable_regression_count || 0))}</span>
+              <span>operator regressions ${escapeHtml(String(baselineSummary.operator_attention_regression_count || 0))}</span>
+            </div>
+            <div class="card-actions">
+              <a class="button button-ghost" href="/api/v1/campaigns/release/baseline" target="_blank" rel="noreferrer">Open Baseline Manifest</a>
+            </div>
+          `
+          : '<div class="muted-copy">No canonical baseline manifest has been written yet.</div>'
+      }
       ${
         recommended
           ? `<div class="muted-copy">Recommended canonical: ${escapeHtml(recommended.campaign_name)}</div>`

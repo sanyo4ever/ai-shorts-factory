@@ -108,6 +108,7 @@ def test_dashboard_routes_and_assets() -> None:
     assert "refreshStudio" in js_response.text
     assert "/api/v1/campaigns/overview" in js_response.text
     assert "/api/v1/campaigns/compare" in js_response.text
+    assert "/api/v1/campaigns/release/baseline" in js_response.text
     assert "/release" in js_response.text
 
 
@@ -229,6 +230,14 @@ def test_campaign_endpoints_surface_runtime_reports(tmp_path: Path, monkeypatch)
         assert release_payload["summary"]["release"]["compared_to"] == (
             "product_readiness_v11_release_gate_v4_green"
         )
+
+        baseline_response = client.get("/api/v1/campaigns/release/baseline")
+        assert baseline_response.status_code == 200
+        baseline_payload = baseline_response.json()
+        assert baseline_payload["current_canonical"]["campaign_name"] == (
+            "product_readiness_v12_release_gate_v5_green"
+        )
+        assert baseline_payload["comparison"]["summary"]["improvement_count"] >= 1
 
         not_found_response = client.get("/api/v1/campaigns/missing_campaign")
         assert not_found_response.status_code == 404

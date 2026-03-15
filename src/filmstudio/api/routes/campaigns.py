@@ -33,6 +33,14 @@ def compare_campaigns(
     return payload
 
 
+@router.get("/release/baseline")
+def get_release_baseline(request: Request):
+    payload = request.app.state.campaign_service.get_release_baseline(generate_if_missing=True)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Canonical release baseline not found")
+    return payload
+
+
 @router.post("/{campaign_name}/release")
 def update_campaign_release_status(
     request: Request,

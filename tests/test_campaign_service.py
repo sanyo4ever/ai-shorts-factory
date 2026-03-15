@@ -283,3 +283,81 @@ def test_campaign_service_promotes_canonical_and_tracks_registry_history(tmp_pat
         "product_readiness_v11_release_gate_v4_green"
     )
     assert len(overview["release_management"]["history"]) == 2
+    baseline_manifest = service.get_release_baseline(generate_if_missing=True)
+    assert baseline_manifest is not None
+    assert baseline_manifest["current_canonical"]["campaign_name"] == (
+        "product_readiness_v12_release_gate_v5_green"
+    )
+    assert baseline_manifest["previous_canonical"]["campaign_name"] == (
+        "product_readiness_v11_release_gate_v4_green"
+    )
+    assert Path(baseline_manifest["manifest_path"]).exists()
+
+
+def test_campaign_compare_surfaces_release_detail_regressions(tmp_path: Path) -> None:
+    campaign_root = tmp_path / "campaigns"
+    _write_campaign_report(
+        campaign_root,
+        campaign_name="product_readiness_v11_release_gate_v4_green",
+        generated_at="2026-03-14T11:45:07+00:00",
+        aggregate={
+            "total_runs": 1,
+            "completed_runs": 1,
+            "product_ready_rate": 1.0,
+            "all_requirements_met_rate": 1.0,
+            "semantic_quality_gate_rate": 1.0,
+            "qc_finding_counts": {},
+            "suite_case_category_set": ["solo_creator"],
+        },
+        runs=[
+            _sample_run(
+                slug="solo_creator",
+                title="Solo Creator",
+                category="solo_creator",
+                semantic_gate_passed=True,
+                deliverables_ready=True,
+                operator_attention=False,
+            )
+        ],
+    )
+    _write_campaign_report(
+        campaign_root,
+        campaign_name="product_readiness_v12_release_gate_v5_green",
+        generated_at="2026-03-15T11:45:07+00:00",
+        aggregate={
+            "total_runs": 1,
+            "completed_runs": 1,
+            "product_ready_rate": 1.0,
+            "all_requirements_met_rate": 1.0,
+            "semantic_quality_gate_rate": 1.0,
+            "qc_finding_counts": {},
+            "suite_case_category_set": ["solo_creator"],
+        },
+        runs=[
+            _sample_run(
+                slug="solo_creator",
+                title="Solo Creator",
+                category="solo_creator",
+                status="completed",
+                qc_status="passed",
+                semantic_gate_passed=False,
+                deliverables_ready=False,
+                operator_attention=True,
+            )
+        ],
+    )
+
+    service = CampaignService(campaign_root)
+    comparison = service.compare_campaigns(
+        "product_readiness_v12_release_gate_v5_green",
+        "product_readiness_v11_release_gate_v4_green",
+    )
+
+    assert comparison is not None
+    assert comparison["status"] == "regression"
+    assert comparison["summary"]["semantic_regression_count"] == 1
+    assert comparison["summary"]["deliverable_regression_count"] == 1
+    assert comparison["summary"]["operator_attention_regression_count"] == 1
+    assert comparison["case_diff"]["changed"][0]["semantic_failures_added"] == ["audio_mix_clean"]
+    assert comparison["case_diff"]["changed"][0]["deliverables_regressed"] is True
+    assert comparison["case_diff"]["changed"][0]["operator_attention_regressed"] is True
