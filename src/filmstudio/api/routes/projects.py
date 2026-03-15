@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
 
 from filmstudio.domain.models import ProjectCreateRequest, ReviewUpdateRequest, SelectiveRerenderRequest
 from filmstudio.services.planner_service import PlannerService
@@ -62,6 +63,21 @@ def get_deliverables(request: Request, project_id: str):
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return request.app.state.project_service.build_deliverables_view(snapshot)
+
+
+@router.get("/{project_id}/deliverables/{kind}/download")
+def download_deliverable(request: Request, project_id: str, kind: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        item = request.app.state.project_service.resolve_deliverable_item(snapshot, kind)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Deliverable not found") from None
+    path = Path(str(item.get("path") or ""))
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Deliverable file missing")
+    return FileResponse(path, filename=path.name, content_disposition_type="inline")
 
 
 @router.get("/{project_id}/review")

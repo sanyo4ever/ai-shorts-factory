@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AI Shorts Factory Studio</title>
+    <link rel="stylesheet" href="/studio/assets/dashboard.css">
+    <script type="module" src="/studio/assets/dashboard.js"></script>
+  </head>
+  <body>
+    <div class="studio-shell">
+      <aside class="rail rail-left">
+        <section class="panel brand-panel">
+          <p class="eyebrow">Operator Surface</p>
+          <h1>AI Shorts Factory Studio</h1>
+          <p class="lead">
+            Review vertical-short runs, ship deliverables, and steer rerenders without leaving the control plane.
+          </p>
+          <div class="toolbar">
+            <button id="refresh-button" class="button button-primary" type="button">Refresh Studio</button>
+            <a class="button button-ghost" href="/api/v1/projects/overviews" target="_blank" rel="noreferrer">Raw API</a>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Studio Pulse</h2>
+            <span id="project-count-badge" class="counter-pill">0 projects</span>
+          </div>
+          <div id="global-metrics" class="metric-grid"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Operator Queue</h2>
+            <span id="queue-count-badge" class="counter-pill">0 items</span>
+          </div>
+          <div id="queue-summary" class="mini-summary"></div>
+          <div id="queue-list" class="queue-list"></div>
+        </section>
+      </aside>
+
+      <main class="main-stage">
+        <section class="panel project-stream-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Project Stream</p>
+              <h2>Projects</h2>
+            </div>
+            <span id="selection-hint" class="selection-hint">Select a project to inspect</span>
+          </div>
+          <div id="project-list" class="project-list"></div>
+        </section>
+
+        <section id="project-empty" class="panel empty-panel">
+          <p class="eyebrow">No Selection</p>
+          <h2>Choose a project or create a new one</h2>
+          <p>
+            The dashboard becomes fully active once at least one project exists. Use the create form on the right to start a new vertical short.
+          </p>
+        </section>
+
+        <section id="project-detail" class="detail-stack" hidden>
+          <section class="panel hero-panel">
+            <div id="project-hero"></div>
+          </section>
+
+          <div class="detail-grid">
+            <section class="panel video-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Final Output</p>
+                  <h2>Preview</h2>
+                </div>
+                <div class="toolbar compact">
+                  <button id="run-project-button" class="button button-primary" type="button">Run Project</button>
+                  <button id="refresh-project-button" class="button button-ghost" type="button">Refresh Detail</button>
+                </div>
+              </div>
+              <div id="video-preview" class="video-preview"></div>
+            </section>
+
+            <section class="panel semantic-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Quality Gate</p>
+                  <h2>Semantic Quality</h2>
+                </div>
+              </div>
+              <div id="semantic-quality" class="quality-grid"></div>
+            </section>
+
+            <section class="panel review-action-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Review Loop</p>
+                  <h2>Focused Actions</h2>
+                </div>
+              </div>
+              <div id="review-focus" class="focus-card"></div>
+              <div class="form-grid compact-grid">
+                <label class="field">
+                  <span>Reviewer</span>
+                  <input id="reviewer-input" type="text" value="operator">
+                </label>
+                <label class="field">
+                  <span>Rerender Stage</span>
+                  <select id="rerender-stage-select">
+                    <option value="build_characters">build_characters</option>
+                    <option value="generate_storyboards">generate_storyboards</option>
+                    <option value="synthesize_dialogue">synthesize_dialogue</option>
+                    <option value="generate_music">generate_music</option>
+                    <option value="render_shots" selected>render_shots</option>
+                    <option value="apply_lipsync">apply_lipsync</option>
+                    <option value="generate_subtitles">generate_subtitles</option>
+                    <option value="compose_project">compose_project</option>
+                    <option value="run_qc">run_qc</option>
+                  </select>
+                </label>
+              </div>
+              <label class="field">
+                <span>Operator Note</span>
+                <textarea id="review-note-input" rows="4" placeholder="Record why this shot is approved or why it should rerender."></textarea>
+              </label>
+              <div class="toolbar">
+                <button id="approve-focus-button" class="button button-primary" type="button">Approve Focus</button>
+                <button id="mark-rerender-button" class="button button-warning" type="button">Flag Rerender</button>
+                <button id="rerender-focus-button" class="button button-ghost" type="button">Rerender Now</button>
+              </div>
+            </section>
+
+            <section class="panel deliverables-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Delivery</p>
+                  <h2>Deliverables</h2>
+                </div>
+              </div>
+              <div id="deliverables-list" class="deliverables-list"></div>
+            </section>
+          </div>
+
+          <section class="panel review-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Scene Review</p>
+                <h2>Review Stack</h2>
+              </div>
+              <div id="review-summary" class="mini-summary"></div>
+            </div>
+            <div id="review-scenes" class="scene-stack"></div>
+          </section>
+        </section>
+      </main>
+
+      <aside class="rail rail-right">
+        <section class="panel create-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Intake</p>
+              <h2>Create Project</h2>
+            </div>
+          </div>
+          <form id="create-project-form" class="form-grid">
+            <label class="field">
+              <span>Title</span>
+              <input id="create-title" name="title" type="text" placeholder="Weekend launch breakdown" required>
+            </label>
+            <label class="field">
+              <span>Language</span>
+              <select id="create-language" name="language">
+                <option value="uk" selected>uk</option>
+                <option value="en">en</option>
+              </select>
+            </label>
+            <label class="field field-full">
+              <span>Script</span>
+              <textarea id="create-script" name="script" rows="10" required placeholder="SCENE 1. HERO steps into frame.&#10;HERO: ..."></textarea>
+            </label>
+            <label class="field">
+              <span>Style Preset</span>
+              <select id="create-style-preset" name="style_preset"></select>
+            </label>
+            <label class="field">
+              <span>Voice Cast</span>
+              <select id="create-voice-cast-preset" name="voice_cast_preset"></select>
+            </label>
+            <label class="field">
+              <span>Music Preset</span>
+              <select id="create-music-preset" name="music_preset"></select>
+            </label>
+            <label class="field">
+              <span>Short Archetype</span>
+              <select id="create-short-archetype" name="short_archetype"></select>
+            </label>
+            <label class="checkbox-row field-full">
+              <input id="create-run-immediately" type="checkbox" checked>
+              <span>Run immediately after create</span>
+            </label>
+            <div class="toolbar">
+              <button class="button button-primary" type="submit">Create Project</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel preset-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Preset Contract</p>
+              <h2>Selected Direction</h2>
+            </div>
+          </div>
+          <div id="preset-preview" class="preset-preview"></div>
+        </section>
+
+        <section class="panel status-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Runtime</p>
+              <h2>Status</h2>
+            </div>
+          </div>
+          <div id="status-banner" class="status-banner status-idle">Studio idle.</div>
+        </section>
+      </aside>
+    </div>
+  </body>
+</html>

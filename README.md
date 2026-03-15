@@ -48,6 +48,7 @@ The current codebase restores:
 - a selective rerender loop that can restart a project from a chosen stage for selected scenes or shots instead of rerunning the whole project from intake
 - a review loop with scene or shot approval, `needs_rerender` state, revision-aware invalidation after new outputs, and a canonical `review_manifest.json` that is also packaged into deliverables
 - an operator-facing project overview and queue surface that merges review state, deliverables readiness, QC, rerender state, and backend profile into one API contract
+- a built-in operator dashboard at `/studio` that consumes those API surfaces directly for create, run, review, rerender, preview, and download workflows
 - a shared semantic-quality layer that scores subtitle readability, script coverage, shot variety, portrait identity consistency, audio-mix cleanliness, and preset-archetype payoff
 - semantic quality is now part of the operator surface itself: project overview includes a normalized `semantic_quality` block, and the queue can emit project-level `review_quality` work when the quality gate fails
 - real `FFmpeg` shot composition and final portrait render assembly with a default `720x1280` master profile
@@ -134,6 +135,8 @@ For a first local run, start with the default baseline instead of enabling every
 .venv\Scripts\python.exe -m uvicorn filmstudio.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
+Once the API is up, open [http://127.0.0.1:8000/studio](http://127.0.0.1:8000/studio). The built-in operator dashboard lets you create projects, watch queue state, preview final videos, review shots, trigger rerenders, and download packaged outputs without standing up a separate frontend.
+
 2. In another terminal, create a project:
 
 ```powershell
@@ -178,6 +181,8 @@ Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/projects/<proje
 ```
 
 That endpoint returns the latest resolved paths for `final_video`, `poster`, subtitle files, the final render manifest, the scene preview sheet, the project archive, the current `review_manifest`, and the packaged deliverables zip.
+
+Each deliverable item now also carries a direct download route of the form `GET /api/v1/projects/{project_id}/deliverables/{kind}/download`, and the dashboard uses the same route for inline video preview plus package downloads.
 
 If a review only needs one scene or one shot to be regenerated, the control plane now supports selective rerender from a chosen stage:
 
@@ -227,6 +232,8 @@ Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/projects/operat
 ```
 
 `overview` merges product preset, backend profile, scene and shot counts, review summary, deliverables readiness, semantic-quality state, latest QC, rerender scope, and temporal state into one stable read-model. `operator-queue` gives the actionable cross-project view: pending-review shots, `needs_rerender` targets, project-level QC failures, and `review_quality` work when a completed project still misses the semantic gate.
+
+The browser operator surface at `/studio` is intentionally thin and static: it consumes the public API directly, so local one-box bring-up stays simple and contributors can extend the operator experience without introducing a separate frontend stack.
 
 This path is the best starting point for anyone cloning the repo for the first time because it exercises the real control plane, worker, manifests, and final render flow without requiring every optional backend to be bootstrapped first.
 
@@ -391,6 +398,8 @@ set FILMSTUDIO_GPU_LEASE_WAIT_TIMEOUT_SEC=300.0
 
 ## Current API Surface
 
+- `GET /`
+- `GET /studio`
 - `GET /health/live`
 - `GET /health/ready`
 - `GET /health/services`
@@ -403,6 +412,8 @@ set FILMSTUDIO_GPU_LEASE_WAIT_TIMEOUT_SEC=300.0
 - `GET /api/v1/projects/preset-catalog`
 - `GET /api/v1/projects/{project_id}`
 - `GET /api/v1/projects/{project_id}/overview`
+- `GET /api/v1/projects/{project_id}/deliverables`
+- `GET /api/v1/projects/{project_id}/deliverables/{kind}/download`
 - `GET /api/v1/projects/{project_id}/planning`
 - `GET /api/v1/projects/{project_id}/temporal`
 - `GET /api/v1/projects/{project_id}/scenes`

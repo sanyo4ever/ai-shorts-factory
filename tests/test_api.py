@@ -52,6 +52,25 @@ def test_health_endpoints() -> None:
     assert "gpu_leases" in resources.json()
 
 
+def test_dashboard_routes_and_assets() -> None:
+    client = TestClient(create_app())
+    root_response = client.get("/", follow_redirects=False)
+    assert root_response.status_code == 307
+    assert root_response.headers["location"] == "/studio"
+
+    dashboard_response = client.get("/studio")
+    assert dashboard_response.status_code == 200
+    assert "AI Shorts Factory Studio" in dashboard_response.text
+
+    css_response = client.get("/studio/assets/dashboard.css")
+    assert css_response.status_code == 200
+    assert "--canvas:" in css_response.text
+
+    js_response = client.get("/studio/assets/dashboard.js")
+    assert js_response.status_code == 200
+    assert "refreshStudio" in js_response.text
+
+
 def test_create_and_run_project() -> None:
     client = TestClient(create_app())
     preset_catalog_response = client.get("/api/v1/projects/preset-catalog")
@@ -159,9 +178,16 @@ def test_deliverables_and_selective_rerender_endpoints() -> None:
     deliverables_payload = deliverables_response.json()
     assert deliverables_payload["ready"] is True
     assert deliverables_payload["named"]["final_video"]["exists"] is True
+    assert deliverables_payload["named"]["final_video"]["download_url"].endswith(
+        f"/api/v1/projects/{project_id}/deliverables/final_video/download"
+    )
     assert deliverables_payload["named"]["review_manifest"]["exists"] is True
     assert deliverables_payload["named"]["deliverables_manifest"]["exists"] is True
     assert deliverables_payload["named"]["deliverables_package"]["exists"] is True
+    download_response = client.get(deliverables_payload["named"]["final_video"]["download_url"])
+    assert download_response.status_code == 200
+    assert download_response.content
+    assert "inline" in download_response.headers.get("content-disposition", "")
 
     rerender_response = client.post(
         f"/api/v1/projects/{project_id}/rerender",

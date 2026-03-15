@@ -303,6 +303,10 @@ class ProjectService:
         )
 
     @staticmethod
+    def _deliverable_download_url(project_id: str, kind: str) -> str:
+        return f"/api/v1/projects/{project_id}/deliverables/{kind}/download"
+
+    @staticmethod
     def _latest_artifacts_by_kind(snapshot: ProjectSnapshot) -> dict[str, ArtifactRecord]:
         latest_by_kind: dict[str, ArtifactRecord] = {}
         for artifact in snapshot.artifacts:
@@ -323,6 +327,7 @@ class ProjectService:
                 "exists": Path(artifact.path).exists(),
                 "stage": artifact.stage,
                 "metadata": artifact.metadata,
+                "download_url": self._deliverable_download_url(snapshot.project.project_id, kind),
             }
             items.append(item)
             named[kind] = item
@@ -336,6 +341,17 @@ class ProjectService:
             "named": named,
             "review_summary": build_review_summary(snapshot),
         }
+
+    def resolve_deliverable_item(
+        self,
+        snapshot: ProjectSnapshot,
+        kind: str,
+    ) -> dict[str, object]:
+        deliverables_view = self.build_deliverables_view(snapshot)
+        item = dict((deliverables_view.get("named") or {}).get(kind) or {})
+        if not item:
+            raise KeyError(kind)
+        return item
 
     def build_review_view(self, snapshot: ProjectSnapshot) -> dict[str, object]:
         return build_review_manifest(snapshot)
@@ -445,7 +461,9 @@ class ProjectService:
                 "ready": bool(deliverables_view["ready"]),
                 "missing_required": missing_required_deliverables,
                 "final_video_path": deliverables_named.get("final_video", {}).get("path"),
+                "final_video_download_url": deliverables_named.get("final_video", {}).get("download_url"),
                 "package_path": deliverables_named.get("deliverables_package", {}).get("path"),
+                "package_download_url": deliverables_named.get("deliverables_package", {}).get("download_url"),
             },
             "semantic_quality": semantic_quality,
             "qc": {
