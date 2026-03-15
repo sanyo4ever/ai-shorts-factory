@@ -180,6 +180,113 @@ def test_deliverables_and_selective_rerender_endpoints() -> None:
     assert rerendered_snapshot["project"]["metadata"]["last_rerender_scope"]["start_stage"] == "render_shots"
 
 
+def test_project_overview_endpoints_surface_operator_summary() -> None:
+    client = TestClient(create_app())
+    create_response = client.post(
+        "/api/v1/projects",
+        json={
+            "title": "Overview surface",
+            "script": (
+                "SCENE 1. HERO hovoryt do kamery.\n"
+                "HERO: Pershyi beat.\n\n"
+                "SCENE 2. NARRATOR vryvaietsia v hero insert.\n"
+                "NARRATOR: Dynamichnyi reveal.\n\n"
+                "SCENE 3. FRIEND hovoryt do kamery.\n"
+                "FRIEND: Finalnyi beat."
+            ),
+            "language": "uk",
+            "style_preset": "warm_documentary",
+            "voice_cast_preset": "narrator_guest",
+            "music_preset": "documentary_warmth",
+            "short_archetype": "narrated_breakdown",
+        },
+    )
+    assert create_response.status_code == 200
+    project_id = create_response.json()["project"]["project_id"]
+    run_response = client.post(f"/api/v1/projects/{project_id}/run")
+    assert run_response.status_code == 200
+
+    overview_response = client.get(f"/api/v1/projects/{project_id}/overview")
+    assert overview_response.status_code == 200
+    overview = overview_response.json()
+    assert overview["project_id"] == project_id
+    assert overview["summary"]["scene_count"] == 3
+    assert overview["summary"]["shot_count"] >= 3
+    assert overview["summary"]["character_count"] >= 2
+    assert overview["deliverables"]["ready"] is True
+    assert overview["qc"]["status"] == "passed"
+    assert overview["backend_profile"]["tts_backend"] == "piper"
+    assert overview["backend_profile"]["visual_backend"] == "deterministic"
+    assert overview["review"]["summary"]["pending_review_shot_count"] >= 1
+    assert overview["action"]["next_action"] == "review"
+    assert overview["temporal"]["enabled"] is False
+
+    overviews_response = client.get("/api/v1/projects/overviews")
+    assert overviews_response.status_code == 200
+    overviews = overviews_response.json()
+    assert any(item["project_id"] == project_id for item in overviews)
+
+
+def test_operator_queue_endpoint_surfaces_review_and_rerender_work() -> None:
+    client = TestClient(create_app())
+    create_response = client.post(
+        "/api/v1/projects",
+        json={
+            "title": "Operator queue",
+            "script": (
+                "SCENE 1. HERO hovoryt do kamery.\n"
+                "HERO: Pershyi shot.\n\n"
+                "SCENE 2. FRIEND hovoryt do kamery.\n"
+                "FRIEND: Druhyi shot."
+            ),
+            "language": "uk",
+        },
+    )
+    assert create_response.status_code == 200
+    project_id = create_response.json()["project"]["project_id"]
+    run_response = client.post(f"/api/v1/projects/{project_id}/run")
+    assert run_response.status_code == 200
+    snapshot = run_response.json()
+    target_shot_id = snapshot["scenes"][0]["shots"][0]["shot_id"]
+
+    queue_response = client.get("/api/v1/projects/operator-queue")
+    assert queue_response.status_code == 200
+    queue_payload = queue_response.json()
+    assert queue_payload["summary"]["project_count"] >= 1
+    assert queue_payload["summary"]["pending_review_shot_count"] >= 1
+    assert any(
+        item["project_id"] == project_id and item["action"] == "review" and item["target_kind"] == "shot"
+        for item in queue_payload["items"]
+    )
+
+    mark_rerender_response = client.post(
+        f"/api/v1/projects/{project_id}/shots/{target_shot_id}/review",
+        json={
+            "status": "needs_rerender",
+            "note": "needs another pass",
+            "reason": "operator_queue_check",
+            "request_rerender": False,
+        },
+    )
+    assert mark_rerender_response.status_code == 200
+
+    updated_queue_response = client.get("/api/v1/projects/operator-queue")
+    assert updated_queue_response.status_code == 200
+    updated_queue = updated_queue_response.json()
+    assert updated_queue["summary"]["needs_rerender_shot_count"] >= 1
+    assert any(
+        item["project_id"] == project_id
+        and item["target_id"] == target_shot_id
+        and item["action"] == "rerender"
+        and item["review_status"] == "needs_rerender"
+        for item in updated_queue["items"]
+    )
+
+    project_overview_response = client.get(f"/api/v1/projects/{project_id}/overview")
+    assert project_overview_response.status_code == 200
+    assert project_overview_response.json()["action"]["next_action"] == "rerender"
+
+
 def test_review_endpoints_apply_state_and_stage_rerender() -> None:
     client = TestClient(create_app())
     create_response = client.post(

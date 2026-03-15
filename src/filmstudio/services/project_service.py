@@ -254,6 +254,17 @@ class ProjectService:
     def list_projects(self) -> list[ProjectRecord]:
         return [snapshot.project for snapshot in self.snapshot_store.list_snapshots()]
 
+    def list_project_overviews(self) -> list[dict[str, object]]:
+        overviews = [
+            self.build_project_overview(snapshot)
+            for snapshot in self.snapshot_store.list_snapshots()
+        ]
+        overviews.sort(
+            key=lambda overview: str(overview.get("updated_at") or ""),
+            reverse=True,
+        )
+        return overviews
+
     def require_snapshot(self, project_id: str) -> ProjectSnapshot:
         snapshot = self.get_snapshot(project_id)
         if snapshot is None:
@@ -279,6 +290,16 @@ class ProjectService:
             "deliverables_manifest",
             "deliverables_package",
         ]
+
+    @staticmethod
+    def _required_deliverable_kinds() -> tuple[str, ...]:
+        return (
+            "final_video",
+            "poster",
+            "review_manifest",
+            "deliverables_manifest",
+            "deliverables_package",
+        )
 
     @staticmethod
     def _latest_artifacts_by_kind(snapshot: ProjectSnapshot) -> dict[str, ArtifactRecord]:
@@ -308,14 +329,7 @@ class ProjectService:
             "project_id": snapshot.project.project_id,
             "status": snapshot.project.status,
             "ready": all(
-                bool(named.get(kind, {}).get("exists"))
-                for kind in (
-                    "final_video",
-                    "poster",
-                    "review_manifest",
-                    "deliverables_manifest",
-                    "deliverables_package",
-                )
+                bool(named.get(kind, {}).get("exists")) for kind in self._required_deliverable_kinds()
             ),
             "items": items,
             "named": named,
@@ -324,6 +338,251 @@ class ProjectService:
 
     def build_review_view(self, snapshot: ProjectSnapshot) -> dict[str, object]:
         return build_review_manifest(snapshot)
+
+    @staticmethod
+    def _latest_qc_report(snapshot: ProjectSnapshot) -> QCReportRecord | None:
+        if not snapshot.qc_reports:
+            return None
+        return snapshot.qc_reports[-1]
+
+    @staticmethod
+    def _latest_recovery_plan(snapshot: ProjectSnapshot) -> RecoveryPlanRecord | None:
+        if not snapshot.recovery_plans:
+            return None
+        return snapshot.recovery_plans[-1]
+
+    @staticmethod
+    def _backend_profile(snapshot: ProjectSnapshot) -> dict[str, object]:
+        metadata = snapshot.project.metadata
+        return {
+            "planner_backend": metadata.get("planner_backend"),
+            "planner_model": metadata.get("planner_model"),
+            "orchestrator_backend": metadata.get("orchestrator_backend", "local"),
+            "visual_backend": metadata.get("visual_backend", "deterministic"),
+            "video_backend": metadata.get("video_backend", "deterministic"),
+            "tts_backend": metadata.get("tts_backend", "deterministic"),
+            "music_backend": metadata.get("music_backend", "deterministic"),
+            "lipsync_backend": metadata.get("lipsync_backend", "deterministic"),
+            "subtitle_backend": metadata.get("subtitle_backend", "deterministic"),
+        }
+
+    @staticmethod
+    def _speaker_count(snapshot: ProjectSnapshot) -> int:
+        speaker_names = {
+            line.character_name.strip()
+            for scene in snapshot.scenes
+            for shot in scene.shots
+            for line in shot.dialogue
+            if line.character_name.strip()
+        }
+        return len(speaker_names)
+
+    @staticmethod
+    def _next_operator_action(
+        *,
+        project_status: str,
+        qc_status: str,
+        review_summary: dict[str, object],
+        deliverables_ready: bool,
+    ) -> str:
+        if project_status in {"failed", "blocked"} or qc_status == "failed":
+            return "resolve_qc"
+        if int(review_summary.get("needs_rerender_shot_count") or 0) > 0:
+            return "rerender"
+        if int(review_summary.get("pending_review_shot_count") or 0) > 0:
+            return "review"
+        if project_status == "completed" and deliverables_ready:
+            return "deliver"
+        if project_status in {"queued", "running", "recovery_queued"}:
+            return "wait"
+        return "inspect"
+
+    def build_project_overview(self, snapshot: ProjectSnapshot) -> dict[str, object]:
+        review_summary = build_review_summary(snapshot)
+        deliverables_view = self.build_deliverables_view(snapshot)
+        latest_qc = self._latest_qc_report(snapshot)
+        latest_recovery = self._latest_recovery_plan(snapshot)
+        temporal_view = self.build_temporal_progress_view(snapshot)
+        deliverables_named = dict(deliverables_view.get("named") or {})
+        missing_required_deliverables = [
+            kind
+            for kind in self._required_deliverable_kinds()
+            if not bool(deliverables_named.get(kind, {}).get("exists"))
+        ]
+        next_action = self._next_operator_action(
+            project_status=snapshot.project.status,
+            qc_status=latest_qc.status if latest_qc is not None else "not_run",
+            review_summary=review_summary,
+            deliverables_ready=bool(deliverables_view["ready"]),
+        )
+        return {
+            "project_id": snapshot.project.project_id,
+            "title": snapshot.project.title,
+            "status": snapshot.project.status,
+            "created_at": snapshot.project.created_at,
+            "updated_at": snapshot.project.updated_at,
+            "language": snapshot.project.language,
+            "estimated_duration_sec": snapshot.project.estimated_duration_sec,
+            "product_preset": dict(snapshot.project.metadata.get("product_preset") or {}),
+            "backend_profile": self._backend_profile(snapshot),
+            "summary": {
+                "scene_count": len(snapshot.scenes),
+                "shot_count": sum(len(scene.shots) for scene in snapshot.scenes),
+                "character_count": len(snapshot.project.characters),
+                "speaker_count": self._speaker_count(snapshot),
+            },
+            "review": {
+                "summary": review_summary,
+                "recent_review_count": min(len(snapshot.review_records), 20),
+            },
+            "deliverables": {
+                "ready": bool(deliverables_view["ready"]),
+                "missing_required": missing_required_deliverables,
+                "final_video_path": deliverables_named.get("final_video", {}).get("path"),
+                "package_path": deliverables_named.get("deliverables_package", {}).get("path"),
+            },
+            "qc": {
+                "status": latest_qc.status if latest_qc is not None else "not_run",
+                "finding_count": len(latest_qc.findings) if latest_qc is not None else 0,
+                "finding_severity_counts": {
+                    severity: len(
+                        [
+                            finding
+                            for finding in latest_qc.findings
+                            if finding.severity == severity
+                        ]
+                    )
+                    for severity in ("info", "warning", "error")
+                }
+                if latest_qc is not None
+                else {"info": 0, "warning": 0, "error": 0},
+                "report_id": latest_qc.report_id if latest_qc is not None else None,
+            },
+            "recovery": {
+                "status": latest_recovery.status if latest_recovery is not None else "not_needed",
+                "targets": list(latest_recovery.targets) if latest_recovery is not None else [],
+                "recovery_id": latest_recovery.recovery_id if latest_recovery is not None else None,
+            },
+            "temporal": {
+                "enabled": bool(temporal_view["enabled"]),
+                "workflow": temporal_view["workflow"],
+                "summary": temporal_view["summary"],
+                "last_event": temporal_view["last_event"],
+            },
+            "rerender": {
+                "active_scope": snapshot.project.metadata.get("active_rerender_scope"),
+                "last_scope": snapshot.project.metadata.get("last_rerender_scope"),
+                "history_count": len(snapshot.project.metadata.get("rerender_history") or []),
+            },
+            "action": {
+                "next_action": next_action,
+                "needs_operator_attention": next_action in {"resolve_qc", "rerender", "review"},
+            },
+        }
+
+    def build_operator_queue(self) -> dict[str, object]:
+        snapshots = sorted(
+            self.snapshot_store.list_snapshots(),
+            key=lambda snapshot: snapshot.project.updated_at,
+            reverse=True,
+        )
+        project_overviews = [self.build_project_overview(snapshot) for snapshot in snapshots]
+        items: list[dict[str, object]] = []
+
+        for snapshot, overview in zip(snapshots, project_overviews):
+            latest_qc = self._latest_qc_report(snapshot)
+            if snapshot.project.status in {"failed", "blocked"} or (
+                latest_qc is not None and latest_qc.status == "failed"
+            ):
+                items.append(
+                    {
+                        "priority": 0,
+                        "action": "resolve_qc",
+                        "target_kind": "project",
+                        "target_id": snapshot.project.project_id,
+                        "project_id": snapshot.project.project_id,
+                        "project_title": snapshot.project.title,
+                        "project_status": snapshot.project.status,
+                        "review_status": None,
+                        "reason": "project_failed_or_qc_failed",
+                        "updated_at": snapshot.project.updated_at,
+                    }
+                )
+
+            for scene in snapshot.scenes:
+                if scene.review.status == "needs_rerender":
+                    items.append(
+                        {
+                            "priority": 1,
+                            "action": "rerender",
+                            "target_kind": "scene",
+                            "target_id": scene.scene_id,
+                            "project_id": snapshot.project.project_id,
+                            "project_title": snapshot.project.title,
+                            "scene_id": scene.scene_id,
+                            "scene_title": scene.title,
+                            "project_status": snapshot.project.status,
+                            "review_status": scene.review.status,
+                            "reason": scene.review.reason or "needs_rerender",
+                            "updated_at": scene.review.updated_at,
+                        }
+                    )
+                for shot in scene.shots:
+                    if shot.review.status not in {"pending_review", "needs_rerender"}:
+                        continue
+                    items.append(
+                        {
+                            "priority": 1 if shot.review.status == "needs_rerender" else 2,
+                            "action": "rerender"
+                            if shot.review.status == "needs_rerender"
+                            else "review",
+                            "target_kind": "shot",
+                            "target_id": shot.shot_id,
+                            "project_id": snapshot.project.project_id,
+                            "project_title": snapshot.project.title,
+                            "scene_id": scene.scene_id,
+                            "scene_title": scene.title,
+                            "shot_id": shot.shot_id,
+                            "shot_title": shot.title,
+                            "project_status": snapshot.project.status,
+                            "review_status": shot.review.status,
+                            "reason": shot.review.reason or shot.review.status,
+                            "updated_at": shot.review.updated_at,
+                        }
+                    )
+
+        items.sort(key=lambda item: (int(item["priority"]), str(item["updated_at"])), reverse=False)
+        return {
+            "generated_at": utc_now(),
+            "summary": {
+                "project_count": len(project_overviews),
+                "projects_needing_attention": len(
+                    [overview for overview in project_overviews if overview["action"]["needs_operator_attention"]]
+                ),
+                "pending_review_shot_count": sum(
+                    int(overview["review"]["summary"]["pending_review_shot_count"])
+                    for overview in project_overviews
+                ),
+                "needs_rerender_shot_count": sum(
+                    int(overview["review"]["summary"]["needs_rerender_shot_count"])
+                    for overview in project_overviews
+                ),
+                "failed_qc_project_count": len(
+                    [
+                        overview
+                        for overview in project_overviews
+                        if overview["qc"]["status"] == "failed"
+                        or overview["status"] in {"failed", "blocked"}
+                    ]
+                ),
+                "deliverables_ready_project_count": len(
+                    [overview for overview in project_overviews if overview["deliverables"]["ready"]]
+                ),
+                "queue_item_count": len(items),
+            },
+            "projects": project_overviews,
+            "items": items,
+        }
 
     def apply_shot_review(
         self,

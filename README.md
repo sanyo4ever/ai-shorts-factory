@@ -47,6 +47,7 @@ The current codebase restores:
 - a deliverables packaging layer that now emits `deliverables_manifest.json` and `deliverables_package.zip` next to the final render outputs
 - a selective rerender loop that can restart a project from a chosen stage for selected scenes or shots instead of rerunning the whole project from intake
 - a review loop with scene or shot approval, `needs_rerender` state, revision-aware invalidation after new outputs, and a canonical `review_manifest.json` that is also packaged into deliverables
+- an operator-facing project overview and queue surface that merges review state, deliverables readiness, QC, rerender state, and backend profile into one API contract
 - real `FFmpeg` shot composition and final portrait render assembly with a default `720x1280` master profile
 - `ffprobe`-backed QC on the produced media artifacts
 - filesystem-backed GPU lease tracking for single-GPU scheduling visibility
@@ -213,6 +214,15 @@ Invoke-RestMethod `
 ```
 
 `needs_rerender` review actions can also stage a downstream rerender automatically through `request_rerender=true`, and the review loop keeps approved shots out of scene-level rerenders unless they are explicitly targeted again.
+
+For operator-facing status, the control plane now also exposes a normalized project overview and a cross-project queue:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/projects/<project_id>/overview"
+Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/projects/operator-queue"
+```
+
+`overview` merges product preset, backend profile, scene and shot counts, review summary, deliverables readiness, latest QC, rerender scope, and temporal state into one stable read-model. `operator-queue` gives the actionable cross-project view: pending-review shots, `needs_rerender` targets, and project-level QC failures.
 
 This path is the best starting point for anyone cloning the repo for the first time because it exercises the real control plane, worker, manifests, and final render flow without requiring every optional backend to be bootstrapped first.
 
@@ -383,8 +393,11 @@ set FILMSTUDIO_GPU_LEASE_WAIT_TIMEOUT_SEC=300.0
 - `GET /health/resources`
 - `POST /api/v1/projects`
 - `GET /api/v1/projects`
+- `GET /api/v1/projects/overviews`
+- `GET /api/v1/projects/operator-queue`
 - `GET /api/v1/projects/preset-catalog`
 - `GET /api/v1/projects/{project_id}`
+- `GET /api/v1/projects/{project_id}/overview`
 - `GET /api/v1/projects/{project_id}/planning`
 - `GET /api/v1/projects/{project_id}/temporal`
 - `GET /api/v1/projects/{project_id}/scenes`

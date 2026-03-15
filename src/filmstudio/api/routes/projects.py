@@ -16,6 +16,16 @@ def list_projects(request: Request):
     return request.app.state.project_service.list_projects()
 
 
+@router.get("/overviews")
+def list_project_overviews(request: Request):
+    return request.app.state.project_service.list_project_overviews()
+
+
+@router.get("/operator-queue")
+def get_operator_queue(request: Request):
+    return request.app.state.project_service.build_operator_queue()
+
+
 @router.get("/preset-catalog")
 def get_preset_catalog():
     return PlannerService.build_product_preset_catalog()
@@ -36,6 +46,14 @@ def get_project(request: Request, project_id: str):
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return snapshot
+
+
+@router.get("/{project_id}/overview")
+def get_project_overview(request: Request, project_id: str):
+    snapshot = request.app.state.project_service.get_snapshot(project_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return request.app.state.project_service.build_project_overview(snapshot)
 
 
 @router.get("/{project_id}/deliverables")
