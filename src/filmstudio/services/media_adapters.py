@@ -87,6 +87,8 @@ class DeterministicMediaAdapters:
         comfyui_base_url: str = "http://127.0.0.1:8188",
         comfyui_checkpoint_name: str = "",
         comfyui_input_dir: Path | None = None,
+        comfyui_request_timeout_sec: float = 900.0,
+        comfyui_poll_interval_sec: float = 2.0,
         wan_python_binary: str = "",
         wan_repo_path: Path | None = None,
         wan_ckpt_dir: Path | None = None,
@@ -144,6 +146,8 @@ class DeterministicMediaAdapters:
         self.comfyui_base_url = comfyui_base_url
         self.comfyui_checkpoint_name = comfyui_checkpoint_name
         self.comfyui_input_dir = comfyui_input_dir
+        self.comfyui_request_timeout_sec = comfyui_request_timeout_sec
+        self.comfyui_poll_interval_sec = comfyui_poll_interval_sec
         self.wan_python_binary = wan_python_binary
         self.wan_repo_path = wan_repo_path
         self.wan_ckpt_dir = wan_ckpt_dir
@@ -216,6 +220,8 @@ class DeterministicMediaAdapters:
             comfyui_base_url=self.comfyui_base_url,
             comfyui_checkpoint_name=self.comfyui_checkpoint_name,
             comfyui_input_dir=self.comfyui_input_dir,
+            comfyui_request_timeout_sec=self.comfyui_request_timeout_sec,
+            comfyui_poll_interval_sec=self.comfyui_poll_interval_sec,
             wan_python_binary=self.wan_python_binary,
             wan_repo_path=self.wan_repo_path,
             wan_ckpt_dir=self.wan_ckpt_dir,
@@ -7741,8 +7747,8 @@ class DeterministicMediaAdapters:
             raise RuntimeError("ComfyUI backend requires FILMSTUDIO_COMFYUI_CHECKPOINT_NAME.")
         self._comfyui_client = ComfyUIClient(
             base_url=self.comfyui_base_url,
-            timeout_sec=self.command_timeout_sec,
-            poll_interval_sec=2.0,
+            timeout_sec=self.comfyui_request_timeout_sec,
+            poll_interval_sec=self.comfyui_poll_interval_sec,
         )
         return self._comfyui_client
 

@@ -71,6 +71,23 @@ def test_get_settings_defaults_to_portrait_render_profile(monkeypatch, tmp_path:
     assert settings.wan_offload_model is False
     assert settings.wan_t5_cpu is False
     assert settings.wan_vae_dtype == "bfloat16"
+    assert settings.comfyui_request_timeout_sec == 900.0
+    assert settings.comfyui_poll_interval_sec == 2.0
+
+    get_settings.cache_clear()
+
+
+def test_get_settings_supports_comfyui_timeout_overrides(monkeypatch, tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("FILMSTUDIO_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv("FILMSTUDIO_COMFYUI_REQUEST_TIMEOUT_SEC", "1200.0")
+    monkeypatch.setenv("FILMSTUDIO_COMFYUI_POLL_INTERVAL_SEC", "1.5")
+    get_settings.cache_clear()
+
+    settings = get_settings()
+
+    assert settings.comfyui_request_timeout_sec == 1200.0
+    assert settings.comfyui_poll_interval_sec == 1.5
 
     get_settings.cache_clear()
 

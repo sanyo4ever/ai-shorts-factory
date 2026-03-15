@@ -442,6 +442,46 @@ DEFAULT_PRODUCT_READINESS_CASES: tuple[FullDryRunCase, ...] = (
             "HERO: Ose i ye before-after efekt, koly product-grade short maie ne tilky final video, a y zrozumilyi stan dlia komandy."
         ),
     ),
+    FullDryRunCase(
+        slug="comparison_showdown_split",
+        title="Product Readiness Comparison Showdown Split",
+        category="comparison_showdown",
+        style_preset="broadcast_panel",
+        voice_cast_preset="duo_contrast",
+        music_preset="debate_tension",
+        short_archetype="dialogue_pivot",
+        expected_character_count_min=2,
+        expected_speaker_count_min=2,
+        script=(
+            "SCENE 1. HOST i FRIEND stoyat odyn navproty odnoho, nache v studiinomu split-screen showdowni.\n"
+            "HOST: U porivnianni z ruchnym zbyranniam shortu kerovana studiia ne zalyshaie rozryviv mizh planom, renderom i review.\n"
+            "FRIEND: A bez tsoho porivniannia bud-yakyi final vyhliadaie yak vypadkove demo, a ne yak produktnyi rezultat.\n\n"
+            "SCENE 2. HERO vryvaietsia mizh dvoma kontrastnymy paneliamy, rush do kamery zshyvaie porivniannia v odyn vertykalnyi reveal.\n"
+            "NARRATOR: Hero insert tut mae pokazaty, shcho odyn kerovanyi pipeline vyhraie u rozriznenoi zbirky ne teorieiu, a vidchutnym rytmom kadru.\n\n"
+            "SCENE 3. HOST pidbyvaie vysnovok, a FRIEND korotko pidtverdzhuie payoff.\n"
+            "HOST: Koly comparison zavershuietsia jednym final package, hliadach bachyt ne obitsianku, a dovedenyi studiinui kontrakt.\n"
+            "FRIEND: Same tse i robyt showdown peremozhnym dlia produktu."
+        ),
+    ),
+    FullDryRunCase(
+        slug="reaction_opinion_spark",
+        title="Product Readiness Reaction Opinion Spark",
+        category="reaction_opinion",
+        style_preset="kinetic_graphic",
+        voice_cast_preset="solo_host",
+        music_preset="countdown_drive",
+        short_archetype="creator_hook",
+        expected_character_count_min=2,
+        expected_speaker_count_min=2,
+        script=(
+            "SCENE 1. HOST emotsiino dyvytsia v kameru i z pershykh sekund formuliuie hot take pro launch studii.\n"
+            "HOST: Moya dumka pro lokalni AI-shorty prosta: yakshcho ty ne bachysh review, rerender i final package, to tse shche ne studiya.\n\n"
+            "SCENE 2. HERO probyvaetsia kriz kaskad reaktsii i komentariv, rush do kamery zalyshaie nyzhniu lane chystoiu dlia payoffu.\n"
+            "NARRATOR: Reaktsiia mae buty ne pro shum, a pro odyn silnyi beat, de vertykalnyi hero insert pidtverdzhue dumku rukhom i revealom.\n\n"
+            "SCENE 3. HOST povertaie nas do vysnovku i zakryvaie opinion chotkym CTA.\n"
+            "HOST: Same tomu product-grade short mae odrazu davaty i emotsiiu, i kontrol, i hotovyi handoff dlia komandy."
+        ),
+    ),
 )
 
 

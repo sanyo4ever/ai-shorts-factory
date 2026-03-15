@@ -170,11 +170,11 @@ def _ready_semantic_quality() -> dict[str, object]:
     }
 
 
-def test_default_product_readiness_cases_cover_release_gate_v3_categories() -> None:
+def test_default_product_readiness_cases_cover_release_gate_v5_categories() -> None:
     categories = {case.category for case in DEFAULT_PRODUCT_READINESS_CASES}
     slugs = [case.slug for case in DEFAULT_PRODUCT_READINESS_CASES]
 
-    assert len(DEFAULT_PRODUCT_READINESS_CASES) == 10
+    assert len(DEFAULT_PRODUCT_READINESS_CASES) == 12
     assert len(slugs) == len(set(slugs))
     assert categories == {
         "solo_creator",
@@ -187,6 +187,8 @@ def test_default_product_readiness_cases_cover_release_gate_v3_categories() -> N
         "case_study",
         "workflow_walkthrough",
         "before_after_reveal",
+        "comparison_showdown",
+        "reaction_opinion",
     }
 
 

@@ -33,6 +33,8 @@ class Settings:
     comfyui_python_binary: str
     comfyui_repo_path: Path
     comfyui_input_dir: Path
+    comfyui_request_timeout_sec: float
+    comfyui_poll_interval_sec: float
     wan_python_binary: str
     wan_repo_path: Path
     wan_ckpt_dir: Path
@@ -294,6 +296,12 @@ def get_settings() -> Settings:
         comfyui_input_dir=Path(
             os.getenv("FILMSTUDIO_COMFYUI_INPUT_DIR", comfyui_default_repo / "input")
         ).resolve(),
+        comfyui_request_timeout_sec=float(
+            os.getenv("FILMSTUDIO_COMFYUI_REQUEST_TIMEOUT_SEC", "900.0")
+        ),
+        comfyui_poll_interval_sec=float(
+            os.getenv("FILMSTUDIO_COMFYUI_POLL_INTERVAL_SEC", "2.0")
+        ),
         wan_python_binary=os.getenv(
             "FILMSTUDIO_WAN_PYTHON_BINARY", str(wan_default_python)
         ),

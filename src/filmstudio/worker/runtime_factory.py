@@ -48,6 +48,8 @@ def build_media_adapters(settings: Settings) -> DeterministicMediaAdapters:
         comfyui_base_url=settings.comfyui_base_url,
         comfyui_checkpoint_name=settings.comfyui_checkpoint_name,
         comfyui_input_dir=settings.comfyui_input_dir,
+        comfyui_request_timeout_sec=settings.comfyui_request_timeout_sec,
+        comfyui_poll_interval_sec=settings.comfyui_poll_interval_sec,
         wan_python_binary=settings.wan_python_binary,
         wan_repo_path=settings.wan_repo_path,
         wan_ckpt_dir=settings.wan_ckpt_dir,
