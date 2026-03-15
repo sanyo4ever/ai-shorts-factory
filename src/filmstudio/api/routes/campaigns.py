@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 
 from filmstudio.domain.models import CampaignReleaseUpdateRequest
 
@@ -39,6 +42,31 @@ def get_release_baseline(request: Request):
     if payload is None:
         raise HTTPException(status_code=404, detail="Canonical release baseline not found")
     return payload
+
+
+@router.get("/release/handoff")
+def get_release_handoff(request: Request):
+    payload = request.app.state.campaign_service.get_release_handoff(generate_if_missing=True)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Canonical release handoff not found")
+    return payload
+
+
+@router.get("/release/handoff/download")
+def download_release_handoff(request: Request):
+    path = request.app.state.campaign_service.get_release_handoff_package_path(
+        generate_if_missing=True
+    )
+    if path is None:
+        raise HTTPException(status_code=404, detail="Canonical release handoff package not found")
+    resolved = Path(path)
+    if not resolved.exists():
+        raise HTTPException(status_code=404, detail="Canonical release handoff package missing")
+    return FileResponse(
+        resolved,
+        filename=resolved.name,
+        content_disposition_type="attachment",
+    )
 
 
 @router.post("/{campaign_name}/release")

@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 
@@ -245,6 +246,8 @@ def test_campaign_service_builds_overview_detail_and_case_table(tmp_path: Path) 
     assert detail["release_summary"]["status"] == "candidate"
     assert detail["promotion"]["canonical_blocked"] is False
     assert "Promote product_readiness_v12_release_gate_v5_green" in detail["promotion"]["suggested_note"]
+    assert detail["handoff"]["status"] == "preview"
+    assert detail["handoff"]["summary"]["package_ready"] is False
 
 
 def test_campaign_service_promotes_canonical_and_tracks_registry_history(tmp_path: Path) -> None:
@@ -320,6 +323,23 @@ def test_campaign_service_promotes_canonical_and_tracks_registry_history(tmp_pat
         "product_readiness_v11_release_gate_v4_green"
     )
     assert Path(baseline_manifest["manifest_path"]).exists()
+    handoff_manifest = service.get_release_handoff(generate_if_missing=True)
+    assert handoff_manifest is not None
+    assert handoff_manifest["status"] == "ready"
+    assert handoff_manifest["current_canonical"]["campaign_name"] == (
+        "product_readiness_v12_release_gate_v5_green"
+    )
+    assert handoff_manifest["release_note"]["source"] == "registry_note"
+    assert "supersedes previous baseline" in handoff_manifest["release_note"]["text"]
+    assert Path(handoff_manifest["manifest_path"]).exists()
+    package_path = Path(handoff_manifest["package_path"])
+    assert package_path.exists()
+    with ZipFile(package_path) as archive:
+        names = set(archive.namelist())
+    assert "release_handoff/release_handoff_manifest.json" in names
+    assert "release_handoff/current_baseline_manifest.json" in names
+    assert "release_handoff/release_note.txt" in names
+    assert "release_handoff/stability_report.json" in names
 
 
 def test_campaign_service_blocks_canonical_promotion_when_quality_regression_is_open(

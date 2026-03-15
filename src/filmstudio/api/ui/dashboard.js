@@ -44,6 +44,7 @@ function cacheElements() {
   elements.campaignMarkSupersededButton = byId("campaign-mark-superseded-button");
   elements.campaignComparison = byId("campaign-comparison");
   elements.campaignReleaseDesk = byId("campaign-release-desk");
+  elements.campaignReleaseHandoff = byId("campaign-release-handoff");
   elements.campaignCases = byId("campaign-cases");
   elements.queueSummary = byId("queue-summary");
   elements.queueList = byId("queue-list");
@@ -585,6 +586,7 @@ function renderCampaignDetail() {
   renderCampaignPromotionState(detail);
   renderCampaignComparison(detail);
   renderCampaignReleaseDesk(detail);
+  renderCampaignReleaseHandoff(detail);
   renderCampaignCases(detail);
 }
 
@@ -815,6 +817,7 @@ function renderCampaignReleaseDesk(detail) {
   const recommended = releaseManagement.recommended_canonical || null;
   const candidates = Array.isArray(releaseManagement.candidates) ? releaseManagement.candidates : [];
   const baselineManifest = releaseManagement.baseline_manifest || null;
+  const releaseHandoff = releaseManagement.release_handoff || null;
   const baselineSummary = baselineManifest?.comparison?.summary || {};
   const promotion = detail?.promotion || {};
   elements.campaignReleaseDesk.innerHTML = `
@@ -840,6 +843,11 @@ function renderCampaignReleaseDesk(detail) {
             </div>
             <div class="card-actions">
               <a class="button button-ghost" href="/api/v1/campaigns/release/baseline" target="_blank" rel="noreferrer">Open Baseline Manifest</a>
+              ${
+                releaseHandoff?.summary?.package_ready
+                  ? '<a class="button button-ghost" href="/api/v1/campaigns/release/handoff" target="_blank" rel="noreferrer">Open Release Handoff</a>'
+                  : ""
+              }
             </div>
           `
           : '<div class="muted-copy">No canonical baseline manifest has been written yet.</div>'
@@ -868,6 +876,94 @@ function renderCampaignReleaseDesk(detail) {
               .join("")}</div>`
           : '<div class="muted-copy">No candidate campaigns in registry.</div>'
       }
+    </article>
+  `;
+}
+
+function renderCampaignReleaseHandoff(detail) {
+  const selectedSummary = detail.summary || {};
+  const selectedRelease = selectedSummary.release || {};
+  const releaseManagement = state.campaignOverview?.release_management || {};
+  const currentCanonicalHandoff = releaseManagement.release_handoff || null;
+  const handoff = selectedRelease.is_current_canonical
+    ? currentCanonicalHandoff || detail.handoff || null
+    : detail.handoff || null;
+  if (!handoff) {
+    elements.campaignReleaseHandoff.innerHTML =
+      '<div class="muted-copy">Release handoff is not available yet for this campaign.</div>';
+    return;
+  }
+  const summary = handoff.summary || {};
+  const comparison = handoff.comparison || {};
+  const comparisonSummary = comparison.summary || {};
+  const releaseNote = handoff.release_note || {};
+  const packageContents = Array.isArray(handoff.package_contents) ? handoff.package_contents : [];
+  const isCurrentCanonical = Boolean(selectedRelease.is_current_canonical);
+  const contentChips = packageContents.length
+    ? packageContents
+        .slice(0, 6)
+        .map((item) => `<span class="chip">${escapeHtml(String(item).split("/").slice(-1)[0])}</span>`)
+        .join("")
+    : '<span class="muted-copy">No package contents declared.</span>';
+  elements.campaignReleaseHandoff.innerHTML = `
+    <article class="queue-item">
+      <div class="card-topline">
+        <div>
+          <strong class="card-title">${escapeHtml(handoff.campaign_name || selectedSummary.campaign_name || "campaign")}</strong>
+          <p>${isCurrentCanonical ? "current canonical release handoff" : "candidate handoff preview"}</p>
+        </div>
+        <span class="badge ${handoff.status === "ready" ? "quality-pass" : "badge-status-candidate"}">${escapeHtml(handoff.status || "preview")}</span>
+      </div>
+      <div class="meta-row">
+        <span>${escapeHtml(String(summary.case_count || 0))} cases</span>
+        <span>${escapeHtml(String(summary.regression_count || 0))} regressions</span>
+        <span>${escapeHtml(String(summary.improvement_count || 0))} improvements</span>
+        <span>${summary.package_ready ? "package ready" : "preview only"}</span>
+      </div>
+      <div class="chip-row">
+        <span class="chip">semantic regressions ${escapeHtml(String(summary.semantic_regression_count || 0))}</span>
+        <span class="chip">semantic baseline regressions ${escapeHtml(String(summary.revision_semantic_regression_count || 0))}</span>
+        <span class="chip">revision regressions ${escapeHtml(String(summary.revision_release_regression_count || 0))}</span>
+        <span class="chip">deliverable regressions ${escapeHtml(String(summary.deliverable_regression_count || 0))}</span>
+      </div>
+      <div class="queue-list">
+        <article class="queue-item">
+          <div class="card-topline">
+            <strong class="card-title">Release Note</strong>
+            <span class="badge ${releaseNote.source === "registry_note" ? "quality-pass" : "badge-status-candidate"}">${escapeHtml(releaseNote.source || "none")}</span>
+          </div>
+          <div class="muted-copy">${formatMultilineText(releaseNote.text || "No release note recorded yet.")}</div>
+        </article>
+        <article class="queue-item">
+          <div class="card-topline">
+            <strong class="card-title">Package Contents</strong>
+            <span class="badge ${summary.package_ready ? "quality-pass" : "badge-status-candidate"}">${summary.package_ready ? "downloadable" : "not promoted"}</span>
+          </div>
+          <div class="chip-row">${contentChips}</div>
+        </article>
+      </div>
+      <div class="meta-row">
+        <span>comparison ${escapeHtml(comparison.status || "none")}</span>
+        <span>case deltas ${escapeHtml(String(comparisonSummary.case_detail_change_count || 0))}</span>
+        <span>operator regressions ${escapeHtml(String(comparisonSummary.operator_attention_regression_count || 0))}</span>
+      </div>
+      <div class="card-actions">
+        ${
+          isCurrentCanonical && handoff.manifest_url
+            ? `<a class="button button-ghost" href="${escapeHtml(handoff.manifest_url)}" target="_blank" rel="noreferrer">Open Handoff Manifest</a>`
+            : ""
+        }
+        ${
+          isCurrentCanonical && handoff.download_url
+            ? `<a class="button button-primary" href="${escapeHtml(handoff.download_url)}">Download Handoff Package</a>`
+            : ""
+        }
+        ${
+          !isCurrentCanonical
+            ? '<span class="muted-copy">Promote this campaign to canonical to materialize the handoff package.</span>'
+            : ""
+        }
+      </div>
     </article>
   `;
 }
@@ -1942,4 +2038,8 @@ function escapeHtml(value) {
 
 function formatRate(value) {
   return `${Math.round(Number(value || 0) * 100)}%`;
+}
+
+function formatMultilineText(value) {
+  return escapeHtml(value).replaceAll("\n", "<br>");
 }

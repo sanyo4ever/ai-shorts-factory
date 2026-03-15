@@ -99,6 +99,7 @@ def test_dashboard_routes_and_assets() -> None:
     assert "AI Shorts Factory Studio" in dashboard_response.text
     assert "Campaign Center" in dashboard_response.text
     assert "Semantic Regressions Only" in dashboard_response.text
+    assert "Release Handoff" in dashboard_response.text
 
     css_response = client.get("/studio/assets/dashboard.css")
     assert css_response.status_code == 200
@@ -110,6 +111,7 @@ def test_dashboard_routes_and_assets() -> None:
     assert "/api/v1/campaigns/overview" in js_response.text
     assert "/api/v1/campaigns/compare" in js_response.text
     assert "/api/v1/campaigns/release/baseline" in js_response.text
+    assert "/api/v1/campaigns/release/handoff" in js_response.text
     assert "/release" in js_response.text
     assert "canonical blocked" in js_response.text
 
@@ -242,6 +244,20 @@ def test_campaign_endpoints_surface_runtime_reports(tmp_path: Path, monkeypatch)
             "product_readiness_v12_release_gate_v5_green"
         )
         assert baseline_payload["comparison"]["summary"]["improvement_count"] >= 1
+
+        handoff_response = client.get("/api/v1/campaigns/release/handoff")
+        assert handoff_response.status_code == 200
+        handoff_payload = handoff_response.json()
+        assert handoff_payload["current_canonical"]["campaign_name"] == (
+            "product_readiness_v12_release_gate_v5_green"
+        )
+        assert handoff_payload["summary"]["package_ready"] is True
+        assert handoff_payload["download_url"] == "/api/v1/campaigns/release/handoff/download"
+
+        handoff_download_response = client.get("/api/v1/campaigns/release/handoff/download")
+        assert handoff_download_response.status_code == 200
+        assert handoff_download_response.content
+        assert "attachment" in handoff_download_response.headers.get("content-disposition", "")
 
         not_found_response = client.get("/api/v1/campaigns/missing_campaign")
         assert not_found_response.status_code == 404

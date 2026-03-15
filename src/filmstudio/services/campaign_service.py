@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from filmstudio.domain.models import CampaignReleaseStatus, new_id, utc_now
 
@@ -50,6 +51,8 @@ class CampaignService:
             else self.campaign_root / "release_registry.json"
         )
         self.baseline_manifest_path = self.registry_path.parent / "current_baseline_manifest.json"
+        self.release_handoff_manifest_path = self.registry_path.parent / "current_release_handoff_manifest.json"
+        self.release_handoff_package_path = self.registry_path.parent / "current_release_handoff_package.zip"
 
     def list_campaigns(
         self,
@@ -108,6 +111,7 @@ class CampaignService:
             "release_management": {
                 **release_overview,
                 "baseline_manifest": self.get_release_baseline(),
+                "release_handoff": self.get_release_handoff(),
             },
         }
 
@@ -164,6 +168,37 @@ class CampaignService:
         self._save_baseline_manifest(payload)
         return payload
 
+    def get_release_handoff(self, *, generate_if_missing: bool = False) -> dict[str, object] | None:
+        if self.release_handoff_manifest_path.exists():
+            payload = self._load_report(self.release_handoff_manifest_path)
+            if payload is not None:
+                if generate_if_missing and not self.release_handoff_package_path.exists():
+                    rebuilt = self._build_release_handoff_manifest()
+                    if rebuilt is not None:
+                        self._save_release_handoff_bundle(rebuilt)
+                        return rebuilt
+                return payload
+        if not generate_if_missing:
+            return None
+        payload = self._build_release_handoff_manifest()
+        if payload is None:
+            return None
+        self._save_release_handoff_bundle(payload)
+        return payload
+
+    def get_release_handoff_package_path(self, *, generate_if_missing: bool = False) -> Path | None:
+        if self.release_handoff_package_path.exists():
+            return self.release_handoff_package_path
+        if not generate_if_missing:
+            return None
+        payload = self._build_release_handoff_manifest()
+        if payload is None:
+            return None
+        self._save_release_handoff_bundle(payload)
+        if not self.release_handoff_package_path.exists():
+            return None
+        return self.release_handoff_package_path
+
     def get_campaign(
         self,
         campaign_name: str,
@@ -193,13 +228,25 @@ class CampaignService:
             case_table=case_table,
             comparison=comparison,
         )
+        release_summary = self._build_release_summary(summary, comparison, promotion)
+        handoff = self._build_release_handoff_payload(
+            detail={
+                "summary": summary,
+                "report": report,
+                "case_table": case_table,
+                "comparison": comparison,
+                "promotion": promotion,
+                "release_summary": release_summary,
+            }
+        )
         return {
             "summary": summary,
             "report": report,
             "case_table": case_table,
             "comparison": comparison,
             "promotion": promotion,
-            "release_summary": self._build_release_summary(summary, comparison, promotion),
+            "release_summary": release_summary,
+            "handoff": handoff,
         }
 
     def compare_campaigns(
@@ -549,6 +596,7 @@ class CampaignService:
         registry["history"] = history[:50]
         self._save_registry(registry)
         self._sync_release_baseline_manifest()
+        self._sync_release_handoff_bundle()
         updated = self.get_campaign(campaign_name, compare_to=resolved_compare_to)
         assert updated is not None
         return updated
@@ -1267,33 +1315,6 @@ class CampaignService:
         if detail is None:
             return None
         comparison = detail.get("comparison") or {}
-        case_diffs = {
-            str(item.get("slug")): item
-            for item in (comparison.get("case_diff", {}).get("changed") or [])
-        }
-        case_matrix = []
-        for row in detail.get("case_table", []):
-            slug = str(row.get("slug") or "")
-            delta = dict(case_diffs.get(slug) or {})
-            case_matrix.append(
-                {
-                    "slug": slug,
-                    "title": row.get("title"),
-                    "category": row.get("category"),
-                    "status": row.get("status"),
-                    "project_id": row.get("project_id"),
-                    "project_url": row.get("project_url"),
-                    "delta": delta,
-                    "has_regression": slug in {
-                        str(item.get("slug"))
-                        for item in (comparison.get("case_diff", {}).get("regressed") or [])
-                    },
-                    "has_improvement": slug in {
-                        str(item.get("slug"))
-                        for item in (comparison.get("case_diff", {}).get("improved") or [])
-                    },
-                }
-            )
         return {
             "generated_at": utc_now(),
             "manifest_path": str(self.baseline_manifest_path),
@@ -1304,7 +1325,10 @@ class CampaignService:
                 "summary": comparison.get("summary") or {},
             },
             "release_summary": detail.get("release_summary") or {},
-            "case_matrix": case_matrix,
+            "case_matrix": self._build_case_matrix(
+                detail.get("case_table") or [],
+                comparison,
+            ),
         }
 
     def _save_baseline_manifest(self, payload: dict[str, object]) -> None:
@@ -1321,6 +1345,246 @@ class CampaignService:
                 self.baseline_manifest_path.unlink()
             return
         self._save_baseline_manifest(payload)
+
+    def _build_case_matrix(
+        self,
+        case_table: list[dict[str, object]],
+        comparison: dict[str, object] | None,
+    ) -> list[dict[str, object]]:
+        comparison_payload = dict(comparison or {})
+        case_diffs = {
+            str(item.get("slug")): item
+            for item in (comparison_payload.get("case_diff", {}).get("changed") or [])
+        }
+        regressed_slugs = {
+            str(item.get("slug"))
+            for item in (comparison_payload.get("case_diff", {}).get("regressed") or [])
+            if str(item.get("slug") or "").strip()
+        }
+        improved_slugs = {
+            str(item.get("slug"))
+            for item in (comparison_payload.get("case_diff", {}).get("improved") or [])
+            if str(item.get("slug") or "").strip()
+        }
+        return [
+            {
+                "slug": slug,
+                "title": row.get("title"),
+                "category": row.get("category"),
+                "status": row.get("status"),
+                "project_id": row.get("project_id"),
+                "project_url": row.get("project_url"),
+                "delta": dict(case_diffs.get(slug) or {}),
+                "has_regression": slug in regressed_slugs,
+                "has_improvement": slug in improved_slugs,
+            }
+            for row in case_table
+            for slug in [str(row.get("slug") or "")]
+        ]
+
+    def _build_release_note_payload(
+        self,
+        *,
+        summary: dict[str, object],
+        promotion: dict[str, object],
+    ) -> dict[str, object]:
+        release = dict(summary.get("release") or {})
+        registry_note = str(release.get("note") or "").strip()
+        suggested_note = str(promotion.get("suggested_note") or "").strip()
+        if registry_note:
+            return {
+                "text": registry_note,
+                "source": "registry_note",
+                "compared_to": release.get("compared_to"),
+                "updated_at": release.get("updated_at") or summary.get("generated_at"),
+            }
+        if suggested_note:
+            return {
+                "text": suggested_note,
+                "source": "suggested_note",
+                "compared_to": release.get("compared_to"),
+                "updated_at": summary.get("generated_at"),
+            }
+        return {
+            "text": "",
+            "source": "none",
+            "compared_to": release.get("compared_to"),
+            "updated_at": summary.get("generated_at"),
+        }
+
+    def _build_release_handoff_payload(
+        self,
+        *,
+        detail: dict[str, object],
+        manifest_path: Path | None = None,
+        package_path: Path | None = None,
+        baseline_payload: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        summary = dict(detail.get("summary") or {})
+        report = dict(detail.get("report") or {})
+        comparison = dict(detail.get("comparison") or {})
+        promotion = dict(detail.get("promotion") or {})
+        release_summary = dict(detail.get("release_summary") or {})
+        case_table = list(detail.get("case_table") or [])
+        release = dict(summary.get("release") or {})
+        comparison_summary = dict(comparison.get("summary") or {})
+        release_overview = self.build_release_overview()
+        is_current_canonical = bool(release.get("is_current_canonical"))
+        case_matrix = self._build_case_matrix(case_table, comparison)
+        note_payload = self._build_release_note_payload(summary=summary, promotion=promotion)
+        package_members = [
+            "release_handoff/release_handoff_manifest.json",
+            "release_handoff/current_baseline_manifest.json",
+            "release_handoff/release_summary.json",
+            "release_handoff/comparison_summary.json",
+            "release_handoff/case_matrix.json",
+            "release_handoff/release_note.txt",
+            "release_handoff/stability_report.json",
+        ]
+        return {
+            "generated_at": utc_now(),
+            "status": "ready" if is_current_canonical else "preview",
+            "campaign_name": summary.get("campaign_name"),
+            "selected_campaign": summary,
+            "current_canonical": (
+                summary if is_current_canonical else release_overview.get("current_canonical")
+            ),
+            "previous_canonical": (
+                release_overview.get("previous_canonical")
+                if is_current_canonical
+                else comparison.get("right")
+            ),
+            "comparison": {
+                "status": comparison.get("status"),
+                "summary": comparison_summary,
+                "target": comparison.get("right"),
+            },
+            "release_summary": release_summary,
+            "promotion": {
+                "canonical_blocked": bool(promotion.get("canonical_blocked")),
+                "blocked_case_count": int(promotion.get("blocked_case_count") or 0),
+                "blocked_case_slugs": list(promotion.get("blocked_case_slugs") or []),
+                "blocked_regressed_metrics": list(promotion.get("blocked_regressed_metrics") or []),
+            },
+            "release_note": note_payload,
+            "case_matrix": case_matrix,
+            "package_contents": package_members,
+            "summary": {
+                "case_count": len(case_matrix),
+                "comparison_status": comparison.get("status") or "none",
+                "regression_count": int(comparison_summary.get("regression_count") or 0),
+                "improvement_count": int(comparison_summary.get("improvement_count") or 0),
+                "semantic_regression_count": int(comparison_summary.get("semantic_regression_count") or 0),
+                "revision_semantic_regression_count": int(
+                    comparison_summary.get("revision_semantic_regression_count") or 0
+                ),
+                "revision_release_regression_count": int(
+                    comparison_summary.get("revision_release_regression_count") or 0
+                ),
+                "deliverable_regression_count": int(
+                    comparison_summary.get("deliverable_regression_count") or 0
+                ),
+                "operator_attention_regression_count": int(
+                    comparison_summary.get("operator_attention_regression_count") or 0
+                ),
+                "package_ready": bool(package_path and package_path.exists()),
+                "baseline_manifest_ready": bool(
+                    baseline_payload or (is_current_canonical and self.baseline_manifest_path.exists())
+                ),
+            },
+            "baseline_manifest": {
+                "available": bool(baseline_payload),
+                "manifest_path": str(self.baseline_manifest_path) if baseline_payload else None,
+                "comparison_summary": dict((baseline_payload or {}).get("comparison", {}).get("summary") or {}),
+            },
+            "manifest_path": str(manifest_path) if manifest_path else None,
+            "package_path": str(package_path) if package_path else None,
+            "manifest_url": "/api/v1/campaigns/release/handoff" if is_current_canonical else None,
+            "download_url": "/api/v1/campaigns/release/handoff/download" if is_current_canonical else None,
+            "report_path": str(report.get("report_root") or ""),
+        }
+
+    def _build_release_handoff_manifest(self) -> dict[str, object] | None:
+        release_overview = self.build_release_overview()
+        current_canonical = release_overview.get("current_canonical")
+        if not current_canonical:
+            return None
+        current_name = str(current_canonical.get("campaign_name") or "")
+        compare_to = (
+            (current_canonical.get("release") or {}).get("compared_to")
+            or ((release_overview.get("previous_canonical") or {}).get("campaign_name"))
+        )
+        detail = self.get_campaign(current_name, compare_to=str(compare_to) if compare_to else None)
+        if detail is None:
+            return None
+        baseline_payload = self._build_release_baseline_manifest()
+        return self._build_release_handoff_payload(
+            detail=detail,
+            manifest_path=self.release_handoff_manifest_path,
+            package_path=self.release_handoff_package_path,
+            baseline_payload=baseline_payload,
+        )
+
+    def _save_release_handoff_bundle(self, payload: dict[str, object]) -> None:
+        manifest_payload = {
+            **payload,
+            "manifest_path": str(self.release_handoff_manifest_path),
+            "package_path": str(self.release_handoff_package_path),
+        }
+        manifest_payload["summary"] = {
+            **dict(manifest_payload.get("summary") or {}),
+            "package_ready": True,
+        }
+        baseline_payload = self.get_release_baseline(generate_if_missing=True) or {}
+        campaign_name = str(manifest_payload.get("campaign_name") or "")
+        report = {}
+        if campaign_name:
+            detail = self.get_campaign(campaign_name, include_comparison=False)
+            report = dict((detail or {}).get("report") or {})
+        self.release_handoff_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        self.release_handoff_manifest_path.write_text(
+            json.dumps(manifest_payload, indent=2),
+            encoding="utf-8",
+        )
+        with ZipFile(self.release_handoff_package_path, "w", compression=ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "release_handoff/release_handoff_manifest.json",
+                json.dumps(manifest_payload, indent=2),
+            )
+            archive.writestr(
+                "release_handoff/current_baseline_manifest.json",
+                json.dumps(baseline_payload, indent=2),
+            )
+            archive.writestr(
+                "release_handoff/release_summary.json",
+                json.dumps(manifest_payload.get("release_summary") or {}, indent=2),
+            )
+            archive.writestr(
+                "release_handoff/comparison_summary.json",
+                json.dumps(manifest_payload.get("comparison") or {}, indent=2),
+            )
+            archive.writestr(
+                "release_handoff/case_matrix.json",
+                json.dumps(manifest_payload.get("case_matrix") or [], indent=2),
+            )
+            archive.writestr(
+                "release_handoff/release_note.txt",
+                str((manifest_payload.get("release_note") or {}).get("text") or ""),
+            )
+            archive.writestr(
+                "release_handoff/stability_report.json",
+                json.dumps(report, indent=2),
+            )
+
+    def _sync_release_handoff_bundle(self) -> None:
+        payload = self._build_release_handoff_manifest()
+        if payload is None:
+            if self.release_handoff_manifest_path.exists():
+                self.release_handoff_manifest_path.unlink()
+            if self.release_handoff_package_path.exists():
+                self.release_handoff_package_path.unlink()
+            return
+        self._save_release_handoff_bundle(payload)
 
     @staticmethod
     def _derive_status(

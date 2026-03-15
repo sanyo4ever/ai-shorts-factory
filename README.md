@@ -51,6 +51,7 @@ The current codebase restores:
 - an operator-facing project overview and queue surface that merges review state, revision-release readiness, deliverables readiness, QC, rerender state, and backend profile into one API contract
 - a built-in operator dashboard at `/studio` that consumes those API surfaces directly for create, run, review, side-by-side revision compare, rerender, preview, download workflows, and campaign visibility
 - release-management surfaces for campaigns: drilldown, baseline promotion, canonical baseline manifests, richer case-level regression comparison across semantic, revision-release, deliverable, and operator deltas, and operator-facing release summaries through both API and dashboard
+- canonical release handoff packaging with a file-backed handoff manifest and downloadable zip bundle that packages the current baseline manifest, release summary, comparison summary, case matrix, release note, and canonical stability report
 - a shared semantic-quality layer that scores subtitle readability, script coverage, shot variety, portrait identity consistency, audio-mix cleanliness, and preset-archetype payoff
 - semantic quality is now part of the operator surface itself: project overview includes a normalized `semantic_quality` block, and the queue can emit project-level `review_quality` work when the quality gate fails
 - a revision-aware semantic baseline layer that snapshots semantic quality only after release-ready approval, compares current rerendered outputs against the last approved baseline, and surfaces project-level `review_quality_regression` work when a revision regresses against that baseline
@@ -276,6 +277,15 @@ Invoke-RestMethod `
   -Body $body
 ```
 
+Once a campaign is canonical, the control plane also materializes a release handoff bundle:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/campaigns/release/handoff"
+Invoke-WebRequest -Method Get -Uri "http://127.0.0.1:8000/api/v1/campaigns/release/handoff/download" -OutFile ".\current_release_handoff_package.zip"
+```
+
+The handoff manifest is a normalized release desk artifact for the current canonical campaign. It packages the release note, compare summary, case matrix, current baseline manifest, and canonical `stability_report.json` into one downloadable zip for operator handoff.
+
 That release-management layer persists registry state under the runtime manifests, tracks `candidate`, `canonical`, and `superseded` campaigns, exposes campaign drilldown plus comparison data through the dashboard, and keeps one explicit current canonical baseline for the operator release flow.
 
 The current canonical baseline is also materialized as a first-class manifest:
@@ -465,6 +475,8 @@ set FILMSTUDIO_GPU_LEASE_WAIT_TIMEOUT_SEC=300.0
 - `GET /api/v1/campaigns/overview`
 - `GET /api/v1/campaigns/compare`
 - `GET /api/v1/campaigns/release/baseline`
+- `GET /api/v1/campaigns/release/handoff`
+- `GET /api/v1/campaigns/release/handoff/download`
 - `GET /api/v1/campaigns/{campaign_name}`
 - `POST /api/v1/campaigns/{campaign_name}/release`
 - `GET /api/v1/projects/{project_id}`
