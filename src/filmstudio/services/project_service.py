@@ -24,6 +24,7 @@ from filmstudio.domain.models import (
 )
 from filmstudio.domain.service_contracts import PIPELINE_STAGE_ORDER, STAGE_QUEUE_MAP
 from filmstudio.services.planner_service import PlannerService, PlanningBundle
+from filmstudio.services.path_display import format_local_display_path
 from filmstudio.services.quick_generate import build_quick_generate_catalog, build_quick_project_request
 from filmstudio.services.review_manifest import (
     build_review_manifest,
@@ -347,7 +348,7 @@ class ProjectService:
                 continue
             item = {
                 "kind": kind,
-                "path": artifact.path,
+                "path": format_local_display_path(artifact.path),
                 "exists": Path(artifact.path).exists(),
                 "stage": artifact.stage,
                 "metadata": artifact.metadata,
@@ -1180,42 +1181,44 @@ class ProjectService:
         deliverable_files = [
             {
                 "kind": "final_video",
-                "path": latest_by_kind["final_video"].path,
+                "path": format_local_display_path(latest_by_kind["final_video"].path),
                 "archive_path": "deliverables/final/final.mp4",
             },
             {
                 "kind": "poster",
-                "path": latest_by_kind["poster"].path,
+                "path": format_local_display_path(latest_by_kind["poster"].path),
                 "archive_path": "deliverables/marketing/poster.png",
             },
             {
                 "kind": "subtitle_srt",
-                "path": latest_by_kind["subtitle_srt"].path,
+                "path": format_local_display_path(latest_by_kind["subtitle_srt"].path),
                 "archive_path": "deliverables/subtitles/full.srt",
             },
             {
                 "kind": "subtitle_ass",
-                "path": subtitle_ass_artifact.path if subtitle_ass_artifact is not None else None,
+                "path": format_local_display_path(subtitle_ass_artifact.path)
+                if subtitle_ass_artifact is not None
+                else None,
                 "archive_path": "deliverables/subtitles/full.ass",
             },
             {
                 "kind": "scene_preview_sheet",
-                "path": latest_by_kind["scene_preview_sheet"].path,
+                "path": format_local_display_path(latest_by_kind["scene_preview_sheet"].path),
                 "archive_path": "deliverables/previews/scene_preview_sheet.json",
             },
             {
                 "kind": "project_archive",
-                "path": latest_by_kind["project_archive"].path,
+                "path": format_local_display_path(latest_by_kind["project_archive"].path),
                 "archive_path": "deliverables/archive/project_archive.json",
             },
             {
                 "kind": "final_render_manifest",
-                "path": latest_by_kind["final_render_manifest"].path,
+                "path": format_local_display_path(latest_by_kind["final_render_manifest"].path),
                 "archive_path": "deliverables/manifests/final_render_manifest.json",
             },
             {
                 "kind": "review_manifest",
-                "path": str(review_manifest_path),
+                "path": format_local_display_path(review_manifest_path),
                 "archive_path": "deliverables/reviews/review_manifest.json",
             },
         ]
@@ -1224,7 +1227,7 @@ class ProjectService:
             deliverable_files.append(
                 {
                     "kind": "semantic_quality_baseline",
-                    "path": semantic_baseline_artifact.path,
+                    "path": format_local_display_path(semantic_baseline_artifact.path),
                     "archive_path": "deliverables/manifests/semantic_quality_baseline.json",
                 }
             )
@@ -1235,9 +1238,11 @@ class ProjectService:
             "status": "packaged",
             "render_profile": render_profile,
             "review_summary": review_manifest_payload["summary"],
-            "semantic_quality_baseline_path": str(baseline_artifact_path) if baseline_artifact_path is not None else (
-                semantic_baseline_artifact.path if semantic_baseline_artifact is not None else None
-            ),
+            "semantic_quality_baseline_path": format_local_display_path(baseline_artifact_path)
+            if baseline_artifact_path is not None
+            else format_local_display_path(semantic_baseline_artifact.path)
+            if semantic_baseline_artifact is not None
+            else None,
             "items": [
                 {
                     **item,

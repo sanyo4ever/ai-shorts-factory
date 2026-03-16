@@ -22,6 +22,30 @@ $defaultLogRoot = Join-Path $repoRoot "runtime\logs\ace_step"
 $runnerRoot = Join-Path $repoRoot "runtime\tmp"
 $cacheRoot = Join-Path $repoRoot "runtime\cache\acestep"
 
+function Write-ServiceBanner {
+    param(
+        [string]$Mode,
+        [string]$Endpoint,
+        [string]$LogHint,
+        [string[]]$Details = @()
+    )
+
+    try {
+        $Host.UI.RawUI.WindowTitle = "Filmstudio - ACE-Step ($Mode)"
+    } catch {
+    }
+
+    Write-Host ""
+    Write-Host "=== Filmstudio Managed Service: ACE-Step ===" -ForegroundColor Cyan
+    Write-Host "Mode:     $Mode"
+    Write-Host "Endpoint: $Endpoint"
+    Write-Host "Logs:     $LogHint"
+    foreach ($detail in $Details) {
+        Write-Host $detail
+    }
+    Write-Host "-------------------------------------------" -ForegroundColor DarkGray
+}
+
 function Get-AceStepListenerPid {
     param([int]$ListenPort)
 
@@ -94,6 +118,11 @@ if $($NoInit.IsPresent.ToString()):
 
 from acestep.api_server import main
 
+print("[filmstudio] Starting ACE-Step service", flush=True)
+print(f"[filmstudio] host=$ListenHost port=$Port model=$Model lm_model=$LmModel device=$Device", flush=True)
+print(f"[filmstudio] repo={repo}", flush=True)
+print(f"[filmstudio] no_init={'true' if $($NoInit.IsPresent.ToString()) else 'false'} lm_backend=$LmBackend init_llm=$InitLlm", flush=True)
+
 sys.argv = ["acestep-api", "--host", r'''$ListenHost''', "--port", r'''$Port''', "--lm-model-path", r'''$LmModel''']
 if $($NoInit.IsPresent.ToString()):
     sys.argv.append("--no-init")
@@ -119,16 +148,26 @@ if ($Detach) {
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $stdoutLog = Join-Path $resolvedLogRoot "stdout-$timestamp.log"
     $stderrLog = Join-Path $resolvedLogRoot "stderr-$timestamp.log"
+    $baseUrl = "http://$ListenHost`:$Port"
+
+    Write-ServiceBanner -Mode "detached" -Endpoint $baseUrl -LogHint $resolvedLogRoot -Details @(
+        "Python:   $pythonExe",
+        "Repo:     $serviceRoot",
+        "Model:    $Model",
+        "LM:       $LmModel ($LmBackend)",
+        "Device:   $Device",
+        "NoInit:   $($NoInit.IsPresent)"
+    )
 
     $process = Start-Process `
         -FilePath $pythonExe `
         -ArgumentList @($runnerPath) `
         -WorkingDirectory $serviceRoot `
+        -WindowStyle Hidden `
         -RedirectStandardOutput $stdoutLog `
         -RedirectStandardError $stderrLog `
         -PassThru
 
-    $baseUrl = "http://$ListenHost`:$Port"
     $ready = Wait-ForAceStep -BaseUrl $baseUrl -TimeoutSec $ReadyTimeoutSec
     $listenerPid = Get-AceStepListenerPid -ListenPort $Port
 
@@ -161,6 +200,15 @@ if ($Detach) {
     Write-Host "stderr: $stderrLog"
     exit 0
 }
+
+Write-ServiceBanner -Mode "interactive" -Endpoint "http://$ListenHost`:$Port" -LogHint $defaultLogRoot -Details @(
+    "Python:   $pythonExe",
+    "Repo:     $serviceRoot",
+    "Model:    $Model",
+    "LM:       $LmModel ($LmBackend)",
+    "Device:   $Device",
+    "NoInit:   $($NoInit.IsPresent)"
+)
 
 Push-Location $serviceRoot
 try {

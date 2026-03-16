@@ -7,6 +7,7 @@ from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from filmstudio.domain.models import CampaignReleaseStatus, new_id, utc_now
+from filmstudio.services.path_display import format_local_display_path
 
 
 _FAMILY_PREFIXES = (
@@ -698,8 +699,8 @@ class CampaignService:
             "campaign_name": campaign_name,
             "family": family,
             "generated_at": report.get("generated_at"),
-            "report_path": str(report_path),
-            "report_root": str(report_path.parent),
+            "report_path": format_local_display_path(report_path),
+            "report_root": format_local_display_path(report_path.parent),
             "status": status,
             "is_green": status == "green",
             "total_runs": total_runs,
@@ -1317,7 +1318,7 @@ class CampaignService:
         comparison = detail.get("comparison") or {}
         return {
             "generated_at": utc_now(),
-            "manifest_path": str(self.baseline_manifest_path),
+            "manifest_path": format_local_display_path(self.baseline_manifest_path),
             "current_canonical": detail.get("summary"),
             "previous_canonical": release_overview.get("previous_canonical"),
             "comparison": {
@@ -1494,14 +1495,16 @@ class CampaignService:
             },
             "baseline_manifest": {
                 "available": bool(baseline_payload),
-                "manifest_path": str(self.baseline_manifest_path) if baseline_payload else None,
+                "manifest_path": format_local_display_path(self.baseline_manifest_path)
+                if baseline_payload
+                else None,
                 "comparison_summary": dict((baseline_payload or {}).get("comparison", {}).get("summary") or {}),
             },
-            "manifest_path": str(manifest_path) if manifest_path else None,
-            "package_path": str(package_path) if package_path else None,
+            "manifest_path": format_local_display_path(manifest_path) if manifest_path else None,
+            "package_path": format_local_display_path(package_path) if package_path else None,
             "manifest_url": "/api/v1/campaigns/release/handoff" if is_current_canonical else None,
             "download_url": "/api/v1/campaigns/release/handoff/download" if is_current_canonical else None,
-            "report_path": str(report.get("report_root") or ""),
+            "report_path": format_local_display_path(report.get("report_root") or ""),
         }
 
     def _build_release_handoff_manifest(self) -> dict[str, object] | None:
@@ -1528,8 +1531,8 @@ class CampaignService:
     def _save_release_handoff_bundle(self, payload: dict[str, object]) -> None:
         manifest_payload = {
             **payload,
-            "manifest_path": str(self.release_handoff_manifest_path),
-            "package_path": str(self.release_handoff_package_path),
+            "manifest_path": format_local_display_path(self.release_handoff_manifest_path),
+            "package_path": format_local_display_path(self.release_handoff_package_path),
         }
         manifest_payload["summary"] = {
             **dict(manifest_payload.get("summary") or {}),

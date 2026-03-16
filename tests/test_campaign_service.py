@@ -1,10 +1,12 @@
 import json
+import re
 from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
 
 from filmstudio.services.campaign_service import CampaignService
+from filmstudio.services.path_display import format_local_display_path
 
 
 def _sample_run(
@@ -236,7 +238,7 @@ def test_campaign_service_builds_overview_detail_and_case_table(tmp_path: Path) 
         "product_readiness_v12_release_gate_v5_green"
     )
     assert detail is not None
-    assert detail["summary"]["report_path"] == str(product_report_path)
+    assert detail["summary"]["report_path"] == format_local_display_path(product_report_path)
     assert detail["summary"]["status"] == "green"
     assert detail["report"]["campaign_name"] == "product_readiness_v12_release_gate_v5_green"
     assert len(detail["case_table"]) == 2
@@ -332,6 +334,8 @@ def test_campaign_service_promotes_canonical_and_tracks_registry_history(tmp_pat
     assert handoff_manifest["release_note"]["source"] == "registry_note"
     assert "supersedes previous baseline" in handoff_manifest["release_note"]["text"]
     assert Path(handoff_manifest["manifest_path"]).exists()
+    assert re.match(r"^/[A-Za-z]:/", handoff_manifest["manifest_path"]) is None
+    assert re.match(r"^/[A-Za-z]:/", handoff_manifest["package_path"]) is None
     package_path = Path(handoff_manifest["package_path"])
     assert package_path.exists()
     with ZipFile(package_path) as archive:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import time
+import unicodedata
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -23,6 +25,10 @@ class ComfyUIImageResult:
     workflow: dict[str, Any]
     history: dict[str, Any]
     duration_sec: float
+
+
+_COMFYUI_SEGMENT_UNSAFE_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
+_COMFYUI_SEGMENT_SEPARATOR_PATTERN = re.compile(r"_+")
 
 
 class ComfyUIClient:
@@ -207,6 +213,27 @@ def stable_visual_seed(*parts: str) -> int:
     return int(sha256(joined.encode("utf-8")).hexdigest()[:12], 16)
 
 
+def sanitize_comfyui_filename_prefix(filename_prefix: str) -> str:
+    raw_prefix = str(filename_prefix or "").replace("\\", "/").strip("/")
+    segments = [segment for segment in raw_prefix.split("/") if segment]
+    sanitized_segments = [_sanitize_comfyui_segment(segment) for segment in segments]
+    return "/".join(sanitized_segments) or "filmstudio/output"
+
+
+def _sanitize_comfyui_segment(segment: str) -> str:
+    original = str(segment or "").strip()
+    normalized = unicodedata.normalize("NFKD", original)
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    candidate_source = ascii_only if ascii_only.strip() else original
+    candidate = _COMFYUI_SEGMENT_UNSAFE_PATTERN.sub("_", candidate_source)
+    candidate = _COMFYUI_SEGMENT_SEPARATOR_PATTERN.sub("_", candidate).strip("._-").lower()
+    if not candidate:
+        candidate = "seg"
+    if candidate != original.casefold():
+        candidate = f"{candidate}-{sha256(original.encode('utf-8')).hexdigest()[:8]}"
+    return candidate
+
+
 def build_character_portrait_workflow(
     *,
     checkpoint_name: str,
@@ -327,6 +354,7 @@ def _build_t2i_workflow(
 ) -> dict[str, Any]:
     if not checkpoint_name:
         raise ComfyUIExecutionError("ComfyUI workflow requires a configured checkpoint name.")
+    safe_filename_prefix = sanitize_comfyui_filename_prefix(filename_prefix)
     return {
         "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": checkpoint_name}},
         "2": {"class_type": "CLIPTextEncode", "inputs": {"text": positive_prompt, "clip": ["1", 1]}},
@@ -353,7 +381,7 @@ def _build_t2i_workflow(
         "6": {"class_type": "VAEDecode", "inputs": {"samples": ["5", 0], "vae": ["1", 2]}},
         "7": {
             "class_type": "SaveImage",
-            "inputs": {"images": ["6", 0], "filename_prefix": filename_prefix},
+            "inputs": {"images": ["6", 0], "filename_prefix": safe_filename_prefix},
         },
     }
 
@@ -374,6 +402,7 @@ def _build_img2img_workflow(
         raise ComfyUIExecutionError("ComfyUI workflow requires a configured checkpoint name.")
     if not input_image_name:
         raise ComfyUIExecutionError("ComfyUI img2img workflow requires an input image name.")
+    safe_filename_prefix = sanitize_comfyui_filename_prefix(filename_prefix)
     return {
         "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": checkpoint_name}},
         "2": {"class_type": "LoadImage", "inputs": {"image": input_image_name}},
@@ -398,6 +427,6 @@ def _build_img2img_workflow(
         "7": {"class_type": "VAEDecode", "inputs": {"samples": ["6", 0], "vae": ["1", 2]}},
         "8": {
             "class_type": "SaveImage",
-            "inputs": {"images": ["7", 0], "filename_prefix": filename_prefix},
+            "inputs": {"images": ["7", 0], "filename_prefix": safe_filename_prefix},
         },
     }

@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -489,6 +490,7 @@ def test_deliverables_and_selective_rerender_endpoints() -> None:
     deliverables_payload = deliverables_response.json()
     assert deliverables_payload["ready"] is True
     assert deliverables_payload["named"]["final_video"]["exists"] is True
+    assert re.match(r"^/[A-Za-z]:/", deliverables_payload["named"]["final_video"]["path"]) is None
     assert deliverables_payload["named"]["final_video"]["download_url"].endswith(
         f"/api/v1/projects/{project_id}/deliverables/final_video/download"
     )
