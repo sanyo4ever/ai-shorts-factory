@@ -7867,6 +7867,30 @@ class DeterministicMediaAdapters:
             selected[-1] = cues[-1]
         return selected[:limit]
 
+    @staticmethod
+    def _subtitle_probe_visible(
+        *,
+        target_metrics: dict[str, Any],
+        control_metrics: dict[str, Any],
+    ) -> bool:
+        target_yavg = float(target_metrics.get("yavg", 0.0) or 0.0)
+        control_yavg = float(control_metrics.get("yavg", 0.0) or 0.0)
+        target_yhigh = float(target_metrics.get("yhigh", 0.0) or 0.0)
+        control_yhigh = float(control_metrics.get("yhigh", 0.0) or 0.0)
+        target_ydif = float(target_metrics.get("ydif", 0.0) or 0.0)
+        control_ydif = float(control_metrics.get("ydif", 0.0) or 0.0)
+
+        delta_yavg = target_yavg - control_yavg
+        delta_yhigh = target_yhigh - control_yhigh
+        delta_ydif = target_ydif - control_ydif
+
+        # `ymax` proved too noisy on bright or fast-moving backgrounds because one
+        # hot pixel in the control box could dominate the comparison. `yhigh`
+        # tracks the bright subtitle edge mass more reliably on this workstation.
+        strong_edge_signal = delta_yavg >= 3.0 and delta_yhigh >= 12.0
+        fallback_diff_signal = delta_yavg >= 8.0 and delta_ydif >= 0.00005
+        return strong_edge_signal or fallback_diff_signal
+
     def _probe_subtitle_difference_box(
         self,
         *,
@@ -7981,7 +8005,14 @@ class DeterministicMediaAdapters:
             control_yavg = float(control["metrics"].get("yavg", 0.0) or 0.0)
             target_ymax = float(target["metrics"].get("ymax", 0.0) or 0.0)
             control_ymax = float(control["metrics"].get("ymax", 0.0) or 0.0)
-            visible = target_yavg >= (control_yavg + 1.0) and target_ymax >= (control_ymax + 10.0)
+            target_yhigh = float(target["metrics"].get("yhigh", 0.0) or 0.0)
+            control_yhigh = float(control["metrics"].get("yhigh", 0.0) or 0.0)
+            target_ydif = float(target["metrics"].get("ydif", 0.0) or 0.0)
+            control_ydif = float(control["metrics"].get("ydif", 0.0) or 0.0)
+            visible = self._subtitle_probe_visible(
+                target_metrics=target["metrics"],
+                control_metrics=control["metrics"],
+            )
             samples.append(
                 {
                     "cue_index": cue["cue_index"],
@@ -7994,7 +8025,9 @@ class DeterministicMediaAdapters:
                     "control": control,
                     "visible": visible,
                     "delta_yavg": target_yavg - control_yavg,
+                    "delta_yhigh": target_yhigh - control_yhigh,
                     "delta_ymax": target_ymax - control_ymax,
+                    "delta_ydif": target_ydif - control_ydif,
                 }
             )
         visible_count = sum(1 for sample in samples if sample["visible"])

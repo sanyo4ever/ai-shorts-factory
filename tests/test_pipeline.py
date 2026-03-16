@@ -1003,6 +1003,23 @@ def test_local_pipeline_hero_insert_uses_top_subtitle_lane_and_visibility_probe(
     assert final_snapshot.qc_reports[-1].status == "passed"
 
 
+def test_subtitle_visibility_probe_accepts_bright_background_signal(tmp_path) -> None:
+    adapters = DeterministicMediaAdapters(ArtifactStore(tmp_path / "artifacts"))
+    visible = adapters._subtitle_probe_visible(
+        target_metrics={
+            "yavg": 31.6052,
+            "yhigh": 116.0,
+            "ydif": 0.00012021,
+        },
+        control_metrics={
+            "yavg": 8.54803,
+            "yhigh": 4.0,
+            "ydif": 0.0,
+        },
+    )
+    assert visible is True
+
+
 def test_stage_execution_records_managed_services(tmp_path) -> None:
     runtime_root = tmp_path / "runtime"
     artifact_store = ArtifactStore(runtime_root / "artifacts")
