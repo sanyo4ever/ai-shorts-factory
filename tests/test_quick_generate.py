@@ -25,6 +25,7 @@ def test_build_quick_project_request_uses_example_defaults() -> None:
     assert request.tts_backend == "piper"
     assert request.music_backend == "ace_step"
     assert request.lipsync_backend == "musetalk"
+    assert request.subtitle_backend == "whisperx"
     assert request.character_names == ["Тато", "Син"]
     assert request.script.startswith("СЦЕНА 1.")
     assert "ГЕРОЙСЬКА ВСТАВКА:" in request.script

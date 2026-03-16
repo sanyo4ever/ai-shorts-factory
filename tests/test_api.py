@@ -146,6 +146,7 @@ def test_quick_generate_endpoints_create_project_with_profile_defaults() -> None
     assert metadata["tts_backend"] == "piper"
     assert metadata["music_backend"] == "ace_step"
     assert metadata["lipsync_backend"] == "musetalk"
+    assert metadata["subtitle_backend"] == "whisperx"
     assert snapshot["project"]["title"] == "Тато і син: Fortnite-стрибок"
     assert snapshot["project"]["script"].startswith("СЦЕНА 1.")
 

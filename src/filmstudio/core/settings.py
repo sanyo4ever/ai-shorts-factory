@@ -274,7 +274,7 @@ def get_settings() -> Settings:
         planner_backend=os.getenv("FILMSTUDIO_PLANNER_BACKEND", "deterministic"),
         orchestrator_backend=os.getenv("FILMSTUDIO_ORCHESTRATOR_BACKEND", "local"),
         llm_backend=os.getenv("FILMSTUDIO_LLM_BACKEND", "ollama"),
-        llm_model=os.getenv("FILMSTUDIO_LLM_MODEL", "qwen2.5:7b"),
+        llm_model=os.getenv("FILMSTUDIO_LLM_MODEL", "qwen3:8b"),
         visual_backend=os.getenv("FILMSTUDIO_VISUAL_BACKEND", "deterministic"),
         video_backend=os.getenv("FILMSTUDIO_VIDEO_BACKEND", "deterministic"),
         render_width=render_width,

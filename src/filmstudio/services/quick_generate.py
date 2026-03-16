@@ -18,7 +18,7 @@ QUICK_STACK_PROFILES: dict[str, dict[str, Any]] = {
             "tts_backend": "piper",
             "music_backend": "ace_step",
             "lipsync_backend": "musetalk",
-            "subtitle_backend": "deterministic",
+            "subtitle_backend": "whisperx",
         },
     },
     "deterministic_preview": {

@@ -60,6 +60,7 @@ def test_get_settings_defaults_to_portrait_render_profile(monkeypatch, tmp_path:
 
     assert settings.render_width == 720
     assert settings.render_height == 1280
+    assert settings.llm_model == "qwen3:8b"
     assert settings.render_orientation == "portrait"
     assert settings.render_aspect_ratio_label == "9:16"
     assert settings.wan_task == "t2v-1.3B"
