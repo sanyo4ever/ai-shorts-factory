@@ -16,6 +16,30 @@ $serviceRoot = Join-Path $repoRoot "runtime\services\ComfyUI"
 $pythonExe = Join-Path $repoRoot "runtime\envs\comfyui\Scripts\python.exe"
 $defaultLogRoot = Join-Path $repoRoot "runtime\logs\comfyui"
 
+function Write-ServiceBanner {
+    param(
+        [string]$Mode,
+        [string]$Endpoint,
+        [string]$LogHint,
+        [string[]]$Details = @()
+    )
+
+    try {
+        $Host.UI.RawUI.WindowTitle = "Filmstudio - ComfyUI ($Mode)"
+    } catch {
+    }
+
+    Write-Host ""
+    Write-Host "=== Filmstudio Managed Service: ComfyUI ===" -ForegroundColor Cyan
+    Write-Host "Mode:     $Mode"
+    Write-Host "Endpoint: $Endpoint"
+    Write-Host "Logs:     $LogHint"
+    foreach ($detail in $Details) {
+        Write-Host $detail
+    }
+    Write-Host "-------------------------------------------" -ForegroundColor DarkGray
+}
+
 function Get-ComfyUiListenerPid {
     param([int]$ListenPort)
 
@@ -87,16 +111,23 @@ if ($Detach) {
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $stdoutLog = Join-Path $resolvedLogRoot "stdout-$timestamp.log"
     $stderrLog = Join-Path $resolvedLogRoot "stderr-$timestamp.log"
+    $baseUrl = "http://$ListenHost`:$Port/"
+
+    Write-ServiceBanner -Mode "detached" -Endpoint $baseUrl -LogHint $resolvedLogRoot -Details @(
+        "Python:   $pythonExe",
+        "Repo:     $serviceRoot",
+        "Device:   $(if ($Cpu -or $cudaExit -ne 0) { 'cpu' } else { 'cuda' })"
+    )
 
     $process = Start-Process `
         -FilePath $pythonExe `
         -ArgumentList $args `
         -WorkingDirectory $serviceRoot `
+        -WindowStyle Hidden `
         -RedirectStandardOutput $stdoutLog `
         -RedirectStandardError $stderrLog `
         -PassThru
 
-    $baseUrl = "http://$ListenHost`:$Port/"
     $ready = Wait-ForComfyUi -BaseUrl $baseUrl -TimeoutSec $ReadyTimeoutSec
     $listenerPid = Get-ComfyUiListenerPid -ListenPort $Port
 
@@ -124,6 +155,13 @@ if ($Detach) {
     Write-Host "stderr: $stderrLog"
     exit 0
 }
+
+Write-ServiceBanner -Mode "interactive" -Endpoint "http://$ListenHost`:$Port/" -LogHint $defaultLogRoot -Details @(
+    "Python:   $pythonExe",
+    "Repo:     $serviceRoot",
+    "Device:   $(if ($Cpu -or $cudaExit -ne 0) { 'cpu' } else { 'cuda' })",
+    "Args:     $($args -join ' ')"
+)
 
 Push-Location $serviceRoot
 try {
