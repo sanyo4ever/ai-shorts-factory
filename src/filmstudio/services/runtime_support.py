@@ -134,6 +134,13 @@ def probe_http_endpoint(base_url: str, *, timeout_sec: float = 5.0) -> dict[str,
             "status_code": None,
             "reason": str(exc.reason),
         }
+    except (TimeoutError, socket.timeout, OSError) as exc:
+        return {
+            "url": url,
+            "reachable": False,
+            "status_code": None,
+            "reason": str(exc),
+        }
 
 
 def probe_tcp_address(address: str, *, timeout_sec: float = 3.0) -> dict[str, Any]:

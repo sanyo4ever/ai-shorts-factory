@@ -106,7 +106,7 @@ class QuickGenerateAcceptanceCase:
     expected_music_preset: str = "uplift_pulse"
     expected_short_archetype: str = "creator_hook"
     expected_strategies: tuple[str, ...] = ("portrait_lipsync", "hero_insert")
-    expected_subtitle_lanes: tuple[str, ...] = ("top", "bottom")
+    expected_subtitle_lanes: tuple[str, ...] = ("bottom",)
     expected_scene_count_min: int = 1
     expected_character_count_min: int = 1
     expected_speaker_count_min: int = 1
@@ -771,7 +771,7 @@ def load_quick_generate_acceptance_cases(path: Path) -> list[QuickGenerateAccept
                     if str(value).strip()
                 )
                 if isinstance(expected_subtitle_lanes_raw, list)
-                else ("top", "bottom"),
+                else ("bottom",),
                 expected_scene_count_min=max(1, int(raw_case.get("expected_scene_count_min") or 1)),
                 expected_character_count_min=max(1, int(raw_case.get("expected_character_count_min") or 1)),
                 expected_speaker_count_min=max(1, int(raw_case.get("expected_speaker_count_min") or 1)),
@@ -2955,6 +2955,37 @@ def _remove_existing_case_runs(
     return filtered_runs
 
 
+def _merge_seeded_case_runs(
+    run_summaries: Iterable[dict[str, Any]],
+    *,
+    seed_runs: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged_runs: list[dict[str, Any]] = []
+    seeded_by_case_slug: dict[str, dict[str, Any]] = {}
+    seeded_without_case_slug: list[dict[str, Any]] = []
+    for run in seed_runs:
+        if not isinstance(run, dict):
+            continue
+        seeded_run = dict(run)
+        case_slug = str(seeded_run.get("case_slug") or "").strip()
+        if not case_slug:
+            seeded_without_case_slug.append(seeded_run)
+            continue
+        seeded_by_case_slug[case_slug] = seeded_run
+    for run in run_summaries:
+        if not isinstance(run, dict):
+            continue
+        existing_run = dict(run)
+        case_slug = str(existing_run.get("case_slug") or "").strip()
+        if case_slug and case_slug in seeded_by_case_slug:
+            merged_runs.append(seeded_by_case_slug.pop(case_slug))
+            continue
+        merged_runs.append(existing_run)
+    merged_runs.extend(seeded_by_case_slug.values())
+    merged_runs.extend(seeded_without_case_slug)
+    return merged_runs
+
+
 def hydrate_seeded_product_readiness_runs(
     settings: Settings,
     cases: Iterable[FullDryRunCase],
@@ -3001,6 +3032,76 @@ def hydrate_seeded_product_readiness_runs(
                     "expected_voice_cast_preset": case.voice_cast_preset,
                     "expected_music_preset": case.music_preset,
                     "expected_short_archetype": case.short_archetype,
+                    "expected_strategies": list(case.expected_strategies),
+                    "expected_subtitle_lanes": list(case.expected_subtitle_lanes),
+                    "expected_scene_count_min": case.expected_scene_count_min,
+                    "expected_character_count_min": case.expected_character_count_min,
+                    "expected_speaker_count_min": case.expected_speaker_count_min,
+                    "expected_portrait_shot_count_min": case.expected_portrait_shot_count_min,
+                    "expected_wan_shot_count_min": case.expected_wan_shot_count_min,
+                    "expected_music_backend": case.expected_music_backend,
+                    "operator_overview": operator_overview,
+                    "operator_queue_summary": operator_queue.get("summary", {}),
+                    "operator_queue_items": operator_queue.get("items", []),
+                    "run_error": run.get("run_error"),
+                    "seeded_from_report": str(path),
+                    "hydrated_from_snapshot": True,
+                }
+            )
+            hydrated_runs.append(run_summary)
+            hydrated_case_slugs.add(case_slug)
+    return hydrated_runs
+
+
+def hydrate_seeded_quick_generate_acceptance_runs(
+    settings: Settings,
+    cases: Iterable[QuickGenerateAcceptanceCase],
+    report_paths: Iterable[Path],
+) -> list[dict[str, Any]]:
+    selected_cases = list(cases)
+    cases_by_slug = {case.slug: case for case in selected_cases}
+    service, _ = build_local_runtime(settings)
+    hydrated_runs: list[dict[str, Any]] = []
+    hydrated_case_slugs: set[str] = set()
+
+    for report_path in report_paths:
+        path = Path(report_path)
+        if not path.exists():
+            continue
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw_runs = payload.get("runs", []) if isinstance(payload, dict) else []
+        if not isinstance(raw_runs, list):
+            continue
+        for run in raw_runs:
+            if not isinstance(run, dict):
+                continue
+            case_slug = str(run.get("case_slug") or "").strip()
+            if not case_slug or case_slug in hydrated_case_slugs:
+                continue
+            case = cases_by_slug.get(case_slug)
+            if case is None:
+                continue
+            project_id = str(run.get("project_id") or "").strip()
+            if not project_id:
+                continue
+            snapshot = service.get_snapshot(project_id)
+            if snapshot is None:
+                continue
+            run_summary = summarize_project_run(snapshot)
+            operator_overview = service.build_project_overview(snapshot)
+            operator_queue = service.build_operator_queue_for_snapshots([snapshot])
+            run_summary.update(
+                {
+                    "case_slug": case.slug,
+                    "case_index": selected_cases.index(case) + 1,
+                    "case_category": "quick_generate",
+                    "expected_input_mode": case.expected_input_mode,
+                    "expected_example_slug": case.expected_example_slug or "",
+                    "expected_stack_profile": case.expected_stack_profile or case.stack_profile,
+                    "expected_style_preset": case.expected_style_preset,
+                    "expected_voice_cast_preset": case.expected_voice_cast_preset,
+                    "expected_music_preset": case.expected_music_preset,
+                    "expected_short_archetype": case.expected_short_archetype,
                     "expected_strategies": list(case.expected_strategies),
                     "expected_subtitle_lanes": list(case.expected_subtitle_lanes),
                     "expected_scene_count_min": case.expected_scene_count_min,
@@ -3128,13 +3229,12 @@ def run_product_readiness_campaign(
             for run in run_summaries
             if str(run.get("case_slug") or "").strip()
         }
-    seeded_payloads = [dict(run) for run in seed_runs if isinstance(run, dict)]
-    for seeded_run in seeded_payloads:
-        case_slug = str(seeded_run.get("case_slug") or "").strip()
-        if not case_slug or case_slug in completed_case_slugs:
-            continue
-        run_summaries.append(seeded_run)
-        completed_case_slugs.add(case_slug)
+    run_summaries = _merge_seeded_case_runs(run_summaries, seed_runs=seed_runs)
+    completed_case_slugs = {
+        str(run.get("case_slug") or "").strip()
+        for run in run_summaries
+        if isinstance(run, dict) and str(run.get("case_slug") or "").strip()
+    }
     skipped_case_slugs: list[str] = []
 
     for index, case in enumerate(selected_cases, start=1):
@@ -3210,21 +3310,20 @@ def run_product_readiness_campaign(
         }
         report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
 
-    if not report_path.exists():
-        report_payload = {
-            "generated_at": utc_now(),
-            "campaign_name": campaign_name,
-            "runtime_root": str(settings.runtime_root),
-            "report_root": str(report_root),
-            "resume_mode": resume,
-            "replaced_case_slugs": sorted(replaced_case_slugs),
-            "skipped_case_slugs": skipped_case_slugs,
-            "backend_profile": worker.engine.adapters.backend_profile(),
-            "cases": [asdict(case_item) for case_item in selected_cases],
-            "runs": run_summaries,
-            "aggregate": aggregate_product_readiness_results(run_summaries),
-        }
-        report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
+    report_payload = {
+        "generated_at": utc_now(),
+        "campaign_name": campaign_name,
+        "runtime_root": str(settings.runtime_root),
+        "report_root": str(report_root),
+        "resume_mode": resume,
+        "replaced_case_slugs": sorted(replaced_case_slugs),
+        "skipped_case_slugs": skipped_case_slugs,
+        "backend_profile": worker.engine.adapters.backend_profile(),
+        "cases": [asdict(case_item) for case_item in selected_cases],
+        "runs": run_summaries,
+        "aggregate": aggregate_product_readiness_results(run_summaries),
+    }
+    report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
 
     return json.loads(report_path.read_text(encoding="utf-8"))
 
@@ -3236,6 +3335,7 @@ def run_quick_generate_acceptance_campaign(
     campaign_name: str,
     resume: bool = False,
     replace_existing_case_slugs: Iterable[str] = (),
+    seed_runs: Iterable[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     settings.ensure_runtime_dirs()
     report_root = settings.runtime_root / "campaigns" / campaign_name
@@ -3261,6 +3361,12 @@ def run_quick_generate_acceptance_campaign(
             for run in run_summaries
             if str(run.get("case_slug") or "").strip()
         }
+    run_summaries = _merge_seeded_case_runs(run_summaries, seed_runs=seed_runs)
+    completed_case_slugs = {
+        str(run.get("case_slug") or "").strip()
+        for run in run_summaries
+        if isinstance(run, dict) and str(run.get("case_slug") or "").strip()
+    }
     skipped_case_slugs: list[str] = []
 
     for index, case in enumerate(selected_cases, start=1):
@@ -3337,21 +3443,20 @@ def run_quick_generate_acceptance_campaign(
         }
         report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
 
-    if not report_path.exists():
-        report_payload = {
-            "generated_at": utc_now(),
-            "campaign_name": campaign_name,
-            "runtime_root": str(settings.runtime_root),
-            "report_root": str(report_root),
-            "resume_mode": resume,
-            "replaced_case_slugs": sorted(replaced_case_slugs),
-            "skipped_case_slugs": skipped_case_slugs,
-            "backend_profile": worker.engine.adapters.backend_profile(),
-            "cases": [asdict(case_item) for case_item in selected_cases],
-            "runs": run_summaries,
-            "aggregate": aggregate_quick_generate_acceptance_results(run_summaries),
-        }
-        report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
+    report_payload = {
+        "generated_at": utc_now(),
+        "campaign_name": campaign_name,
+        "runtime_root": str(settings.runtime_root),
+        "report_root": str(report_root),
+        "resume_mode": resume,
+        "replaced_case_slugs": sorted(replaced_case_slugs),
+        "skipped_case_slugs": skipped_case_slugs,
+        "backend_profile": worker.engine.adapters.backend_profile(),
+        "cases": [asdict(case_item) for case_item in selected_cases],
+        "runs": run_summaries,
+        "aggregate": aggregate_quick_generate_acceptance_results(run_summaries),
+    }
+    report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
 
     return json.loads(report_path.read_text(encoding="utf-8"))
 

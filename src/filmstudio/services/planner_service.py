@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
@@ -539,12 +540,13 @@ class PlannerService:
         *,
         request: ProjectCreateRequest,
     ) -> list[ShotPlan]:
+        repaired_block = self._repair_utf8_mojibake(block)
         dialogue, description_lines, action_lines = self._parse_scene_block(block, characters=characters)
         has_dialogue = bool(dialogue)
-        description_text = "\n".join(description_lines + action_lines).lower()
-        lower_block = block.lower()
+        description_text = self._scene_casefold("\n".join(description_lines + action_lines))
+        lower_block = self._scene_casefold(repaired_block)
         description_action_hits = self._action_signal_hits(description_text)
-        narration_hero_insert_hint = any(hint in lower_block for hint in self.HERO_INSERT_HINTS)
+        narration_hero_insert_hint = any(self._scene_casefold(hint) in lower_block for hint in self.HERO_INSERT_HINTS)
         has_action = bool(action_lines) or bool(description_action_hits) or (
             narration_hero_insert_hint and bool(self._action_signal_hits(lower_block))
         )
@@ -564,7 +566,9 @@ class PlannerService:
                 request=request,
                 block=block,
             )
-        if description_action_hits or (narration_hero_insert_hint and self._action_signal_hits(lower_block)):
+        if explicit_action_block or description_action_hits or (
+            narration_hero_insert_hint and self._action_signal_hits(lower_block)
+        ):
             strategy = "hero_insert"
             purpose = "short action insert"
         elif has_dialogue:
@@ -612,7 +616,7 @@ class PlannerService:
             purpose=purpose,
             characters=shot_character_names[:3],
             dialogue=dialogue,
-            prompt_seed=block[:200],
+            prompt_seed=repaired_block[:200],
             composition=self._build_shot_composition(strategy),
         )
         if strategy == "portrait_lipsync" and len(block.split()) > 50:
@@ -652,7 +656,7 @@ class PlannerService:
         return candidates
 
     def _normalize_scene_label(self, label: str) -> str:
-        collapsed = " ".join(label.replace("_", " ").split()).strip(" -")
+        collapsed = " ".join(self._repair_utf8_mojibake(label).replace("_", " ").split()).strip(" -")
         if not collapsed:
             return ""
         if collapsed.isupper():
@@ -660,18 +664,20 @@ class PlannerService:
         return " ".join(part[:1].upper() + part[1:] for part in collapsed.split())
 
     def _label_is_action(self, label: str) -> bool:
-        return label.casefold() in {entry.casefold() for entry in self.ACTION_SEGMENT_LABELS}
+        return self._scene_casefold(label) in {
+            self._scene_casefold(entry) for entry in self.ACTION_SEGMENT_LABELS
+        }
 
     def _scene_label_aliases(self, characters: list[CharacterProfile]) -> dict[str, str]:
         aliases: dict[str, str] = {}
         for narrator_alias in self.NARRATOR_ALIASES:
-            aliases[narrator_alias.casefold()] = "Narrator"
+            aliases[self._scene_casefold(narrator_alias)] = "Narrator"
         for label in self.ACTION_SEGMENT_LABELS:
-            aliases[label.casefold()] = "__action__"
+            aliases[self._scene_casefold(label)] = "__action__"
         for candidate in characters:
             normalized = self._normalize_scene_label(candidate.name)
             if normalized:
-                aliases[normalized.casefold()] = normalized
+                aliases[self._scene_casefold(normalized)] = normalized
         return aliases
 
     def _parse_scene_block(
@@ -680,6 +686,7 @@ class PlannerService:
         *,
         characters: list[CharacterProfile],
     ) -> tuple[list[DialogueLine], list[str], list[str]]:
+        block = self._repair_utf8_mojibake(block)
         aliases = self._scene_label_aliases(characters)
         if not aliases:
             normalized_block = self._normalize_scene_text_segment(block)
@@ -701,7 +708,7 @@ class PlannerService:
         if leading_text:
             description_lines.append(leading_text)
         for index, match in enumerate(matches):
-            label_key = match.group(1).casefold()
+            label_key = self._scene_casefold(match.group(1))
             segment_end = matches[index + 1].start() if index + 1 < len(matches) else len(block)
             segment_text = self._normalize_scene_text_segment(block[match.end() : segment_end])
             if not segment_text:
@@ -718,9 +725,40 @@ class PlannerService:
 
     @staticmethod
     def _normalize_scene_text_segment(text: str) -> str:
-        collapsed = " ".join(text.split()).strip()
+        collapsed = " ".join(PlannerService._repair_utf8_mojibake(text).split()).strip()
         collapsed = re.sub(r"(?i)^(?:scene|сцена)\s+\d+\s*[:.]?\s*", "", collapsed)
         return collapsed.strip(" -")
+
+    @staticmethod
+    def _repair_utf8_mojibake(text: str) -> str:
+        best_candidate = text
+        best_score = PlannerService._ukrainian_text_score(text)
+        for source_encoding in ("cp1251", "latin1", "cp1252"):
+            try:
+                candidate = text.encode(source_encoding, errors="strict").decode("utf-8", errors="strict")
+            except (UnicodeDecodeError, UnicodeEncodeError):
+                continue
+            candidate_score = PlannerService._ukrainian_text_score(candidate)
+            if candidate_score > best_score + 2.0:
+                best_candidate = candidate
+                best_score = candidate_score
+        return best_candidate
+
+    @staticmethod
+    def _ukrainian_text_score(text: str) -> float:
+        cyrillic_count = sum(1 for char in text if "\u0400" <= char <= "\u04FF")
+        ukrainian_specific_count = sum(1 for char in text if char in "іїєґІЇЄҐ")
+        suspicious_count = sum(1 for char in text if char in "ГђГ‘ГѓГ‚Гўв‚¬в„ўГўв‚¬Е“Гўв‚¬\uFFFD")
+        ascii_letter_count = sum(1 for char in text if "a" <= char.lower() <= "z")
+        return (cyrillic_count * 1.2) + (ukrainian_specific_count * 1.8) - (suspicious_count * 1.5) - (
+            ascii_letter_count * 0.05
+        )
+
+    @staticmethod
+    def _scene_casefold(text: str) -> str:
+        repaired = PlannerService._repair_utf8_mojibake(text)
+        normalized = unicodedata.normalize("NFKC", repaired)
+        return " ".join(normalized.replace("_", " ").split()).strip().casefold()
 
     def _build_dialogue_turn_shots(
         self,

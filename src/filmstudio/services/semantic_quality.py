@@ -1,12 +1,92 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
 from filmstudio.domain.models import ProjectSnapshot
 
 ACCEPTABLE_FACE_STATUSES = {"good", "excellent"}
+
+
+def _summary_status(summary: dict[str, Any] | None) -> str:
+    if not isinstance(summary, dict):
+        return ""
+    return str(summary.get("status") or "").strip().lower()
+
+
+def _summary_thresholds(summary: dict[str, Any] | None) -> tuple[float, float]:
+    if not isinstance(summary, dict):
+        return 0.84, 0.72
+    thresholds = summary.get("thresholds") if isinstance(summary.get("thresholds"), dict) else {}
+    warn_below = float(thresholds.get("warn_below", 0.84) or 0.84)
+    reject_below = float(thresholds.get("reject_below", 0.72) or 0.72)
+    return warn_below, reject_below
+
+
+def _summary_is_good_or_excellent(summary: dict[str, Any] | None) -> bool:
+    if not isinstance(summary, dict):
+        return False
+    warn_below, reject_below = _summary_thresholds(summary)
+    score = float(summary.get("score", 0.0) or 0.0)
+    status = _summary_status(summary)
+    if status == "reject" or score < reject_below:
+        return False
+    return status in ACCEPTABLE_FACE_STATUSES and score >= warn_below
+
+
+def _marginal_output_isolation_release_safe(
+    payload: dict[str, Any],
+    *,
+    output_probe: dict[str, Any],
+    output_isolation_summary: dict[str, Any] | None,
+    output_quality_summary: dict[str, Any] | None,
+    sequence_quality_summary: dict[str, Any] | None,
+    temporal_drift_summary: dict[str, Any] | None,
+    delta_summary: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(output_isolation_summary, dict):
+        return False
+    if _summary_status(output_isolation_summary) != "marginal":
+        return False
+    isolation_score = float(output_isolation_summary.get("score", 0.0) or 0.0)
+    if isolation_score < 0.75:
+        return False
+    if _effective_warning_codes(output_probe):
+        return False
+    if not all(
+        _summary_is_good_or_excellent(summary)
+        for summary in (
+            output_quality_summary,
+            sequence_quality_summary,
+            temporal_drift_summary,
+            delta_summary,
+        )
+    ):
+        return False
+    adjustment = (
+        payload.get("output_isolation_adjustment")
+        if isinstance(payload.get("output_isolation_adjustment"), dict)
+        else None
+    )
+    if not isinstance(adjustment, dict) or not bool(adjustment.get("applied")):
+        return False
+    if int(output_isolation_summary.get("secondary_face_count", 0) or 0) > 1:
+        return False
+    dominant_secondary = (
+        output_isolation_summary.get("dominant_secondary")
+        if isinstance(output_isolation_summary.get("dominant_secondary"), dict)
+        else None
+    )
+    if dominant_secondary is None:
+        return False
+    dominant_effective_ratio = float(dominant_secondary.get("effective_ratio", 0.0) or 0.0)
+    if dominant_effective_ratio > 0.25:
+        return False
+    reasons = [str(reason) for reason in output_isolation_summary.get("reasons", []) if isinstance(reason, str)]
+    return not any(reason not in {"dominant_secondary_face_warn"} for reason in reasons)
 
 
 def _latest_artifact_path(snapshot: ProjectSnapshot, kind: str) -> Path | None:
@@ -42,19 +122,50 @@ def _project_backend(snapshot: ProjectSnapshot, key: str) -> str:
     return str(snapshot.project.metadata.get(key) or "").strip().lower()
 
 
+def _repair_utf8_mojibake(text: str) -> str:
+    best_candidate = text
+    best_score = _ukrainian_text_score(text)
+    for source_encoding in ("cp1251", "latin1", "cp1252"):
+        try:
+            candidate = text.encode(source_encoding, errors="strict").decode("utf-8", errors="strict")
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            continue
+        candidate_score = _ukrainian_text_score(candidate)
+        if candidate_score > best_score + 2.0:
+            best_candidate = candidate
+            best_score = candidate_score
+    return best_candidate
+
+
+def _ukrainian_text_score(text: str) -> float:
+    cyrillic_count = sum(1 for char in text if "\u0400" <= char <= "\u04FF")
+    ukrainian_specific_count = sum(1 for char in text if char in "іїєґІЇЄҐ")
+    suspicious_count = sum(1 for char in text if char in "ГђГ‘ГѓГ‚Гўв‚¬в„ўГўв‚¬Е“Гўв‚¬\uFFFD")
+    ascii_letter_count = sum(1 for char in text if "a" <= char.lower() <= "z")
+    return (cyrillic_count * 1.2) + (ukrainian_specific_count * 1.8) - (suspicious_count * 1.5) - (
+        ascii_letter_count * 0.05
+    )
+
+
+def _normalize_script_label(text: str) -> str:
+    repaired = _repair_utf8_mojibake(text)
+    normalized = unicodedata.normalize("NFKC", repaired)
+    return " ".join(normalized.split()).strip().lower()
+
+
 def _script_dialogue_line_count(script: str) -> int:
     count = 0
-    blocked_speakers = {"hero insert"}
+    blocked_speakers = {"hero insert", "геройська вставка"}
     for raw_line in script.splitlines():
-        line = raw_line.strip()
+        line = _repair_utf8_mojibake(raw_line).strip()
         if not line:
             continue
-        if line.upper().startswith("SCENE "):
+        if re.match(r"(?i)^(?:scene|сцена)\s+\d+\b", _normalize_script_label(line)):
             continue
         if ":" not in line:
             continue
         speaker, text = line.split(":", 1)
-        if speaker.strip().lower() in blocked_speakers:
+        if _normalize_script_label(speaker) in blocked_speakers:
             continue
         if speaker.strip() and text.strip():
             count += 1
@@ -180,23 +291,50 @@ def _portrait_identity_consistency_metric(snapshot: ProjectSnapshot) -> dict[str
             continue
         source_probe = payload.get("source_face_probe") if isinstance(payload.get("source_face_probe"), dict) else {}
         output_probe = payload.get("output_face_probe") if isinstance(payload.get("output_face_probe"), dict) else {}
-        source_quality = str((payload.get("source_face_quality") or {}).get("status") or "").strip().lower()
-        output_quality = str((payload.get("output_face_quality") or {}).get("status") or "").strip().lower()
-        source_isolation = str((payload.get("source_face_isolation") or {}).get("status") or "").strip().lower()
-        output_isolation = str((payload.get("output_face_isolation") or {}).get("status") or "").strip().lower()
-        sequence_quality = str(
-            (payload.get("output_face_sequence_quality") or {}).get("status") or ""
-        ).strip().lower()
-        temporal_drift = str(
-            (payload.get("output_face_temporal_drift") or {}).get("status") or ""
-        ).strip().lower()
+        source_quality_summary = payload.get("source_face_quality") if isinstance(payload.get("source_face_quality"), dict) else None
+        output_quality_summary = payload.get("output_face_quality") if isinstance(payload.get("output_face_quality"), dict) else None
+        source_isolation_summary = payload.get("source_face_isolation") if isinstance(payload.get("source_face_isolation"), dict) else None
+        output_isolation_summary = payload.get("output_face_isolation") if isinstance(payload.get("output_face_isolation"), dict) else None
+        sequence_quality_summary = (
+            payload.get("output_face_sequence_quality")
+            if isinstance(payload.get("output_face_sequence_quality"), dict)
+            else None
+        )
+        temporal_drift_summary = (
+            payload.get("output_face_temporal_drift")
+            if isinstance(payload.get("output_face_temporal_drift"), dict)
+            else None
+        )
+        source_vs_output_delta_summary = (
+            payload.get("source_vs_output_face_delta")
+            if isinstance(payload.get("source_vs_output_face_delta"), dict)
+            else None
+        )
+        source_quality = _summary_status(source_quality_summary)
+        output_quality = _summary_status(output_quality_summary)
+        source_isolation = _summary_status(source_isolation_summary)
+        output_isolation = _summary_status(output_isolation_summary)
+        sequence_quality = _summary_status(sequence_quality_summary)
+        temporal_drift = _summary_status(temporal_drift_summary)
         source_warnings = _effective_warning_codes(source_probe)
         output_warnings = _effective_warning_codes(output_probe)
+        marginal_output_isolation_release_safe = _marginal_output_isolation_release_safe(
+            payload,
+            output_probe=output_probe,
+            output_isolation_summary=output_isolation_summary,
+            output_quality_summary=output_quality_summary,
+            sequence_quality_summary=sequence_quality_summary,
+            temporal_drift_summary=temporal_drift_summary,
+            delta_summary=source_vs_output_delta_summary,
+        )
         if (
             source_quality in ACCEPTABLE_FACE_STATUSES
             and output_quality in ACCEPTABLE_FACE_STATUSES
             and source_isolation in ACCEPTABLE_FACE_STATUSES
-            and output_isolation in ACCEPTABLE_FACE_STATUSES
+            and (
+                output_isolation in ACCEPTABLE_FACE_STATUSES
+                or marginal_output_isolation_release_safe
+            )
             and sequence_quality in ACCEPTABLE_FACE_STATUSES
             and temporal_drift in ACCEPTABLE_FACE_STATUSES
             and not source_warnings

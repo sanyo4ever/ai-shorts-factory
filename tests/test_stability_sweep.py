@@ -20,9 +20,11 @@ from filmstudio.worker.runtime_factory import build_local_runtime
 from filmstudio.worker.stability_sweep import (
     DEFAULT_PRODUCT_READINESS_CASES,
     FullDryRunCase,
+    QuickGenerateAcceptanceCase,
     WanBudgetProfile,
     aggregate_full_dry_run_results,
     aggregate_product_readiness_results,
+    aggregate_quick_generate_acceptance_results,
     aggregate_wan_budget_ladder_results,
     aggregate_wan_hero_shot_results,
     aggregate_subtitle_lane_results,
@@ -33,9 +35,11 @@ from filmstudio.worker.stability_sweep import (
     extract_portrait_shot_summary,
     extract_subtitle_lane_summary,
     extract_wan_shot_summary,
+    hydrate_seeded_quick_generate_acceptance_runs,
     hydrate_seeded_product_readiness_runs,
     load_full_dry_run_cases,
     run_full_dry_run_campaign,
+    run_quick_generate_acceptance_campaign,
     run_product_readiness_campaign,
     load_wan_budget_profiles,
     run_wan_budget_ladder_campaign,
@@ -1971,6 +1975,395 @@ def test_run_product_readiness_campaign_writes_report_for_seed_only_resume(tmp_p
     assert report["aggregate"]["product_ready_runs"] == 1
     assert report["skipped_case_slugs"] == ["seeded_case"]
     assert (runtime_root / "campaigns" / "product_readiness_seed_only" / "stability_report.json").exists()
+
+
+def test_hydrate_seeded_quick_generate_acceptance_runs_reuses_saved_project_snapshot(tmp_path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    settings = get_settings.__wrapped__()  # type: ignore[attr-defined]
+    settings = settings.__class__(
+        **{
+            **settings.__dict__,
+            "runtime_root": runtime_root,
+            "database_path": runtime_root / "filmstudio.sqlite3",
+            "gpu_lease_root": runtime_root / "manifests" / "gpu_leases",
+        }
+    )
+    settings.ensure_runtime_dirs()
+
+    snapshot = ProjectSnapshot(
+        project=ProjectRecord(
+            project_id="proj_quick_seeded",
+            title="Seeded quick case",
+            script="СЦЕНА 1. ВЕДУЧИЙ говорить.\n\nГЕРОЙСЬКА ВСТАВКА: reveal.",
+            language="uk",
+            style="stylized_short",
+            target_duration_sec=10,
+            estimated_duration_sec=10,
+            status="completed",
+        ),
+        scenes=[],
+        jobs=[],
+        job_attempts=[],
+        artifacts=[],
+        qc_reports=[],
+    )
+
+    class FakeService:
+        def get_snapshot(self, project_id: str) -> ProjectSnapshot | None:
+            return snapshot if project_id == "proj_quick_seeded" else None
+
+        def build_project_overview(self, project_snapshot: ProjectSnapshot) -> dict[str, object]:
+            overview, _, _ = _ready_operator_surface(
+                project_id=project_snapshot.project.project_id,
+                shot_count=3,
+                scene_count=2,
+                next_action="review",
+            )
+            return overview
+
+        def build_operator_queue_for_snapshots(
+            self,
+            snapshots: list[ProjectSnapshot],
+        ) -> dict[str, object]:
+            project_id = snapshots[0].project.project_id if snapshots else "proj_quick_seeded"
+            _, queue_summary, queue_items = _ready_operator_surface(
+                project_id=project_id,
+                shot_count=3,
+                scene_count=2,
+                next_action="review",
+            )
+            return {
+                "summary": queue_summary,
+                "projects": [],
+                "items": queue_items,
+            }
+
+    class FakeWorker:
+        class Engine:
+            class Adapters:
+                @staticmethod
+                def backend_profile() -> dict[str, str]:
+                    return {}
+
+            adapters = Adapters()
+
+        engine = Engine()
+
+    monkeypatch.setattr(
+        "filmstudio.worker.stability_sweep.build_local_runtime",
+        lambda local_settings: (FakeService(), FakeWorker()),
+    )
+    monkeypatch.setattr(
+        "filmstudio.worker.stability_sweep.summarize_project_run",
+        lambda project_snapshot: {
+            "project_id": project_snapshot.project.project_id,
+            "title": project_snapshot.project.title,
+            "status": "completed",
+            "style_preset": "studio_illustrated",
+            "voice_cast_preset": "solo_host",
+            "music_preset": "uplift_pulse",
+            "short_archetype": "creator_hook",
+            "scene_count": 2,
+            "character_count": 1,
+            "speaker_count": 1,
+            "portrait_shots": [{"shot_id": "shot_portrait"}],
+            "portrait_retry_free": True,
+            "portrait_warning_free": True,
+            "wan_shots": [{"shot_id": "shot_wan"}],
+            "shot_strategy_counts": {"portrait_lipsync": 1, "hero_insert": 1},
+            "subtitle_summary": {"lane_counts": {"bottom": 1}},
+            "subtitle_visibility_clean": True,
+            "music_summary": {"backend": "ace_step", "manifest_available": True, "music_bed_exists": True},
+            "render_summary": {
+                "actual_resolution": "720x1280",
+                "subtitle_burned_in": True,
+                "target_matches_actual": True,
+            },
+            "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=2),
+            "semantic_quality": _ready_semantic_quality(),
+            "quick_generate": {
+                "available": True,
+                "mode": "quick_generate",
+                "input_mode": "example",
+                "example_slug": "creator_hook_breakdown",
+                "stack_profile": "production_vertical",
+                "source_prompt_length": 32,
+                "generated_script_length": 64,
+                "backend_profile_matches": True,
+            },
+            "backend_profile": {
+                "visual_backend": "comfyui",
+                "video_backend": "wan",
+                "tts_backend": "piper",
+                "music_backend": "ace_step",
+                "lipsync_backend": "musetalk",
+                "subtitle_backend": "whisperx",
+            },
+            "qc_status": "passed",
+            "qc_findings": [],
+        },
+    )
+
+    seed_report_path = runtime_root / "campaigns" / "seeded_quick_report.json"
+    seed_report_path.parent.mkdir(parents=True, exist_ok=True)
+    seed_report_path.write_text(
+        json.dumps(
+            {
+                "runs": [
+                    {
+                        "project_id": "proj_quick_seeded",
+                        "case_slug": "seeded_quick_case",
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    seeded_runs = hydrate_seeded_quick_generate_acceptance_runs(
+        settings,
+        [
+            QuickGenerateAcceptanceCase(
+                slug="seeded_quick_case",
+                title="Seeded Quick Case",
+                example_slug="creator_hook_breakdown",
+                stack_profile="production_vertical",
+                expected_input_mode="example",
+                expected_example_slug="creator_hook_breakdown",
+                expected_stack_profile="production_vertical",
+                expected_music_backend="ace_step",
+            )
+        ],
+        [seed_report_path],
+    )
+
+    assert len(seeded_runs) == 1
+    assert seeded_runs[0]["case_slug"] == "seeded_quick_case"
+    assert seeded_runs[0]["project_id"] == "proj_quick_seeded"
+    assert seeded_runs[0]["hydrated_from_snapshot"] is True
+    assert seeded_runs[0]["expected_stack_profile"] == "production_vertical"
+    assert seeded_runs[0]["operator_queue_summary"]["queue_item_count"] == 3
+
+
+def test_run_quick_generate_acceptance_campaign_writes_report_for_seed_only_resume(tmp_path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    settings = get_settings.__wrapped__()  # type: ignore[attr-defined]
+    settings = settings.__class__(
+        **{
+            **settings.__dict__,
+            "runtime_root": runtime_root,
+            "database_path": runtime_root / "filmstudio.sqlite3",
+            "gpu_lease_root": runtime_root / "manifests" / "gpu_leases",
+        }
+    )
+    settings.ensure_runtime_dirs()
+
+    class FakeService:
+        def create_quick_project(self, request):  # type: ignore[no-untyped-def]
+            raise AssertionError("Seed-only resume should not create new quick projects")
+
+    class FakeWorker:
+        class Engine:
+            class Adapters:
+                @staticmethod
+                def backend_profile() -> dict[str, str]:
+                    return {"visual_backend": "comfyui"}
+
+            adapters = Adapters()
+
+        engine = Engine()
+
+    monkeypatch.setattr(
+        "filmstudio.worker.stability_sweep.build_local_runtime",
+        lambda local_settings: (FakeService(), FakeWorker()),
+    )
+
+    overview, queue_summary, queue_items = _ready_operator_surface(
+        project_id="proj_quick_seeded",
+        shot_count=2,
+        scene_count=2,
+    )
+    seed_run = {
+        "project_id": "proj_quick_seeded",
+        "case_slug": "seeded_quick_case",
+        "status": "completed",
+        "case_category": "quick_generate",
+        "style_preset": "studio_illustrated",
+        "voice_cast_preset": "solo_host",
+        "music_preset": "uplift_pulse",
+        "short_archetype": "creator_hook",
+        "expected_input_mode": "example",
+        "expected_example_slug": "creator_hook_breakdown",
+        "expected_stack_profile": "production_vertical",
+        "expected_style_preset": "studio_illustrated",
+        "expected_voice_cast_preset": "solo_host",
+        "expected_music_preset": "uplift_pulse",
+        "expected_short_archetype": "creator_hook",
+        "scene_count": 2,
+        "character_count": 1,
+        "speaker_count": 1,
+        "expected_scene_count_min": 1,
+        "expected_character_count_min": 1,
+        "expected_speaker_count_min": 1,
+        "expected_portrait_shot_count_min": 1,
+        "expected_wan_shot_count_min": 1,
+        "expected_music_backend": "ace_step",
+        "shot_strategy_counts": {"portrait_lipsync": 1, "hero_insert": 1},
+        "portrait_shots": [{"shot_id": "shot_portrait"}],
+        "portrait_retry_free": True,
+        "portrait_warning_free": True,
+        "wan_shots": [{"shot_id": "shot_wan"}],
+        "expected_strategies": ["portrait_lipsync", "hero_insert"],
+        "expected_subtitle_lanes": ["bottom"],
+        "subtitle_summary": {"lane_counts": {"bottom": 1}},
+        "subtitle_visibility_clean": True,
+        "music_summary": {"backend": "ace_step", "manifest_available": True, "music_bed_exists": True},
+        "render_summary": {"actual_resolution": "720x1280", "subtitle_burned_in": True, "target_matches_actual": True},
+        "deliverables_summary": _ready_deliverables_summary(shot_count=2, scene_count=2),
+        "semantic_quality": _ready_semantic_quality(),
+        "quick_generate": {
+            "available": True,
+            "mode": "quick_generate",
+            "input_mode": "example",
+            "example_slug": "creator_hook_breakdown",
+            "stack_profile": "production_vertical",
+            "source_prompt_length": 24,
+            "generated_script_length": 48,
+            "backend_profile_matches": True,
+        },
+        "backend_profile": {
+            "visual_backend": "comfyui",
+            "video_backend": "wan",
+            "music_backend": "ace_step",
+        },
+        "operator_overview": overview,
+        "operator_queue_summary": queue_summary,
+        "operator_queue_items": queue_items,
+        "qc_status": "passed",
+        "qc_findings": [],
+    }
+
+    report = run_quick_generate_acceptance_campaign(
+        settings,
+        [
+            QuickGenerateAcceptanceCase(
+                slug="seeded_quick_case",
+                title="Seeded Quick Case",
+                example_slug="creator_hook_breakdown",
+                stack_profile="production_vertical",
+                expected_input_mode="example",
+                expected_example_slug="creator_hook_breakdown",
+                expected_stack_profile="production_vertical",
+                expected_music_backend="ace_step",
+            )
+        ],
+        campaign_name="quick_generate_seed_only",
+        resume=True,
+        seed_runs=[seed_run],
+    )
+
+    assert report["aggregate"]["quick_acceptance_ready_runs"] == 1
+    assert report["skipped_case_slugs"] == ["seeded_quick_case"]
+    assert (
+        runtime_root / "campaigns" / "quick_generate_seed_only" / "stability_report.json"
+    ).exists()
+
+
+def test_run_quick_generate_acceptance_campaign_seed_refresh_replaces_existing_case_summary(
+    tmp_path, monkeypatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    settings = get_settings.__wrapped__()  # type: ignore[attr-defined]
+    settings = settings.__class__(
+        **{
+            **settings.__dict__,
+            "runtime_root": runtime_root,
+            "database_path": runtime_root / "filmstudio.sqlite3",
+            "gpu_lease_root": runtime_root / "manifests" / "gpu_leases",
+        }
+    )
+    settings.ensure_runtime_dirs()
+
+    old_run = {
+        "project_id": "proj_quick_old",
+        "case_slug": "seeded_quick_case",
+        "status": "completed",
+        "case_category": "quick_generate",
+        "style_preset": "studio_illustrated",
+        "voice_cast_preset": "solo_host",
+        "music_preset": "uplift_pulse",
+        "short_archetype": "creator_hook",
+        "expected_input_mode": "example",
+        "expected_example_slug": "creator_hook_breakdown",
+        "expected_stack_profile": "production_vertical",
+        "expected_style_preset": "studio_illustrated",
+        "expected_voice_cast_preset": "solo_host",
+        "expected_music_preset": "uplift_pulse",
+        "expected_short_archetype": "creator_hook",
+        "expected_strategies": ["portrait_lipsync", "hero_insert"],
+        "expected_subtitle_lanes": ["bottom"],
+        "expected_scene_count_min": 1,
+        "expected_character_count_min": 1,
+        "expected_speaker_count_min": 1,
+        "expected_portrait_shot_count_min": 1,
+        "expected_wan_shot_count_min": 1,
+        "expected_music_backend": "ace_step",
+        "quick_generate": {"available": True, "backend_profile_matches": True},
+        "quick_stack_profile": "production_vertical",
+        "quick_example_slug": "creator_hook_breakdown",
+        "shot_strategy_counts": {"portrait_lipsync": 1},
+        "subtitle_summary": {"lane_counts": {"bottom": 1}},
+        "music_summary": {"backend": "ace_step", "manifest_available": True, "music_bed_exists": True},
+        "render_summary": {"target_matches_actual": True, "subtitle_burned_in": True},
+        "deliverables_summary": {"package_ready": True},
+        "semantic_quality": {"available": True, "gate_passed": False, "failed_gates": ["portrait_identity_consistency"]},
+        "qc_status": "passed",
+        "qc_findings": ["marginal_lipsync_output_face_isolation"],
+        "operator_overview": {"semantic_quality": {"gate_passed": False}},
+        "operator_queue_summary": {"queue_item_count": 1},
+        "operator_queue_items": [],
+    }
+    report_root = runtime_root / "campaigns" / "quick_generate_seed_refresh"
+    report_root.mkdir(parents=True, exist_ok=True)
+    (report_root / "stability_report.json").write_text(
+        json.dumps({"runs": [old_run], "aggregate": {}}, indent=2),
+        encoding="utf-8",
+    )
+
+    refreshed_run = {
+        **old_run,
+        "project_id": "proj_quick_new",
+        "quick_acceptance_ready": True,
+        "semantic_quality": {"available": True, "gate_passed": True, "failed_gates": []},
+        "qc_findings": [],
+        "operator_overview": {"semantic_quality": {"gate_passed": True}},
+        "seeded_from_report": "seed.json",
+        "hydrated_from_snapshot": True,
+    }
+
+    report = run_quick_generate_acceptance_campaign(
+        settings,
+        [
+            QuickGenerateAcceptanceCase(
+                slug="seeded_quick_case",
+                title="Seeded Quick Case",
+                example_slug="creator_hook_breakdown",
+                stack_profile="production_vertical",
+                expected_input_mode="example",
+                expected_example_slug="creator_hook_breakdown",
+                expected_stack_profile="production_vertical",
+                expected_music_backend="ace_step",
+            )
+        ],
+        campaign_name="quick_generate_seed_refresh",
+        resume=True,
+        seed_runs=[refreshed_run],
+    )
+
+    assert report["runs"][0]["project_id"] == "proj_quick_new"
+    assert report["skipped_case_slugs"] == ["seeded_quick_case"]
+    assert report["aggregate"]["qc_finding_counts"] == {}
 
 
 def test_run_product_readiness_campaign_resume_skips_existing_case(tmp_path, monkeypatch) -> None:

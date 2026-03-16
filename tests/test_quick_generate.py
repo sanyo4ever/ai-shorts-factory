@@ -32,6 +32,21 @@ def test_build_quick_project_request_uses_example_defaults() -> None:
     assert metadata["example_slug"] == "fortnite_family_jump"
 
 
+def test_build_quick_project_request_creator_hook_example_includes_return_close() -> None:
+    request, metadata = build_quick_project_request(
+        QuickGenerateRequest(
+            example_slug="creator_hook_breakdown",
+            prompt="",
+            run_immediately=True,
+        )
+    )
+
+    assert request.short_archetype == "creator_hook"
+    assert request.script.count("\n\n") >= 2
+    assert request.script.count(":") >= 3
+    assert metadata["example_slug"] == "creator_hook_breakdown"
+
+
 def test_build_quick_project_request_generates_dialogue_action_script_from_idea() -> None:
     request, metadata = build_quick_project_request(
         QuickGenerateRequest(

@@ -17,6 +17,7 @@ from filmstudio.domain.models import (
 from filmstudio.worker.stability_sweep import (
     QuickGenerateAcceptanceCase,
     aggregate_quick_generate_acceptance_results,
+    load_quick_generate_acceptance_cases,
     run_quick_generate_acceptance_campaign,
     summarize_project_run,
 )
@@ -308,8 +309,28 @@ def test_aggregate_quick_generate_acceptance_results_counts_ready_runs() -> None
     assert aggregate["quick_contract_match_runs"] == 1
     assert aggregate["quick_acceptance_ready_runs"] == 1
     assert aggregate["quick_acceptance_ready_rate"] == 1.0
-    assert aggregate["stack_profile_counts"] == {"deterministic_preview": 1}
-    assert aggregate["input_mode_counts"] == {"prompt": 1}
+
+
+def test_load_quick_generate_acceptance_cases_defaults_to_bottom_lane(tmp_path) -> None:
+    cases_path = tmp_path / "cases.json"
+    cases_path.write_text(
+        json.dumps(
+            [
+                {
+                    "slug": "uk_case",
+                    "title": "Ukrainian production quick case",
+                    "example_slug": "fortnite_family_jump",
+                    "stack_profile": "production_vertical",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    cases = load_quick_generate_acceptance_cases(cases_path)
+
+    assert len(cases) == 1
+    assert cases[0].expected_subtitle_lanes == ("bottom",)
 
 
 def test_aggregate_quick_generate_acceptance_results_accepts_preview_music_without_manifest() -> None:

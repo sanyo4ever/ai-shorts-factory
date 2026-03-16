@@ -9,6 +9,7 @@ from pathlib import Path
 from filmstudio.core.settings import get_settings
 from filmstudio.worker.stability_sweep import (
     DEFAULT_QUICK_GENERATE_ACCEPTANCE_CASES,
+    hydrate_seeded_quick_generate_acceptance_runs,
     load_quick_generate_acceptance_cases,
     run_quick_generate_acceptance_campaign,
 )
@@ -82,6 +83,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="When resuming, remove saved runs for the selected case slugs and rerun them.",
     )
+    parser.add_argument(
+        "--seed-report",
+        action="append",
+        default=[],
+        help="Optional existing stability_report.json path to hydrate matching case runs into the new campaign.",
+    )
     return parser.parse_args()
 
 
@@ -123,12 +130,18 @@ def main() -> int:
 
     apply_runtime_profile(args.runtime_profile)
     settings = get_settings()
+    seed_runs = hydrate_seeded_quick_generate_acceptance_runs(
+        settings,
+        cases,
+        [Path(path) for path in args.seed_report],
+    )
     report = run_quick_generate_acceptance_campaign(
         settings,
         cases,
         campaign_name=args.campaign_name,
         resume=args.resume,
         replace_existing_case_slugs=[case.slug for case in cases] if args.replace_existing else (),
+        seed_runs=seed_runs,
     )
     print(json.dumps(report, indent=2, ensure_ascii=False))
     return 0

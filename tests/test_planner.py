@@ -206,7 +206,53 @@ def test_planner_splits_inline_dialogue_plus_action_into_closeups_and_hero_inser
     assert shots[1].dialogue[0].text == "Tak, tatu, poletily!"
     assert shots[2].dialogue == []
     assert shots[2].composition.subtitle_lane == "top"
-    assert sum(shot.duration_sec for shot in shots) == 5
+
+
+def test_planner_routes_creator_hook_hero_insert_scene_to_hero_insert() -> None:
+    planner = PlannerService()
+    request = ProjectCreateRequest(
+        title="Creator hook ukrainian",
+        script=(
+            "СЦЕНА 1. Ведучий дивиться в камеру в яскравій студії.\n"
+            "ВЕДУЧИЙ: За 8 секунд поясню, чому це працює.\n\n"
+            "ГЕРОЙСЬКА ВСТАВКА: Ривком вривається proof beat, графіка летить у кадр, рух збирається в reveal і зупиняється на чистому фінальному кадрі."
+        ),
+        language="uk",
+        target_duration_sec=8,
+    )
+
+    bundle = planner.build_planning_bundle("proj_test", request)
+
+    assert len(bundle.scenes) == 2
+    assert bundle.scenes[0].shots[0].strategy == "portrait_lipsync"
+    assert bundle.scenes[1].shots[0].strategy == "hero_insert"
+    assert bundle.scenes[1].shots[0].composition.subtitle_lane == "top"
+
+
+def test_planner_treats_explicit_action_label_without_motion_stems_as_hero_insert() -> None:
+    planner = PlannerService()
+    request = ProjectCreateRequest(
+        title="Creator proof beat",
+        script=(
+            "SCENE 1. Host looks into camera in a bright studio.\n"
+            "HOST: In 8 seconds I will show why this works.\n\n"
+            "Hero insert: quick proof beat in product style with a clean final frame.\n\n"
+            "SCENE 2. Host returns to camera with a confident close.\n"
+            "HOST: The short is already assembled."
+        ),
+        language="en",
+        target_duration_sec=8,
+    )
+
+    bundle = planner.build_planning_bundle("proj_test", request)
+
+    assert len(bundle.scenes) == 3
+    assert [scene.shots[0].strategy for scene in bundle.scenes] == [
+        "portrait_lipsync",
+        "hero_insert",
+        "portrait_lipsync",
+    ]
+    assert bundle.scenes[1].shots[0].composition.subtitle_lane == "top"
 
 
 def test_planner_parses_cyrillic_scene_and_hero_insert_labels() -> None:

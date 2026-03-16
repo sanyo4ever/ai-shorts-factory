@@ -165,20 +165,16 @@ class RuntimeServiceManager:
             record.latest_pid = self._latest_pid(spec)
             return record
 
-        start_command = self._powershell_command(
-            spec.start_script,
-            "-Detach",
-            *self._start_script_args(spec),
-        )
+        start_command = self._start_service(spec, force_restart=False)
         record.start_command = start_command
-        run_command(
-            start_command,
-            timeout_sec=self._start_timeout_sec(spec),
-            cwd=self.repo_root,
-            capture_output=False,
-        )
         record.started_by_manager = True
         record.running_after_start = self._is_running(spec)
+        if not record.running_after_start and spec.health_kind in {"http", "tcp"}:
+            start_command = self._start_service(spec, force_restart=True)
+            record.start_command = start_command
+            record.running_after_start = self._is_running(spec)
+        if not record.running_after_start:
+            raise RuntimeError(f"Managed service {name} failed to become healthy after restart.")
         record.latest_pid = self._latest_pid(spec)
         return record
 
@@ -257,6 +253,19 @@ class RuntimeServiceManager:
             str(script_path),
             *extra_args,
         ]
+
+    def _start_service(self, spec: ManagedServiceSpec, *, force_restart: bool) -> list[str]:
+        extra_args = ["-Detach", *self._start_script_args(spec)]
+        if force_restart:
+            extra_args.append("-ForceRestart")
+        start_command = self._powershell_command(spec.start_script, *extra_args)
+        run_command(
+            start_command,
+            timeout_sec=self._start_timeout_sec(spec),
+            cwd=self.repo_root,
+            capture_output=False,
+        )
+        return start_command
 
     def _normalize_service_names(self, service_names: list[str]) -> list[str]:
         normalized_names: list[str] = []

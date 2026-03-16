@@ -611,6 +611,20 @@ class DeterministicMediaAdapters:
             )
             if reframed_attempt is not None:
                 selected_attempt = reframed_attempt
+            if self._can_probe_character_reference_faces() and not bool(
+                selected_attempt.get("quality_gate_passed")
+            ):
+                failure_reasons = sorted(
+                    {
+                        str(attempt.get("quality_gate_reason") or "unknown")
+                        for attempt in attempt_payloads
+                    }
+                )
+                raise RuntimeError(
+                    f"Character reference quality gate failed for {character.name}: "
+                    f"{selected_attempt.get('quality_gate_reason') or 'no acceptable face reference'}; "
+                    f"attempt reasons: {', '.join(failure_reasons) or 'unknown'}"
+                )
             image_path = write_image_bytes(
                 self.artifact_store.project_dir(snapshot.project.project_id)
                 / f"characters/{character.character_id}/reference.png",
@@ -710,22 +724,45 @@ class DeterministicMediaAdapters:
         snapshot: ProjectSnapshot,
         character: CharacterProfile,
     ) -> list[dict[str, str]]:
-        character_visual_fragment = self._character_visual_fragment(character)
+        product_preset = snapshot.project.metadata.get("product_preset") or {}
+        style_preset = str(product_preset.get("style_preset") or "")
+        presenter_positive_hint = ""
+        presenter_negative_hint = ""
+        preferred_order = {
+            "studio_headshot": 0,
+            "passport_portrait": 1,
+            "direct_portrait": 2,
+        }
+        if style_preset == "broadcast_panel":
+            presenter_positive_hint = (
+                "professional TV news anchor portrait, clear human face, visible eyes nose and mouth, "
+                "single presenter close-up, broadcast studio lighting, no abstract panel graphics, "
+            )
+            presenter_negative_hint = (
+                "abstract paper collage, blank poster, geometric panels only, empty studio set, no human face, "
+            )
+            preferred_order = {
+                "direct_portrait": 0,
+                "studio_headshot": 1,
+                "passport_portrait": 2,
+            }
+        character_visual_fragment = self._character_visual_fragment_ascii(character)
         character_negative_fragment = self._character_negative_fragment(character)
         negative_suffix = (
             f", {character_negative_fragment}" if character_negative_fragment else ""
         )
         shared_negative = (
+            f"{presenter_negative_hint}"
             "multiple people, crowd, duo pose, second character, collage, extra faces, duplicate person, "
             "split face, deformed face, profile view, cropped head, blurry, watermark, text, full body, "
             "action pose, running pose, weapon pose, face covering, full mask, visor, helmet shadow"
             f"{negative_suffix}"
         )
-        return [
+        variants = [
             {
                 "label": "studio_headshot",
                 "positive_prompt": (
-                    f"{snapshot.project.style}, solo character portrait, one person only, single human subject, "
+                    f"{snapshot.project.style}, {presenter_positive_hint}solo character portrait, one person only, single human subject, "
                     f"head and shoulders only, studio headshot, direct gaze, both eyes visible, visible mouth, "
                     f"uncovered face, symmetrical facial features, clean neutral background, crisp cel-shaded portrait, "
                     f"{character_visual_fragment}"
@@ -735,7 +772,7 @@ class DeterministicMediaAdapters:
             {
                 "label": "passport_portrait",
                 "positive_prompt": (
-                    f"{snapshot.project.style}, one person only, passport portrait, face filling most of frame, "
+                    f"{snapshot.project.style}, {presenter_positive_hint}one person only, passport portrait, face filling most of frame, "
                     f"front-facing closeup, visible mouth, uncovered face, no dramatic pose, simple neutral background, "
                     f"stylized game portrait, {character_visual_fragment}"
                 ),
@@ -744,14 +781,15 @@ class DeterministicMediaAdapters:
             {
                 "label": "direct_portrait",
                 "positive_prompt": (
-                    f"{snapshot.project.style}, solo direct portrait, chest-up, one person only, no action, "
+                    f"{snapshot.project.style}, {presenter_positive_hint}solo direct portrait, chest-up, one person only, no action, "
                     f"clean readable silhouette, visible mouth, uncovered face, eyes looking at camera, "
                     f"hero-card portrait, {character_visual_fragment}"
                 ),
                 "negative_prompt": shared_negative,
             },
         ]
-
+        variants.sort(key=lambda variant: preferred_order.get(variant["label"], len(preferred_order)))
+        return variants
     def _can_probe_character_reference_faces(self) -> bool:
         return bool(
             self.musetalk_repo_path is not None
@@ -903,7 +941,7 @@ class DeterministicMediaAdapters:
         x1, y1, x2, y2 = [float(value) for value in selected_bbox[:4]]
         bbox_width = max(1.0, x2 - x1)
         bbox_height = max(1.0, y2 - y1)
-        side = min(float(min(image_width, image_height)), max(bbox_width, bbox_height) * 3.2)
+        side = min(float(min(image_width, image_height)), max(bbox_width, bbox_height) * 2.2)
         center_x = (x1 + x2) / 2.0
         center_y = ((y1 + y2) / 2.0) + (bbox_height * 0.18)
         crop_x = max(0.0, min(center_x - (side / 2.0), float(image_width) - side))
@@ -1023,22 +1061,34 @@ class DeterministicMediaAdapters:
         shot: ShotPlan,
     ) -> tuple[str, str]:
         primary_character = self._resolve_primary_character(snapshot, shot)
-        primary_descriptor = self._character_visual_fragment(primary_character)
+        primary_visual_name = self._visual_prompt_identity_label_ascii(primary_character)
+        primary_descriptor = self._character_visual_fragment_ascii(primary_character)
         primary_negative = self._character_negative_fragment(primary_character)
         group_descriptor = self._shot_character_prompt_fragment(snapshot, shot)
         composition_hint = self._composition_prompt_fragment(shot)
         lane_hint = self._subtitle_lane_prompt_fragment(shot)
         if shot.strategy == "portrait_lipsync":
             off_camera_partners = [name for name in shot.characters if name.casefold() != primary_character["name"].casefold()]
+            off_camera_partner_labels: list[str] = []
+            for partner_name in off_camera_partners:
+                partner_character = self._resolve_project_character(snapshot, partner_name)
+                if partner_character is not None:
+                    off_camera_partner_labels.append(
+                        self._visual_prompt_identity_label_ascii(partner_character)
+                    )
+                else:
+                    off_camera_partner_labels.append(
+                        self._romanize_ukrainian_text(partner_name) or "off-camera partner"
+                    )
             partner_hint = ""
-            if off_camera_partners:
+            if off_camera_partner_labels:
                 partner_hint = (
-                    f"show only {primary_character['name']} on camera and keep {', '.join(off_camera_partners)} off-camera, "
+                    f"show only {primary_visual_name} on camera and keep {', '.join(off_camera_partner_labels)} off-camera, "
                 )
             return (
                 (
                     f"{snapshot.project.style}, storyboard frame, solo talking-head portrait of "
-                    f"{primary_character['name']}, one person only, {partner_hint}head and shoulders, "
+                    f"{primary_visual_name}, one person only, {partner_hint}head and shoulders, "
                     f"looking at camera, clear facial features, natural expression, dialogue close-up, "
                     "single speaker only, face filling most of frame, no action pose, no crowd, "
                     f"{primary_descriptor}, "
@@ -1112,7 +1162,7 @@ class DeterministicMediaAdapters:
             character.get("style_tags") if isinstance(character, dict) else character.style_tags
         ) or []
         parts = [
-            str(character.get("name") if isinstance(character, dict) else character.name).strip(),
+            DeterministicMediaAdapters._visual_prompt_identity_label(character),
             str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip(),
             str(
                 character.get("relationship_hint") if isinstance(character, dict) else character.relationship_hint
@@ -1162,6 +1212,430 @@ class DeterministicMediaAdapters:
         return ", ".join(ordered)
 
     @staticmethod
+    def _romanize_ukrainian_text(value: str) -> str:
+        translit_map = {
+            "а": "a",
+            "б": "b",
+            "в": "v",
+            "г": "h",
+            "ґ": "g",
+            "д": "d",
+            "е": "e",
+            "є": "ye",
+            "ж": "zh",
+            "з": "z",
+            "и": "y",
+            "і": "i",
+            "ї": "yi",
+            "й": "y",
+            "к": "k",
+            "л": "l",
+            "м": "m",
+            "н": "n",
+            "о": "o",
+            "п": "p",
+            "р": "r",
+            "с": "s",
+            "т": "t",
+            "у": "u",
+            "ф": "f",
+            "х": "kh",
+            "ц": "ts",
+            "ч": "ch",
+            "ш": "sh",
+            "щ": "shch",
+            "ь": "",
+            "ю": "yu",
+            "я": "ya",
+        }
+        output: list[str] = []
+        for char in str(value):
+            lower_char = char.lower()
+            if lower_char in translit_map:
+                piece = translit_map[lower_char]
+                if char.isupper():
+                    piece = piece.capitalize()
+                output.append(piece)
+                continue
+            if char.isascii() and (char.isalnum() or char in {" ", "-", "_", ","}):
+                output.append(char)
+            else:
+                output.append(" ")
+        return " ".join("".join(output).replace("_", " ").split())
+
+    @classmethod
+    def _visual_prompt_identity_label(cls, character: CharacterProfile | dict[str, Any]) -> str:
+        name = str(character.get("name") if isinstance(character, dict) else character.name).strip()
+        role_hint = str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip()
+        relationship_hint = str(
+            character.get("relationship_hint") if isinstance(character, dict) else character.relationship_hint
+        ).strip()
+        normalized_name = name.casefold()
+        alias_map = {
+            "ведучий": "host presenter",
+            "експерт": "expert analyst",
+            "оповідач": "narrator host",
+            "герой": "hero character",
+            "тато": "father hero",
+            "син": "young son",
+            "друг": "friend companion",
+        }
+        if normalized_name in alias_map:
+            return alias_map[normalized_name]
+        if relationship_hint == "father":
+            return "father character"
+        if relationship_hint == "son":
+            return "young son character"
+        role_alias_map = {
+            "lead": "lead presenter",
+            "counterpoint": "expert guest",
+            "moderator": "moderator host",
+            "expert": "expert analyst",
+            "challenger": "challenger guest",
+            "narrator": "narrator host",
+        }
+        if role_hint in role_alias_map:
+            return role_alias_map[role_hint]
+        romanized = cls._romanize_ukrainian_text(name)
+        return romanized or "speaker character"
+
+    @staticmethod
+    def _character_visual_fragment(character: CharacterProfile | dict[str, Any]) -> str:
+        role_hint = str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip()
+        gender_hint = str(character.get("gender_hint") if isinstance(character, dict) else character.gender_hint).strip()
+        style_tags = (
+            character.get("style_tags") if isinstance(character, dict) else character.style_tags
+        ) or []
+        parts = [
+            DeterministicMediaAdapters._visual_prompt_identity_label(character),
+            str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip(),
+            str(
+                character.get("relationship_hint") if isinstance(character, dict) else character.relationship_hint
+            ).strip(),
+            str(character.get("age_hint") if isinstance(character, dict) else character.age_hint).strip(),
+            str(character.get("gender_hint") if isinstance(character, dict) else character.gender_hint).strip(),
+            str(character.get("wardrobe_hint") if isinstance(character, dict) else character.wardrobe_hint).strip(),
+            str(character.get("palette_hint") if isinstance(character, dict) else character.palette_hint).strip(),
+            ", ".join(
+                [
+                    str(tag).strip()
+                    for tag in style_tags
+                    if str(tag).strip()
+                ][:4]
+            ),
+            str(character.get("visual_hint") if isinstance(character, dict) else character.visual_hint).strip(),
+        ]
+        if role_hint == "father" and gender_hint == "male":
+            parts.extend(
+                [
+                    "adult male father",
+                    "masculine face",
+                    "strong jawline",
+                    "trimmed beard",
+                ]
+            )
+        if role_hint == "son" and gender_hint == "male":
+            parts.extend(
+                [
+                    "young boy",
+                    "masculine child face",
+                    "boyish features",
+                    "short boy haircut",
+                    "flat child torso",
+                ]
+            )
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for part in parts:
+            if not part:
+                continue
+            normalized = part.casefold()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(part)
+        return ", ".join(ordered)
+
+    @staticmethod
+    def _romanize_ukrainian_text_ascii(value: str) -> str:
+        translit_map = {
+            "\u0430": "a",
+            "\u0431": "b",
+            "\u0432": "v",
+            "\u0433": "h",
+            "\u0491": "g",
+            "\u0434": "d",
+            "\u0435": "e",
+            "\u0454": "ye",
+            "\u0436": "zh",
+            "\u0437": "z",
+            "\u0438": "y",
+            "\u0456": "i",
+            "\u0457": "yi",
+            "\u0439": "y",
+            "\u043a": "k",
+            "\u043b": "l",
+            "\u043c": "m",
+            "\u043d": "n",
+            "\u043e": "o",
+            "\u043f": "p",
+            "\u0440": "r",
+            "\u0441": "s",
+            "\u0442": "t",
+            "\u0443": "u",
+            "\u0444": "f",
+            "\u0445": "kh",
+            "\u0446": "ts",
+            "\u0447": "ch",
+            "\u0448": "sh",
+            "\u0449": "shch",
+            "\u044c": "",
+            "\u044e": "yu",
+            "\u044f": "ya",
+        }
+        output: list[str] = []
+        for char in str(value):
+            lower_char = char.lower()
+            if lower_char in translit_map:
+                piece = translit_map[lower_char]
+                if char.isupper():
+                    piece = piece.capitalize()
+                output.append(piece)
+                continue
+            if char.isascii() and (char.isalnum() or char in {" ", "-", "_", ","}):
+                output.append(char)
+            else:
+                output.append(" ")
+        return " ".join("".join(output).replace("_", " ").split())
+
+    @classmethod
+    def _visual_prompt_identity_label_ascii(cls, character: CharacterProfile | dict[str, Any]) -> str:
+        name = str(character.get("name") if isinstance(character, dict) else character.name).strip()
+        role_hint = str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip()
+        relationship_hint = str(
+            character.get("relationship_hint") if isinstance(character, dict) else character.relationship_hint
+        ).strip()
+        normalized_name = name.casefold()
+        alias_map = {
+            "\u0432\u0435\u0434\u0443\u0447\u0438\u0439": "host presenter",
+            "\u0435\u043a\u0441\u043f\u0435\u0440\u0442": "expert analyst",
+            "\u043e\u043f\u043e\u0432\u0456\u0434\u0430\u0447": "narrator host",
+            "\u0433\u0435\u0440\u043e\u0439": "hero character",
+            "\u0442\u0430\u0442\u043e": "father hero",
+            "\u0441\u0438\u043d": "young son",
+            "\u0434\u0440\u0443\u0433": "friend companion",
+        }
+        if normalized_name in alias_map:
+            return alias_map[normalized_name]
+        if relationship_hint == "father":
+            return "father character"
+        if relationship_hint == "son":
+            return "young son character"
+        role_alias_map = {
+            "lead": "lead presenter",
+            "counterpoint": "expert guest",
+            "moderator": "moderator host",
+            "expert": "expert analyst",
+            "challenger": "challenger guest",
+            "narrator": "narrator host",
+        }
+        if role_hint in role_alias_map:
+            return role_alias_map[role_hint]
+        romanized = cls._romanize_ukrainian_text_ascii(name)
+        return romanized or "speaker character"
+
+    @staticmethod
+    def _character_visual_fragment_ascii(character: CharacterProfile | dict[str, Any]) -> str:
+        role_hint = str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip()
+        gender_hint = str(character.get("gender_hint") if isinstance(character, dict) else character.gender_hint).strip()
+        style_tags = (
+            character.get("style_tags") if isinstance(character, dict) else character.style_tags
+        ) or []
+        parts = [
+            DeterministicMediaAdapters._visual_prompt_identity_label_ascii(character),
+            str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip(),
+            str(
+                character.get("relationship_hint") if isinstance(character, dict) else character.relationship_hint
+            ).strip(),
+            str(character.get("age_hint") if isinstance(character, dict) else character.age_hint).strip(),
+            str(character.get("gender_hint") if isinstance(character, dict) else character.gender_hint).strip(),
+            str(character.get("wardrobe_hint") if isinstance(character, dict) else character.wardrobe_hint).strip(),
+            str(character.get("palette_hint") if isinstance(character, dict) else character.palette_hint).strip(),
+            ", ".join(
+                [str(tag).strip() for tag in style_tags if str(tag).strip()][:4]
+            ),
+            str(character.get("visual_hint") if isinstance(character, dict) else character.visual_hint).strip(),
+        ]
+        if role_hint == "father" and gender_hint == "male":
+            parts.extend(["adult male father", "masculine face", "strong jawline", "trimmed beard"])
+        if role_hint == "son" and gender_hint == "male":
+            parts.extend(
+                [
+                    "young boy",
+                    "masculine child face",
+                    "boyish features",
+                    "short boy haircut",
+                    "flat child torso",
+                ]
+            )
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for part in parts:
+            if not part:
+                continue
+            normalized = part.casefold()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(part)
+        return ", ".join(ordered)
+
+    @staticmethod
+    def _romanize_ukrainian_text(value: str) -> str:
+        translit_map = {
+            "\u0430": "a",
+            "\u0431": "b",
+            "\u0432": "v",
+            "\u0433": "h",
+            "\u0491": "g",
+            "\u0434": "d",
+            "\u0435": "e",
+            "\u0454": "ye",
+            "\u0436": "zh",
+            "\u0437": "z",
+            "\u0438": "y",
+            "\u0456": "i",
+            "\u0457": "yi",
+            "\u0439": "y",
+            "\u043a": "k",
+            "\u043b": "l",
+            "\u043c": "m",
+            "\u043d": "n",
+            "\u043e": "o",
+            "\u043f": "p",
+            "\u0440": "r",
+            "\u0441": "s",
+            "\u0442": "t",
+            "\u0443": "u",
+            "\u0444": "f",
+            "\u0445": "kh",
+            "\u0446": "ts",
+            "\u0447": "ch",
+            "\u0448": "sh",
+            "\u0449": "shch",
+            "\u044c": "",
+            "\u044e": "yu",
+            "\u044f": "ya",
+        }
+        output: list[str] = []
+        for char in str(value):
+            lower_char = char.lower()
+            if lower_char in translit_map:
+                piece = translit_map[lower_char]
+                if char.isupper():
+                    piece = piece.capitalize()
+                output.append(piece)
+                continue
+            if char.isascii() and (char.isalnum() or char in {" ", "-", "_", ","}):
+                output.append(char)
+            else:
+                output.append(" ")
+        return " ".join("".join(output).replace("_", " ").split())
+
+    @classmethod
+    def _visual_prompt_identity_label(cls, character: CharacterProfile | dict[str, Any]) -> str:
+        name = str(character.get("name") if isinstance(character, dict) else character.name).strip()
+        role_hint = str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip()
+        relationship_hint = str(
+            character.get("relationship_hint") if isinstance(character, dict) else character.relationship_hint
+        ).strip()
+        normalized_name = name.casefold()
+        normalized_relationship = relationship_hint.casefold()
+        alias_map = {
+            "\u0432\u0435\u0434\u0443\u0447\u0438\u0439": "host presenter",
+            "\u0435\u043a\u0441\u043f\u0435\u0440\u0442": "expert analyst",
+            "\u043e\u043f\u043e\u0432\u0456\u0434\u0430\u0447": "narrator host",
+            "\u0433\u0435\u0440\u043e\u0439": "hero character",
+            "\u0442\u0430\u0442\u043e": "father hero",
+            "\u0441\u0438\u043d": "young son",
+            "\u0434\u0440\u0443\u0433": "friend companion",
+        }
+        if normalized_name in alias_map:
+            return alias_map[normalized_name]
+        if role_hint == "father" or normalized_relationship == "father":
+            return "father character"
+        if role_hint == "son" or normalized_relationship.startswith("son"):
+            return "young son character"
+        role_alias_map = {
+            "lead": "lead presenter",
+            "counterpoint": "expert guest",
+            "moderator": "moderator host",
+            "expert": "expert analyst",
+            "challenger": "challenger guest",
+            "narrator": "narrator host",
+        }
+        if role_hint in role_alias_map:
+            return role_alias_map[role_hint]
+        romanized = cls._romanize_ukrainian_text(name)
+        return romanized or "speaker character"
+
+    @staticmethod
+    def _character_visual_fragment(character: CharacterProfile | dict[str, Any]) -> str:
+        role_hint = str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip()
+        gender_hint = str(character.get("gender_hint") if isinstance(character, dict) else character.gender_hint).strip()
+        style_tags = (
+            character.get("style_tags") if isinstance(character, dict) else character.style_tags
+        ) or []
+        parts = [
+            DeterministicMediaAdapters._visual_prompt_identity_label(character),
+            str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip(),
+            str(
+                character.get("relationship_hint") if isinstance(character, dict) else character.relationship_hint
+            ).strip(),
+            str(character.get("age_hint") if isinstance(character, dict) else character.age_hint).strip(),
+            str(character.get("gender_hint") if isinstance(character, dict) else character.gender_hint).strip(),
+            str(character.get("wardrobe_hint") if isinstance(character, dict) else character.wardrobe_hint).strip(),
+            str(character.get("palette_hint") if isinstance(character, dict) else character.palette_hint).strip(),
+            ", ".join([str(tag).strip() for tag in style_tags if str(tag).strip()][:4]),
+            str(character.get("visual_hint") if isinstance(character, dict) else character.visual_hint).strip(),
+        ]
+        if role_hint == "father" and gender_hint == "male":
+            parts.extend(["adult male father", "masculine face", "strong jawline", "trimmed beard"])
+        if role_hint == "son" and gender_hint == "male":
+            parts.extend(
+                [
+                    "young boy",
+                    "masculine child face",
+                    "boyish features",
+                    "short boy haircut",
+                    "flat child torso",
+                ]
+            )
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for part in parts:
+            if not part:
+                continue
+            normalized = part.casefold()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(part)
+        return ", ".join(ordered)
+
+    @staticmethod
+    def _romanize_ukrainian_text_ascii(value: str) -> str:
+        return DeterministicMediaAdapters._romanize_ukrainian_text(value)
+
+    @classmethod
+    def _visual_prompt_identity_label_ascii(cls, character: CharacterProfile | dict[str, Any]) -> str:
+        return cls._visual_prompt_identity_label(character)
+
+    @staticmethod
+    def _character_visual_fragment_ascii(character: CharacterProfile | dict[str, Any]) -> str:
+        return DeterministicMediaAdapters._character_visual_fragment(character)
+
+    @staticmethod
     def _character_negative_fragment(character: CharacterProfile | dict[str, Any]) -> str:
         role_hint = str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip()
         gender_hint = str(character.get("gender_hint") if isinstance(character, dict) else character.gender_hint).strip()
@@ -1192,7 +1666,7 @@ class DeterministicMediaAdapters:
 
     @staticmethod
     def _character_action_fragment(character: CharacterProfile | dict[str, Any]) -> str:
-        name = str(character.get("name") if isinstance(character, dict) else character.name).strip()
+        name = DeterministicMediaAdapters._visual_prompt_identity_label_ascii(character)
         relationship = str(
             character.get("relationship_hint") if isinstance(character, dict) else character.relationship_hint
         ).strip()
@@ -1237,7 +1711,7 @@ class DeterministicMediaAdapters:
                 fragments.append(
                     self._character_action_fragment(character)
                     if compact
-                    else self._character_visual_fragment(character)
+                    else self._character_visual_fragment_ascii(character)
                 )
             else:
                 fragments.append(name)
@@ -1283,8 +1757,8 @@ class DeterministicMediaAdapters:
         style_preset = str(product_preset.get("style_preset") or "")
         short_archetype = str(product_preset.get("short_archetype") or "")
         visual_hint = primary_character["visual_hint"]
-        name = primary_character["name"]
-        identity_fragment = self._character_visual_fragment(primary_character)
+        name = self._visual_prompt_identity_label_ascii(primary_character)
+        identity_fragment = self._character_visual_fragment_ascii(primary_character)
         negative_identity = self._character_negative_fragment(primary_character)
         lane_hint = self._subtitle_lane_prompt_fragment(shot)
         preset_positive_hint = ""
@@ -1293,11 +1767,13 @@ class DeterministicMediaAdapters:
         if style_preset == "broadcast_panel":
             preset_positive_hint = (
                 "single anchor panelist only, no co-host, no second presenter, "
-                "no split screen, no picture-in-picture, "
+                "no split screen, no picture-in-picture, professional TV anchor close-up, "
+                "clear human face with visible eyes nose and mouth, no abstract studio graphics, "
             )
             preset_negative_hint = (
                 "co-host, second presenter, split screen, picture-in-picture, inset guest, "
-                "panel desk, over-the-shoulder companion, "
+                "panel desk, over-the-shoulder companion, abstract paper collage, blank poster, "
+                "geometric panels only, empty studio set, no human face, "
             )
         elif style_preset == "warm_documentary":
             preset_positive_hint = (
@@ -2113,6 +2589,53 @@ class DeterministicMediaAdapters:
         return dominant_effective_ratio <= 0.22
 
     @classmethod
+    def _marginal_output_face_isolation_release_safe(
+        cls,
+        *,
+        face_isolation_summary: dict[str, Any] | None,
+        face_quality_summary: dict[str, Any] | None,
+        sequence_quality_summary: dict[str, Any] | None,
+        temporal_drift_summary: dict[str, Any] | None,
+        delta_summary: dict[str, Any] | None,
+        face_probe_payload: dict[str, Any] | None,
+        isolation_adjustment: dict[str, Any] | None,
+    ) -> bool:
+        if not isinstance(face_isolation_summary, dict) or not cls._is_marginal_face_quality(face_isolation_summary):
+            return False
+        if not isinstance(face_probe_payload, dict) or cls._face_probe_warning_codes(face_probe_payload):
+            return False
+        if not isinstance(isolation_adjustment, dict) or not bool(isolation_adjustment.get("applied")):
+            return False
+        summaries = (
+            face_quality_summary,
+            sequence_quality_summary,
+            temporal_drift_summary,
+            delta_summary,
+        )
+        for summary in summaries:
+            if not isinstance(summary, dict):
+                return False
+            if cls._is_rejected_face_quality(summary) or cls._is_marginal_face_quality(summary):
+                return False
+        if int(face_isolation_summary.get("secondary_face_count", 0) or 0) > 1:
+            return False
+        quality_score = float(face_isolation_summary.get("score", 0.0) or 0.0)
+        if quality_score < 0.75:
+            return False
+        dominant_secondary = (
+            face_isolation_summary.get("dominant_secondary")
+            if isinstance(face_isolation_summary.get("dominant_secondary"), dict)
+            else None
+        )
+        if dominant_secondary is None:
+            return False
+        dominant_effective_ratio = float(dominant_secondary.get("effective_ratio", 0.0) or 0.0)
+        if dominant_effective_ratio > 0.25:
+            return False
+        reasons = [str(reason) for reason in face_isolation_summary.get("reasons", []) if isinstance(reason, str)]
+        return not any(reason not in {"dominant_secondary_face_warn"} for reason in reasons)
+
+    @classmethod
     def _border_touch_warnings_resolved(
         cls,
         face_probe_payload: dict[str, Any],
@@ -2264,7 +2787,7 @@ class DeterministicMediaAdapters:
             else None
         )
         has_face_geometry = bool(checks.get("face_detected")) or bool(selected_bbox)
-        return bool(
+        face_size_only = bool(
             has_face_geometry
             and checks.get("landmarks_detected")
             and checks.get("semantic_layout_ok")
@@ -2272,6 +2795,14 @@ class DeterministicMediaAdapters:
             and failure_reasons
             and failure_reasons.issubset({"face_size_below_threshold"})
         )
+        semantic_layout_only = bool(
+            has_face_geometry
+            and checks.get("landmarks_detected")
+            and not checks.get("semantic_layout_ok")
+            and failure_reasons
+            and failure_reasons.issubset({"semantic_layout_invalid", "face_size_below_threshold"})
+        )
+        return face_size_only or semantic_layout_only
 
     @staticmethod
     def _face_probe_metrics(face_probe_payload: dict[str, Any]) -> dict[str, float]:
@@ -2285,6 +2816,27 @@ class DeterministicMediaAdapters:
         bbox_width_px = float(metrics.get("bbox_width_px", 0.0) or 0.0)
         bbox_height_px = float(metrics.get("bbox_height_px", 0.0) or 0.0)
         bbox_area_ratio = float(metrics.get("bbox_area_ratio", 0.0) or 0.0)
+        fallback_bbox = (
+            face_probe_payload.get("selected_bbox")
+            if isinstance(face_probe_payload.get("selected_bbox"), list)
+            else (
+                face_probe_payload.get("landmark_bbox")
+                if isinstance(face_probe_payload.get("landmark_bbox"), list)
+                else None
+            )
+        )
+        if (
+            fallback_bbox is not None
+            and len(fallback_bbox) >= 4
+            and (bbox_width_px <= 0.0 or bbox_height_px <= 0.0 or bbox_area_ratio <= 0.0)
+        ):
+            x1, y1, x2, y2 = [float(value) for value in fallback_bbox[:4]]
+            bbox_width_px = max(bbox_width_px, max(0.0, x2 - x1))
+            bbox_height_px = max(bbox_height_px, max(0.0, y2 - y1))
+            fallback_area_ratio = (
+                (bbox_width_px * bbox_height_px) / max(image_width * image_height, 1.0)
+            )
+            bbox_area_ratio = max(bbox_area_ratio, fallback_area_ratio)
         eye_distance_px = float(metrics.get("eye_distance_px", 0.0) or 0.0)
         eye_tilt_ratio = float(metrics.get("eye_tilt_ratio", 0.0) or 0.0)
         nose_center_offset_ratio = float(metrics.get("nose_center_offset_ratio", 0.0) or 0.0)
@@ -6949,6 +7501,31 @@ class DeterministicMediaAdapters:
                     selected_output_face_isolation = manifest_payload.get("output_face_isolation") or (
                         selected_attempt.get("output_face_isolation") if isinstance(selected_attempt, dict) else None
                     )
+                    selected_output_face_samples = manifest_payload.get("output_face_samples") or (
+                        selected_attempt.get("output_face_samples") if isinstance(selected_attempt, dict) else None
+                    )
+                    selected_output_face_sequence_quality = manifest_payload.get(
+                        "output_face_sequence_quality"
+                    ) or (selected_attempt.get("output_face_sequence_quality") if isinstance(selected_attempt, dict) else None)
+                    selected_output_face_temporal_drift = manifest_payload.get(
+                        "output_face_temporal_drift"
+                    ) or (selected_attempt.get("output_face_temporal_drift") if isinstance(selected_attempt, dict) else None)
+                    selected_source_vs_output_face_delta = manifest_payload.get(
+                        "source_vs_output_face_delta"
+                    ) or (selected_attempt.get("source_vs_output_face_delta") if isinstance(selected_attempt, dict) else None)
+                    marginal_output_face_isolation_release_safe = self._marginal_output_face_isolation_release_safe(
+                        face_isolation_summary=selected_output_face_isolation,
+                        face_quality_summary=selected_output_face_quality,
+                        sequence_quality_summary=selected_output_face_sequence_quality,
+                        temporal_drift_summary=selected_output_face_temporal_drift,
+                        delta_summary=selected_source_vs_output_face_delta,
+                        face_probe_payload=selected_output_face_probe,
+                        isolation_adjustment=(
+                            manifest_payload.get("output_isolation_adjustment")
+                            if isinstance(manifest_payload.get("output_isolation_adjustment"), dict)
+                            else None
+                        ),
+                    )
                     if not isinstance(selected_output_face_probe, dict):
                         findings.append(
                             QCFindingRecord(
@@ -7081,16 +7658,17 @@ class DeterministicMediaAdapters:
                                 )
                             )
                         elif self._is_marginal_face_quality(selected_output_face_isolation):
-                            findings.append(
-                                QCFindingRecord(
-                                    code="marginal_lipsync_output_face_isolation",
-                                    severity="warning",
-                                    message=(
-                                        f"Lipsync output face isolation is marginal for portrait shot "
-                                        f"{shot.shot_id}: {quality_score:.2f} ({quality_status})."
-                                    ),
+                            if not marginal_output_face_isolation_release_safe:
+                                findings.append(
+                                    QCFindingRecord(
+                                        code="marginal_lipsync_output_face_isolation",
+                                        severity="warning",
+                                        message=(
+                                            f"Lipsync output face isolation is marginal for portrait shot "
+                                            f"{shot.shot_id}: {quality_score:.2f} ({quality_status})."
+                                        ),
+                                    )
                                 )
-                            )
                     if not isinstance(selected_output_face_quality, dict):
                         findings.append(
                             QCFindingRecord(
@@ -7127,15 +7705,6 @@ class DeterministicMediaAdapters:
                                     ),
                                 )
                             )
-                    selected_output_face_samples = manifest_payload.get("output_face_samples") or (
-                        selected_attempt.get("output_face_samples") if isinstance(selected_attempt, dict) else None
-                    )
-                    selected_output_face_sequence_quality = manifest_payload.get(
-                        "output_face_sequence_quality"
-                    ) or (selected_attempt.get("output_face_sequence_quality") if isinstance(selected_attempt, dict) else None)
-                    selected_output_face_temporal_drift = manifest_payload.get(
-                        "output_face_temporal_drift"
-                    ) or (selected_attempt.get("output_face_temporal_drift") if isinstance(selected_attempt, dict) else None)
                     if not isinstance(selected_output_face_samples, list) or not selected_output_face_samples:
                         findings.append(
                             QCFindingRecord(
@@ -7320,9 +7889,6 @@ class DeterministicMediaAdapters:
                                     ),
                                 )
                             )
-                    selected_source_vs_output_face_delta = manifest_payload.get(
-                        "source_vs_output_face_delta"
-                    ) or (selected_attempt.get("source_vs_output_face_delta") if isinstance(selected_attempt, dict) else None)
                     if not isinstance(selected_source_vs_output_face_delta, dict):
                         findings.append(
                             QCFindingRecord(

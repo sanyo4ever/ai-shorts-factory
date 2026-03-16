@@ -3236,6 +3236,64 @@ def test_musetalk_output_face_isolation_tightening_reprobes_before_rejecting(
     assert Path(manifest["output_face_manifest_path"]).exists()
 
 
+def test_marginal_output_face_isolation_release_safe_requires_strong_adjacent_metrics() -> None:
+    positive_summary = {
+        "score": 0.7904,
+        "status": "marginal",
+        "thresholds": {"warn_below": 0.84, "reject_below": 0.72},
+        "secondary_face_count": 1,
+        "dominant_secondary": {"effective_ratio": 0.2273},
+        "reasons": [],
+    }
+    strong_summary = {
+        "score": 0.99,
+        "status": "excellent",
+        "thresholds": {"warn_below": 0.84, "reject_below": 0.72},
+    }
+    delta_summary = {
+        "score": 0.93,
+        "status": "excellent",
+        "thresholds": {"warn_below": 0.72, "reject_below": 0.55},
+    }
+
+    assert (
+        DeterministicMediaAdapters._marginal_output_face_isolation_release_safe(
+            face_isolation_summary=positive_summary,
+            face_quality_summary=strong_summary,
+            sequence_quality_summary=strong_summary,
+            temporal_drift_summary=strong_summary,
+            delta_summary=delta_summary,
+            face_probe_payload={"effective_warnings": []},
+            isolation_adjustment={"applied": True},
+        )
+        is True
+    )
+    assert (
+        DeterministicMediaAdapters._marginal_output_face_isolation_release_safe(
+            face_isolation_summary=positive_summary,
+            face_quality_summary=strong_summary,
+            sequence_quality_summary=strong_summary,
+            temporal_drift_summary=strong_summary,
+            delta_summary=delta_summary,
+            face_probe_payload={"effective_warnings": []},
+            isolation_adjustment={"applied": False},
+        )
+        is False
+    )
+    assert (
+        DeterministicMediaAdapters._marginal_output_face_isolation_release_safe(
+            face_isolation_summary=positive_summary,
+            face_quality_summary=strong_summary,
+            sequence_quality_summary=strong_summary,
+            temporal_drift_summary=strong_summary,
+            delta_summary=delta_summary,
+            face_probe_payload={"effective_warnings": ["multiple_faces_detected"]},
+            isolation_adjustment={"applied": True},
+        )
+        is False
+    )
+
+
 def test_musetalk_source_landmark_fallback_proceeds_without_detector_relief(tmp_path, monkeypatch) -> None:
     runtime_root = tmp_path / "runtime"
     artifact_store = ArtifactStore(runtime_root / "artifacts")
@@ -4197,7 +4255,19 @@ def test_musetalk_source_prompt_variants_prioritize_direct_portrait_for_broadcas
     variants = adapters._musetalk_source_prompt_variants(
         snapshot,
         shot,
-        {"character_id": "", "name": "Hero", "visual_hint": "stylized portrait of Hero"},
+        {
+            "character_id": "",
+            "name": "\u0412\u0435\u0434\u0443\u0447\u0438\u0439",
+            "visual_hint": "stylized portrait of host presenter",
+            "role_hint": "lead",
+            "relationship_hint": "",
+            "age_hint": "adult",
+            "gender_hint": "male",
+            "wardrobe_hint": "studio blazer",
+            "palette_hint": "",
+            "negative_visual_hint": "",
+            "style_tags": [],
+        },
     )
 
     assert [variant["label"] for variant in variants] == [
@@ -4207,6 +4277,8 @@ def test_musetalk_source_prompt_variants_prioritize_direct_portrait_for_broadcas
     ]
     assert "single anchor panelist only" in variants[0]["positive_prompt"]
     assert "split screen" in variants[0]["negative_prompt"]
+    assert "host presenter" in variants[0]["positive_prompt"]
+    assert "\u0412\u0435\u0434\u0443\u0447\u0438\u0439" not in variants[0]["positive_prompt"]
 
 
 def test_musetalk_source_prompt_variants_prioritize_direct_portrait_for_warm_documentary(tmp_path) -> None:
