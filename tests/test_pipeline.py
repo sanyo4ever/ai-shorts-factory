@@ -26,6 +26,7 @@ from filmstudio.storage.artifact_store import ArtifactStore
 from filmstudio.storage.gpu_lease_store import GpuLeaseStore
 from filmstudio.storage.sqlite_store import SqliteSnapshotStore
 from filmstudio.workflows.local_pipeline import LocalPipelineEngine
+from filmstudio.services.media_primitives import wave_duration_sec
 
 
 def test_local_pipeline_completes_and_emits_qc(tmp_path) -> None:
@@ -100,6 +101,57 @@ def test_local_pipeline_completes_and_emits_qc(tmp_path) -> None:
     assert gpu_attempts
     assert all(attempt.metadata["gpu_lease"]["device_id"] == "gpu:0" for attempt in gpu_attempts)
     assert all(attempt.metadata["gpu_lease_release"]["status"] == "released" for attempt in gpu_attempts)
+
+
+def test_compose_project_pads_video_when_dialogue_bus_is_longer(tmp_path) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="Dialogue padding test",
+            script=(
+                "HERO: "
+                + " ".join(
+                    [
+                        "Tse duzhe dovha replika pro te, yak tato i syn biezhat do peremohy, strybayut i buduiut stinu."
+                    ]
+                    * 18
+                )
+            ),
+            language="uk",
+        )
+    )
+    adapters = DeterministicMediaAdapters(artifact_store)
+    adapters._effective_shot_duration = lambda current_snapshot, shot: 1.0  # type: ignore[method-assign]
+    dialogue_result = adapters.synthesize_dialogue(snapshot)
+    snapshot.artifacts.extend(dialogue_result.artifacts)
+    render_result = adapters.render_shots(snapshot)
+    snapshot.artifacts.extend(render_result.artifacts)
+    subtitle_result = adapters.generate_subtitles(snapshot)
+    snapshot.artifacts.extend(subtitle_result.artifacts)
+    music_result = adapters.generate_music(snapshot)
+    snapshot.artifacts.extend(music_result.artifacts)
+    compose_result = adapters.compose_project(snapshot)
+    snapshot.artifacts.extend(compose_result.artifacts)
+
+    final_manifest_path = Path(
+        next(artifact.path for artifact in compose_result.artifacts if artifact.kind == "final_render_manifest")
+    )
+    final_manifest = json.loads(final_manifest_path.read_text(encoding="utf-8"))
+    dialogue_bus_path = Path(
+        next(artifact.path for artifact in snapshot.artifacts if artifact.kind == "dialogue_bus")
+    )
+    dialogue_duration = wave_duration_sec(dialogue_bus_path)
+
+    assert final_manifest["compose_duration_policy"] == "pad_video_to_dialogue"
+    assert "-shortest" not in final_manifest["commands"]["compose"]
+    assert final_manifest["compose_video_extension_sec"] > 0.0
+    assert final_manifest["probe"]["duration_sec"] >= dialogue_duration - 0.1
 
 
 def test_selective_rerender_rebuilds_only_targeted_shot_outputs(tmp_path) -> None:
