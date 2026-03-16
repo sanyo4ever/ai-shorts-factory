@@ -604,6 +604,13 @@ class DeterministicMediaAdapters:
                 selected_attempt = best_attempt
             if selected_attempt is None:
                 raise RuntimeError(f"Failed to generate character reference for {character.name}.")
+            reframed_attempt = self._recover_character_reference_attempt(
+                snapshot.project.project_id,
+                character=character,
+                selected_attempt=selected_attempt,
+            )
+            if reframed_attempt is not None:
+                selected_attempt = reframed_attempt
             image_path = write_image_bytes(
                 self.artifact_store.project_dir(snapshot.project.project_id)
                 / f"characters/{character.character_id}/reference.png",
@@ -798,6 +805,117 @@ class DeterministicMediaAdapters:
             "face_isolation": face_isolation,
         }
 
+    def _recover_character_reference_attempt(
+        self,
+        project_id: str,
+        *,
+        character: CharacterProfile,
+        selected_attempt: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        face_probe_payload = selected_attempt.get("face_probe")
+        if not isinstance(face_probe_payload, dict):
+            return None
+        if bool(selected_attempt.get("quality_gate_passed")):
+            return None
+        face_isolation = selected_attempt.get("face_isolation")
+        if not isinstance(face_isolation, dict) or self._is_rejected_face_quality(face_isolation):
+            return None
+        reframe_plan = self._character_reference_reframe_plan(face_probe_payload)
+        if reframe_plan is None:
+            return None
+        source_image_path = Path(str(selected_attempt.get("image_path") or ""))
+        if not source_image_path.exists():
+            return None
+        reframed_image_path = (
+            self.artifact_store.project_dir(project_id)
+            / f"characters/{character.character_id}/reference_attempt_{int(selected_attempt.get('attempt_index', 0) or 0):02d}_reframed.png"
+        )
+        filter_graph = (
+            f"crop={reframe_plan['crop_width']}:{reframe_plan['crop_height']}:"
+            f"{reframe_plan['crop_x']}:{reframe_plan['crop_y']},"
+            f"scale={reframe_plan['target_size']}:{reframe_plan['target_size']}:flags=lanczos"
+        )
+        command = [
+            self.ffmpeg_binary,
+            "-y",
+            "-i",
+            str(source_image_path),
+            "-vf",
+            filter_graph,
+            "-frames:v",
+            "1",
+            str(reframed_image_path),
+        ]
+        result = run_command(command, timeout_sec=60.0)
+        probe_attempt_index = int(selected_attempt.get("attempt_index", 0) or 0) + 100
+        probe_result = self._probe_character_reference_face(
+            character=character,
+            project_id=project_id,
+            attempt_index=probe_attempt_index,
+            image_path=reframed_image_path,
+        )
+        quality_gate_passed, quality_gate_reason = self._character_reference_quality_gate(
+            probe_result["face_probe"],
+            face_quality=probe_result["face_quality"],
+            face_occupancy=probe_result["face_occupancy"],
+            face_isolation=probe_result["face_isolation"],
+        )
+        reframed_score = (
+            float(probe_result["face_quality"].get("score", 0.0) or 0.0)
+            + float(probe_result["face_occupancy"].get("score", 0.0) or 0.0)
+            + float(probe_result["face_isolation"].get("score", 0.0) or 0.0)
+            + (0.25 if quality_gate_passed else 0.0)
+        )
+        original_score = float(selected_attempt.get("score", 0.0) or 0.0)
+        if not quality_gate_passed and reframed_score <= original_score + 0.05:
+            return None
+        return {
+            **selected_attempt,
+            "image_path": str(reframed_image_path),
+            "image_bytes": reframed_image_path.read_bytes(),
+            "prompt_variant": f"{selected_attempt.get('prompt_variant', 'reference')}_reframed",
+            "quality_gate_passed": quality_gate_passed,
+            "quality_gate_reason": f"reframed_{quality_gate_reason}",
+            "face_probe": probe_result["face_probe"],
+            "face_probe_path": probe_result["face_probe_path"],
+            "face_probe_stdout_path": probe_result["face_probe_stdout_path"],
+            "face_probe_stderr_path": probe_result["face_probe_stderr_path"],
+            "face_probe_command": probe_result["face_probe_command"],
+            "face_probe_duration_sec": probe_result["face_probe_duration_sec"],
+            "face_quality": probe_result["face_quality"],
+            "face_occupancy": probe_result["face_occupancy"],
+            "face_isolation": probe_result["face_isolation"],
+            "score": reframed_score,
+            "reframe_applied": True,
+            "reframe_plan": reframe_plan,
+            "reframe_command": command,
+            "reframe_duration_sec": result.duration_sec,
+            "reframed_from_attempt_index": selected_attempt.get("attempt_index"),
+        }
+
+    @staticmethod
+    def _character_reference_reframe_plan(face_probe_payload: dict[str, Any]) -> dict[str, int] | None:
+        image_width = int(face_probe_payload.get("image_width") or 0)
+        image_height = int(face_probe_payload.get("image_height") or 0)
+        selected_bbox = face_probe_payload.get("selected_bbox") or face_probe_payload.get("landmark_bbox")
+        if not isinstance(selected_bbox, list) or len(selected_bbox) < 4 or image_width <= 0 or image_height <= 0:
+            return None
+        x1, y1, x2, y2 = [float(value) for value in selected_bbox[:4]]
+        bbox_width = max(1.0, x2 - x1)
+        bbox_height = max(1.0, y2 - y1)
+        side = min(float(min(image_width, image_height)), max(bbox_width, bbox_height) * 3.2)
+        center_x = (x1 + x2) / 2.0
+        center_y = ((y1 + y2) / 2.0) + (bbox_height * 0.18)
+        crop_x = max(0.0, min(center_x - (side / 2.0), float(image_width) - side))
+        crop_y = max(0.0, min(center_y - (side / 2.0), float(image_height) - side))
+        return {
+            "crop_x": int(round(crop_x)),
+            "crop_y": int(round(crop_y)),
+            "crop_width": max(2, int(round(side))),
+            "crop_height": max(2, int(round(side))),
+            "target_size": 768,
+        }
+
     def _character_reference_quality_gate(
         self,
         face_probe_payload: dict[str, Any],
@@ -922,6 +1040,7 @@ class DeterministicMediaAdapters:
                     f"{snapshot.project.style}, storyboard frame, solo talking-head portrait of "
                     f"{primary_character['name']}, one person only, {partner_hint}head and shoulders, "
                     f"looking at camera, clear facial features, natural expression, dialogue close-up, "
+                    "single speaker only, face filling most of frame, no action pose, no crowd, "
                     f"{primary_descriptor}, "
                     f"{composition_hint}, {lane_hint}, "
                     f"{shot.purpose}, seed hint: {shot.prompt_seed}"
@@ -929,6 +1048,7 @@ class DeterministicMediaAdapters:
                 (
                     "multiple people, crowd, collage, extra faces, duplicate person, split face, "
                     "profile view, extreme close-up, cropped forehead, cropped chin, face too low in frame, "
+                    "full body, action scene, battle pose, running, jumping, weapon pose, "
                     "important details inside the subtitle lane, hands covering face, "
                     f"blurry, bad anatomy, watermark, text, logo"
                     f"{', ' + primary_negative if primary_negative else ''}"
@@ -986,6 +1106,8 @@ class DeterministicMediaAdapters:
 
     @staticmethod
     def _character_visual_fragment(character: CharacterProfile | dict[str, Any]) -> str:
+        role_hint = str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip()
+        gender_hint = str(character.get("gender_hint") if isinstance(character, dict) else character.gender_hint).strip()
         style_tags = (
             character.get("style_tags") if isinstance(character, dict) else character.style_tags
         ) or []
@@ -1008,6 +1130,25 @@ class DeterministicMediaAdapters:
             ),
             str(character.get("visual_hint") if isinstance(character, dict) else character.visual_hint).strip(),
         ]
+        if role_hint == "father" and gender_hint == "male":
+            parts.extend(
+                [
+                    "adult male father",
+                    "masculine face",
+                    "strong jawline",
+                    "trimmed beard",
+                ]
+            )
+        if role_hint == "son" and gender_hint == "male":
+            parts.extend(
+                [
+                    "young boy",
+                    "masculine child face",
+                    "boyish features",
+                    "short boy haircut",
+                    "flat child torso",
+                ]
+            )
         seen: set[str] = set()
         ordered: list[str] = []
         for part in parts:
@@ -1022,9 +1163,32 @@ class DeterministicMediaAdapters:
 
     @staticmethod
     def _character_negative_fragment(character: CharacterProfile | dict[str, Any]) -> str:
-        return str(
+        role_hint = str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip()
+        gender_hint = str(character.get("gender_hint") if isinstance(character, dict) else character.gender_hint).strip()
+        base = str(
             character.get("negative_visual_hint") if isinstance(character, dict) else character.negative_visual_hint
         ).strip()
+        extra_parts: list[str] = []
+        if role_hint == "father" and gender_hint == "male":
+            extra_parts.extend(["female face", "girl", "lipstick", "long eyelashes"])
+        if role_hint == "son" and gender_hint == "male":
+            extra_parts.extend(
+                [
+                    "girl",
+                    "woman",
+                    "female teen",
+                    "feminine face",
+                    "lipstick",
+                    "makeup",
+                    "long eyelashes",
+                    "curvy body",
+                    "breasts",
+                    "ponytail",
+                    "glasses",
+                ]
+            )
+        fragments = [fragment for fragment in [base, ", ".join(extra_parts)] if fragment]
+        return ", ".join(fragments)
 
     @staticmethod
     def _character_action_fragment(character: CharacterProfile | dict[str, Any]) -> str:

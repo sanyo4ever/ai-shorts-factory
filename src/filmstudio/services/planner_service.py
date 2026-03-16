@@ -74,6 +74,12 @@ class PlannerService:
         "vertykalnyi framing",
         "vertical framing",
     )
+    ACTION_SEGMENT_LABELS = (
+        "hero insert",
+        "hero reveal",
+        "action",
+        "action beat",
+    )
 
     def __init__(
         self,
@@ -198,11 +204,9 @@ class PlannerService:
         product_preset: dict[str, Any] | None = None,
     ) -> list[CharacterProfile]:
         names = list(dict.fromkeys(request.character_names))
-        pattern = re.compile(r"^\s*([^:\n]{2,32}):", re.MULTILINE)
-        for match in pattern.findall(request.script):
-            clean = match.strip().title()
-            if clean not in names:
-                names.append(clean)
+        for candidate in self._extract_inline_speaker_candidates(request.script):
+            if candidate not in names:
+                names.append(candidate)
             if len(names) >= 3:
                 break
         if not names:
@@ -513,24 +517,31 @@ class PlannerService:
         *,
         request: ProjectCreateRequest,
     ) -> list[ShotPlan]:
-        lines = [line.strip() for line in block.splitlines() if line.strip()]
-        dialogue: list[DialogueLine] = []
-        description_lines: list[str] = []
-        for line in lines:
-            if ":" not in line:
-                description_lines.append(line)
-                continue
-            name, text = line.split(":", 1)
-            speaker = name.strip().title()
-            clean_text = text.strip()
-            dialogue.append(DialogueLine(character_name=speaker, text=clean_text))
-            if speaker.lower() == "narrator":
-                description_lines.append(clean_text)
+        dialogue, description_lines, action_lines = self._parse_scene_block(block, characters=characters)
         has_dialogue = bool(dialogue)
-        description_text = "\n".join(description_lines).lower()
+        description_text = "\n".join(description_lines + action_lines).lower()
         lower_block = block.lower()
         description_action_hits = self._action_signal_hits(description_text)
         narration_hero_insert_hint = any(hint in lower_block for hint in self.HERO_INSERT_HINTS)
+        has_action = bool(action_lines) or bool(description_action_hits) or (
+            narration_hero_insert_hint and bool(self._action_signal_hits(lower_block))
+        )
+        grouped_turns = self._group_dialogue_turns(dialogue) if has_dialogue else []
+        unique_speakers = list(dict.fromkeys(line.character_name for line in dialogue if line.character_name))
+        explicit_action_block = bool(action_lines)
+        mixed_dialogue_action = has_dialogue and has_action and (
+            explicit_action_block or len(grouped_turns) > 1 or len(unique_speakers) > 1
+        )
+        if mixed_dialogue_action:
+            return self._build_mixed_dialogue_action_shots(
+                scene_id,
+                dialogue=dialogue,
+                description_lines=description_lines,
+                action_lines=action_lines,
+                characters=characters,
+                request=request,
+                block=block,
+            )
         if description_action_hits or (narration_hero_insert_hint and self._action_signal_hits(lower_block)):
             strategy = "hero_insert"
             purpose = "short action insert"
@@ -563,37 +574,12 @@ class PlannerService:
                 if not (strategy == "hero_insert" and character.name.casefold() == "narrator")
             ]
         if strategy == "portrait_lipsync":
-            grouped_turns = self._group_dialogue_turns(dialogue)
-            unique_speakers = list(dict.fromkeys(line.character_name for line in dialogue if line.character_name))
             if len(grouped_turns) > 1 and len(unique_speakers) > 1:
-                shots: list[ShotPlan] = []
-                for turn_index, turn_lines in enumerate(grouped_turns[:4], start=1):
-                    focal_character = turn_lines[0].character_name
-                    turn_word_count = max(1, sum(len(line.text.split()) for line in turn_lines))
-                    turn_duration_sec = max(1, min(3, round(turn_word_count / 2.4)))
-                    turn_prompt_lines = list(description_lines)
-                    for turn_line in turn_lines:
-                        turn_prompt_lines.append(f"{turn_line.character_name}: {turn_line.text}")
-                    shots.append(
-                        ShotPlan(
-                            shot_id=new_id("shot"),
-                            scene_id=scene_id,
-                            index=turn_index,
-                            title=f"{scene_id} shot {turn_index}",
-                            strategy="portrait_lipsync",
-                            duration_sec=turn_duration_sec,
-                            purpose="speaker closeup" if turn_index == 1 else "reply closeup",
-                            characters=[focal_character],
-                            dialogue=turn_lines,
-                            prompt_seed="\n".join(turn_prompt_lines)[:200],
-                            composition=self._build_shot_composition(
-                                "portrait_lipsync",
-                                multi_speaker_dialogue=True,
-                                speaker_turn_index=turn_index,
-                            ),
-                        )
-                    )
-                return shots
+                return self._build_dialogue_turn_shots(
+                    scene_id,
+                    grouped_turns=grouped_turns[:4],
+                    description_lines=description_lines,
+                )
         shot = ShotPlan(
             shot_id=new_id("shot"),
             scene_id=scene_id,
@@ -629,6 +615,207 @@ class PlannerService:
     def _action_signal_hits(self, text: str) -> list[str]:
         lowered = text.lower()
         return [stem for stem in self.ACTION_SIGNAL_STEMS if stem in lowered]
+
+    def _extract_inline_speaker_candidates(self, text: str) -> list[str]:
+        pattern = re.compile(
+            r"(?<![\w])([A-ZА-ЯІЇЄҐ][A-ZА-ЯІЇЄҐ' -]{0,24}|[A-ZА-ЯІЇЄҐ][a-zа-яіїєґ']{1,24}(?: [A-ZА-ЯІЇЄҐ][a-zа-яіїєґ']{1,24}){0,2})\s*:"
+        )
+        candidates: list[str] = []
+        for match in pattern.findall(text):
+            canonical = self._normalize_scene_label(match)
+            if not canonical or self._label_is_action(canonical) or canonical.casefold() == "narrator":
+                continue
+            if canonical not in candidates:
+                candidates.append(canonical)
+        return candidates
+
+    def _normalize_scene_label(self, label: str) -> str:
+        collapsed = " ".join(label.replace("_", " ").split()).strip(" -")
+        if not collapsed:
+            return ""
+        if collapsed.isupper():
+            return " ".join(part.capitalize() for part in collapsed.split())
+        return " ".join(part[:1].upper() + part[1:] for part in collapsed.split())
+
+    def _label_is_action(self, label: str) -> bool:
+        return label.casefold() in {entry.casefold() for entry in self.ACTION_SEGMENT_LABELS}
+
+    def _scene_label_aliases(self, characters: list[CharacterProfile]) -> dict[str, str]:
+        aliases: dict[str, str] = {"narrator": "Narrator"}
+        for label in self.ACTION_SEGMENT_LABELS:
+            aliases[label.casefold()] = "__action__"
+        for candidate in characters:
+            normalized = self._normalize_scene_label(candidate.name)
+            if normalized:
+                aliases[normalized.casefold()] = normalized
+        return aliases
+
+    def _parse_scene_block(
+        self,
+        block: str,
+        *,
+        characters: list[CharacterProfile],
+    ) -> tuple[list[DialogueLine], list[str], list[str]]:
+        aliases = self._scene_label_aliases(characters)
+        if not aliases:
+            normalized_block = self._normalize_scene_text_segment(block)
+            return [], [normalized_block] if normalized_block else [], []
+        pattern = re.compile(
+            r"(?<![\w])("
+            + "|".join(re.escape(label) for label in sorted(aliases, key=len, reverse=True))
+            + r")\s*:",
+            re.IGNORECASE,
+        )
+        matches = list(pattern.finditer(block))
+        dialogue: list[DialogueLine] = []
+        description_lines: list[str] = []
+        action_lines: list[str] = []
+        if not matches:
+            normalized_block = self._normalize_scene_text_segment(block)
+            return [], [normalized_block] if normalized_block else [], []
+        leading_text = self._normalize_scene_text_segment(block[: matches[0].start()])
+        if leading_text:
+            description_lines.append(leading_text)
+        for index, match in enumerate(matches):
+            label_key = match.group(1).casefold()
+            segment_end = matches[index + 1].start() if index + 1 < len(matches) else len(block)
+            segment_text = self._normalize_scene_text_segment(block[match.end() : segment_end])
+            if not segment_text:
+                continue
+            target = aliases.get(label_key)
+            if target == "__action__":
+                action_lines.append(segment_text)
+            elif target == "Narrator":
+                dialogue.append(DialogueLine(character_name="Narrator", text=segment_text))
+                description_lines.append(segment_text)
+            elif target:
+                dialogue.append(DialogueLine(character_name=target, text=segment_text))
+        return dialogue, description_lines, action_lines
+
+    @staticmethod
+    def _normalize_scene_text_segment(text: str) -> str:
+        collapsed = " ".join(text.split()).strip()
+        collapsed = re.sub(r"(?i)^scene\s+\d+\s*[:.]?\s*", "", collapsed)
+        return collapsed.strip(" -")
+
+    def _build_dialogue_turn_shots(
+        self,
+        scene_id: str,
+        *,
+        grouped_turns: list[list[DialogueLine]],
+        description_lines: list[str],
+        dialogue_budget: int | None = None,
+    ) -> list[ShotPlan]:
+        durations = self._allocate_turn_durations(grouped_turns, total_budget=dialogue_budget)
+        shots: list[ShotPlan] = []
+        for turn_index, (turn_lines, turn_duration_sec) in enumerate(zip(grouped_turns, durations), start=1):
+            focal_character = turn_lines[0].character_name
+            turn_prompt_lines = list(description_lines)
+            for turn_line in turn_lines:
+                turn_prompt_lines.append(f"{turn_line.character_name}: {turn_line.text}")
+            shots.append(
+                ShotPlan(
+                    shot_id=new_id("shot"),
+                    scene_id=scene_id,
+                    index=turn_index,
+                    title=f"{scene_id} shot {turn_index}",
+                    strategy="portrait_lipsync",
+                    duration_sec=turn_duration_sec,
+                    purpose="speaker closeup" if turn_index == 1 else "reply closeup",
+                    characters=[focal_character],
+                    dialogue=turn_lines,
+                    prompt_seed="\n".join(turn_prompt_lines)[:200],
+                    composition=self._build_shot_composition(
+                        "portrait_lipsync",
+                        multi_speaker_dialogue=True,
+                        speaker_turn_index=turn_index,
+                    ),
+                )
+            )
+        return shots
+
+    @staticmethod
+    def _allocate_turn_durations(
+        grouped_turns: list[list[DialogueLine]],
+        *,
+        total_budget: int | None = None,
+    ) -> list[int]:
+        if not grouped_turns:
+            return []
+        word_counts = [max(1, sum(len(line.text.split()) for line in turn_lines)) for turn_lines in grouped_turns]
+        if total_budget is None:
+            return [max(1, min(3, round(word_count / 2.4))) for word_count in word_counts]
+        durations = [1 for _ in grouped_turns]
+        remaining = max(0, total_budget - len(grouped_turns))
+        if remaining <= 0:
+            return durations
+        total_weight = sum(word_counts) or len(word_counts)
+        raw_extras = [(remaining * word_count) / total_weight for word_count in word_counts]
+        whole_extras = [int(value) for value in raw_extras]
+        durations = [duration + extra for duration, extra in zip(durations, whole_extras)]
+        leftover = remaining - sum(whole_extras)
+        ordering = sorted(
+            range(len(word_counts)),
+            key=lambda index: (raw_extras[index] - whole_extras[index], word_counts[index]),
+            reverse=True,
+        )
+        for index in ordering[:leftover]:
+            durations[index] += 1
+        return durations
+
+    def _build_mixed_dialogue_action_shots(
+        self,
+        scene_id: str,
+        *,
+        dialogue: list[DialogueLine],
+        description_lines: list[str],
+        action_lines: list[str],
+        characters: list[CharacterProfile],
+        request: ProjectCreateRequest,
+        block: str,
+    ) -> list[ShotPlan]:
+        grouped_turns = self._group_dialogue_turns(dialogue)
+        selected_turns = grouped_turns[:2] if request.target_duration_sec <= 8 else grouped_turns[:3]
+        if not selected_turns:
+            selected_turns = grouped_turns[:1]
+        hero_duration_sec = 2 if request.target_duration_sec <= 8 else 3
+        target_scene_duration = max(hero_duration_sec + len(selected_turns), request.target_duration_sec)
+        dialogue_budget = max(len(selected_turns), target_scene_duration - hero_duration_sec)
+        shots = self._build_dialogue_turn_shots(
+            scene_id,
+            grouped_turns=selected_turns,
+            description_lines=description_lines,
+            dialogue_budget=dialogue_budget,
+        )
+        hero_characters = list(
+            dict.fromkeys(
+                line.character_name
+                for turn_lines in selected_turns
+                for line in turn_lines
+                if line.character_name and line.character_name.casefold() != "narrator"
+            )
+        )
+        if not hero_characters:
+            hero_characters = [character.name for character in characters[:3]]
+        hero_prompt_parts = [part for part in [*description_lines, *action_lines] if part]
+        if not hero_prompt_parts:
+            hero_prompt_parts = [block]
+        shots.append(
+            ShotPlan(
+                shot_id=new_id("shot"),
+                scene_id=scene_id,
+                index=len(shots) + 1,
+                title=f"{scene_id} shot {len(shots) + 1}",
+                strategy="hero_insert",
+                duration_sec=hero_duration_sec,
+                purpose="hero payoff insert",
+                characters=hero_characters[:3],
+                dialogue=[],
+                prompt_seed="\n".join(hero_prompt_parts)[:200],
+                composition=self._build_shot_composition("hero_insert"),
+            )
+        )
+        return shots
 
     @staticmethod
     def _group_dialogue_turns(dialogue: list[DialogueLine]) -> list[list[DialogueLine]]:

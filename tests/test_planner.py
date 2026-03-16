@@ -156,3 +156,54 @@ def test_planner_keeps_narrator_out_of_hero_insert_character_list() -> None:
 
     assert shot.strategy == "hero_insert"
     assert shot.characters == ["Tato", "Syn"]
+
+
+def test_planner_extracts_inline_speakers_from_single_line_prompt() -> None:
+    planner = PlannerService()
+    request = ProjectCreateRequest(
+        title="Inline father son prompt",
+        style="fortnite_stylized_action",
+        script=(
+            "SCENE 1. Fortnite-style bright island at sunset. "
+            "TATO: Synu, hotovyi do skoku? "
+            "SYN: Tak, tatu, poletily! "
+            "Hero insert: Tato and Syn jump from the ramp and celebrate the win."
+        ),
+        language="uk",
+        target_duration_sec=5,
+    )
+
+    bundle = planner.build_planning_bundle("proj_test", request)
+    character_names = [entry["name"] for entry in bundle.character_bible["characters"]]
+
+    assert character_names[:2] == ["Tato", "Syn"]
+    assert all("Scene 1." not in name for name in character_names)
+
+
+def test_planner_splits_inline_dialogue_plus_action_into_closeups_and_hero_insert() -> None:
+    planner = PlannerService()
+    request = ProjectCreateRequest(
+        title="Inline mixed prompt",
+        style="fortnite_stylized_action",
+        script=(
+            "SCENE 1. Fortnite-style bright island at sunset. Father Tato and his son Syn stand on a wooden ramp. "
+            "TATO: Synu, hotovyi do skoku? "
+            "SYN: Tak, tatu, poletily! "
+            "Hero insert: Tato and Syn jump from the ramp, rush to the glowing crown, and celebrate with a victory pose."
+        ),
+        language="uk",
+        target_duration_sec=5,
+    )
+
+    bundle = planner.build_planning_bundle("proj_test", request)
+    shots = bundle.scenes[0].shots
+
+    assert [shot.strategy for shot in shots] == ["portrait_lipsync", "portrait_lipsync", "hero_insert"]
+    assert shots[0].characters == ["Tato"]
+    assert shots[1].characters == ["Syn"]
+    assert shots[2].characters == ["Tato", "Syn"]
+    assert shots[0].dialogue[0].text == "Synu, hotovyi do skoku?"
+    assert shots[1].dialogue[0].text == "Tak, tatu, poletily!"
+    assert shots[2].dialogue == []
+    assert shots[2].composition.subtitle_lane == "top"
+    assert sum(shot.duration_sec for shot in shots) == 5
