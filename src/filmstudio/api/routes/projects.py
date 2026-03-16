@@ -6,7 +6,12 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from filmstudio.domain.models import ProjectCreateRequest, ReviewUpdateRequest, SelectiveRerenderRequest
+from filmstudio.domain.models import (
+    ProjectCreateRequest,
+    QuickGenerateRequest,
+    ReviewUpdateRequest,
+    SelectiveRerenderRequest,
+)
 from filmstudio.services.planner_service import PlannerService
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
@@ -32,12 +37,31 @@ def get_preset_catalog():
     return PlannerService.build_product_preset_catalog()
 
 
+@router.get("/quick-start")
+def get_quick_start_catalog(request: Request):
+    return request.app.state.project_service.build_quick_generate_catalog()
+
+
 @router.post("")
 def create_project(request: Request, payload: ProjectCreateRequest):
     try:
         snapshot = request.app.state.project_service.create_project(payload)
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    return snapshot
+
+
+@router.post("/quick-generate")
+def quick_generate_project(request: Request, payload: QuickGenerateRequest):
+    try:
+        snapshot = request.app.state.project_service.create_quick_project(payload)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    if payload.run_immediately:
+        try:
+            snapshot = request.app.state.worker.run_project(snapshot.project.project_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Project not found") from None
     return snapshot
 
 

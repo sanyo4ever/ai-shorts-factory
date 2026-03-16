@@ -12,6 +12,7 @@ from filmstudio.domain.models import (
     ProjectRecord,
     ProjectSnapshot,
     QCReportRecord,
+    QuickGenerateRequest,
     RecoveryPlanRecord,
     ReviewRecord,
     ReviewReasonCode,
@@ -23,6 +24,7 @@ from filmstudio.domain.models import (
 )
 from filmstudio.domain.service_contracts import PIPELINE_STAGE_ORDER, STAGE_QUEUE_MAP
 from filmstudio.services.planner_service import PlannerService, PlanningBundle
+from filmstudio.services.quick_generate import build_quick_generate_catalog, build_quick_project_request
 from filmstudio.services.review_manifest import (
     build_review_manifest,
     build_review_summary,
@@ -66,6 +68,16 @@ class ProjectService:
         self.default_music_backend = default_music_backend
         self.default_lipsync_backend = default_lipsync_backend
         self.default_subtitle_backend = default_subtitle_backend
+
+    @staticmethod
+    def build_quick_generate_catalog() -> dict[str, object]:
+        return build_quick_generate_catalog()
+
+    def create_quick_project(self, payload: QuickGenerateRequest) -> ProjectSnapshot:
+        request, quick_metadata = build_quick_project_request(payload)
+        snapshot = self.create_project(request)
+        snapshot.project.metadata["quick_generate"] = quick_metadata
+        return self.save_snapshot(snapshot)
 
     def create_project(self, request: ProjectCreateRequest) -> ProjectSnapshot:
         planner = self._select_planner(request)

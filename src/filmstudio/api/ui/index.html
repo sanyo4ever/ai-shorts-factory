@@ -285,8 +285,73 @@
         <section class="panel create-panel">
           <div class="panel-head">
             <div>
-              <p class="eyebrow">Intake</p>
-              <h2>Create Project</h2>
+              <p class="eyebrow">Fast Path</p>
+              <h2>Quick Generate</h2>
+            </div>
+          </div>
+          <form id="quick-generate-form" class="form-grid">
+            <label class="field">
+              <span>Example</span>
+              <select id="quick-example-select"></select>
+            </label>
+            <label class="field">
+              <span>Runtime Profile</span>
+              <select id="quick-stack-profile"></select>
+            </label>
+            <label class="field">
+              <span>Title</span>
+              <input id="quick-title" name="quick_title" type="text" placeholder="Tato and Syn Fortnite Jump">
+            </label>
+            <label class="field">
+              <span>Characters</span>
+              <input id="quick-characters" name="quick_characters" type="text" placeholder="Tato, Syn">
+            </label>
+            <label class="field">
+              <span>Language</span>
+              <select id="quick-language" name="quick_language">
+                <option value="uk" selected>uk</option>
+                <option value="en">en</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Duration (sec)</span>
+              <input id="quick-duration" name="quick_duration" type="number" min="3" max="60" step="1" value="8">
+            </label>
+            <label class="field field-full">
+              <span>Idea Or Script</span>
+              <textarea
+                id="quick-prompt"
+                name="quick_prompt"
+                rows="8"
+                required
+                placeholder="One idea, one mixed prompt, or a ready screenplay. Example: SCENE 1. Tato and Syn stand on a ramp. TATO: Synu, hotovyi? SYN: Tak, tatu! Hero insert: They jump into a Fortnite-style action beat."
+              ></textarea>
+            </label>
+            <label class="checkbox-row field-full">
+              <input id="quick-run-immediately" type="checkbox" checked>
+              <span>Generate immediately after create</span>
+            </label>
+            <div class="toolbar">
+              <button class="button button-primary" type="submit">Quick Generate</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel preset-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Quick Profile</p>
+              <h2>What Will Run</h2>
+            </div>
+          </div>
+          <div id="quick-profile-preview" class="preset-preview"></div>
+        </section>
+
+        <section class="panel create-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Advanced Intake</p>
+              <h2>Full Create Project</h2>
             </div>
           </div>
           <form id="create-project-form" class="form-grid">

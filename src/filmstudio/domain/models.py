@@ -43,6 +43,7 @@ ShortArchetype = Literal[
     "countdown_list",
     "hero_teaser",
 ]
+QuickGenerateStackProfile = Literal["production_vertical", "deterministic_preview"]
 CampaignReleaseStatus = Literal["candidate", "canonical", "superseded"]
 ReviewStatus = Literal["pending_review", "approved", "needs_rerender"]
 ReviewTargetKind = Literal["scene", "shot"]
@@ -288,6 +289,21 @@ class ReviewUpdateRequest(BaseModel):
     request_rerender: bool = False
     start_stage: RerenderStage = "render_shots"
     run_immediately: bool = False
+
+
+class QuickGenerateRequest(BaseModel):
+    prompt: str = ""
+    title: str | None = None
+    language: str = "uk"
+    target_duration_sec: int = Field(default=8, ge=3, le=60)
+    character_names: list[str] = Field(default_factory=list)
+    style_preset: StylePreset | None = None
+    voice_cast_preset: VoiceCastPreset | None = None
+    music_preset: MusicPreset | None = None
+    short_archetype: ShortArchetype | None = None
+    stack_profile: QuickGenerateStackProfile = "production_vertical"
+    example_slug: str | None = None
+    run_immediately: bool = True
 
 
 class CampaignReleaseUpdateRequest(BaseModel):

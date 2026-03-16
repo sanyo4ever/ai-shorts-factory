@@ -143,6 +143,32 @@ For a first local run, start with the default baseline instead of enabling every
 
 Once the API is up, open [http://127.0.0.1:8000/studio](http://127.0.0.1:8000/studio). The built-in operator dashboard lets you create projects, watch queue state, inspect campaign history, drill into campaign cases, compare release gates, promote canonical baselines, preview final videos, review shots, trigger rerenders, and download packaged outputs without standing up a separate frontend.
 
+If you want the simplest path instead of the full intake form, use the built-in `Quick Generate` card in `/studio`. It wraps the same API with a smaller payload, curated starter examples, and explicit runtime-stack profiles:
+
+- `Production Vertical`: `ComfyUI + Wan + Piper + MuseTalk + ACE-Step + FFmpeg`
+- `Deterministic Preview`: faster local preview path with deterministic visuals and live `Piper`
+
+The same surface is also exposed as API:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:8000/api/v1/projects/quick-start"
+```
+
+```powershell
+$body = @{
+  example_slug = "fortnite_family_jump"
+  run_immediately = $true
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://127.0.0.1:8000/api/v1/projects/quick-generate" `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+`quick-generate` stores the generated screenplay and chosen stack profile in project metadata, so operators can still inspect or rerender the result through the normal review flow afterward.
+
 2. In another terminal, create a project:
 
 ```powershell

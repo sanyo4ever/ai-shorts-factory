@@ -1,5 +1,6 @@
 const state = {
   presetCatalog: null,
+  quickStartCatalog: null,
   overviews: [],
   queue: null,
   campaignOverview: null,
@@ -72,6 +73,16 @@ function cacheElements() {
   elements.rerenderFocusButton = byId("rerender-focus-button");
   elements.runProjectButton = byId("run-project-button");
   elements.refreshProjectButton = byId("refresh-project-button");
+  elements.quickGenerateForm = byId("quick-generate-form");
+  elements.quickExampleSelect = byId("quick-example-select");
+  elements.quickStackProfile = byId("quick-stack-profile");
+  elements.quickTitle = byId("quick-title");
+  elements.quickCharacters = byId("quick-characters");
+  elements.quickLanguage = byId("quick-language");
+  elements.quickDuration = byId("quick-duration");
+  elements.quickPrompt = byId("quick-prompt");
+  elements.quickRunImmediately = byId("quick-run-immediately");
+  elements.quickProfilePreview = byId("quick-profile-preview");
   elements.createProjectForm = byId("create-project-form");
   elements.createTitle = byId("create-title");
   elements.createLanguage = byId("create-language");
@@ -101,6 +112,12 @@ function bindEvents() {
     }
     runProject(state.selectedProjectId).catch(handleError);
   });
+  elements.quickGenerateForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    quickGenerateProjectFromForm().catch(handleError);
+  });
+  elements.quickExampleSelect.addEventListener("change", applyQuickExampleSelection);
+  elements.quickStackProfile.addEventListener("change", renderQuickProfilePreview);
   elements.campaignList.addEventListener("click", (event) => {
     const campaignButton = event.target.closest("[data-campaign-name]");
     if (!campaignButton) {
@@ -209,19 +226,22 @@ function bindEvents() {
 
 async function refreshStudio({ forceProjectRefresh = false } = {}) {
   setStatus("Syncing studio state...", "info");
-  const [presetCatalog, overviews, queue, campaignOverview, campaigns] = await Promise.all([
+  const [presetCatalog, quickStartCatalog, overviews, queue, campaignOverview, campaigns] = await Promise.all([
     fetchJson("/api/v1/projects/preset-catalog"),
+    fetchJson("/api/v1/projects/quick-start"),
     fetchJson("/api/v1/projects/overviews"),
     fetchJson("/api/v1/projects/operator-queue"),
     fetchJson("/api/v1/campaigns/overview"),
     fetchJson("/api/v1/campaigns?limit=8"),
   ]);
   state.presetCatalog = presetCatalog;
+  state.quickStartCatalog = quickStartCatalog;
   state.overviews = Array.isArray(overviews) ? overviews : [];
   state.queue = queue || { summary: {}, items: [] };
   state.campaignOverview = campaignOverview || { summary: {}, highlights: {}, campaigns: [] };
   state.campaigns = Array.isArray(campaigns) ? campaigns : [];
   populatePresetForm();
+  populateQuickGenerateForm();
   chooseCampaignSelection();
   chooseProjectSelection();
   renderChrome();
@@ -256,6 +276,105 @@ function populatePresetForm() {
     defaults.short_archetype,
   );
   renderPresetPreview();
+}
+
+function populateQuickGenerateForm() {
+  if (!state.quickStartCatalog) {
+    elements.quickProfilePreview.innerHTML = `<div class="muted-copy">Quick generate catalog not loaded yet.</div>`;
+    return;
+  }
+  const defaults = state.quickStartCatalog.defaults || {};
+  const examples = Array.isArray(state.quickStartCatalog.examples) ? state.quickStartCatalog.examples : [];
+  const profiles = state.quickStartCatalog.profiles || {};
+  const currentExample = elements.quickExampleSelect.value || defaults.example_slug || "";
+  const currentProfile = elements.quickStackProfile.value || defaults.stack_profile || "production_vertical";
+
+  elements.quickExampleSelect.innerHTML = [
+    `<option value="">Custom idea</option>`,
+    ...examples.map((example) => {
+      const selected = example.slug === currentExample ? " selected" : "";
+      return `<option value="${escapeHtml(example.slug)}"${selected}>${escapeHtml(example.title)}</option>`;
+    }),
+  ].join("");
+  elements.quickStackProfile.innerHTML = Object.entries(profiles)
+    .map(([key, profile]) => {
+      const selected = key === currentProfile ? " selected" : "";
+      return `<option value="${escapeHtml(key)}"${selected}>${escapeHtml(profile.label || key)}</option>`;
+    })
+    .join("");
+  if (!elements.quickLanguage.value) {
+    elements.quickLanguage.value = defaults.language || "uk";
+  }
+  if (!elements.quickDuration.value) {
+    elements.quickDuration.value = String(defaults.target_duration_sec || 8);
+  }
+  elements.quickRunImmediately.checked = Boolean(defaults.run_immediately ?? true);
+  if (!elements.quickPrompt.value.trim() && !elements.quickTitle.value.trim()) {
+    applyQuickExampleSelection();
+  } else {
+    renderQuickProfilePreview();
+  }
+}
+
+function applyQuickExampleSelection() {
+  const catalog = state.quickStartCatalog || {};
+  const examples = Array.isArray(catalog.examples) ? catalog.examples : [];
+  const example = examples.find((entry) => entry.slug === elements.quickExampleSelect.value) || null;
+  if (!example) {
+    renderQuickProfilePreview();
+    return;
+  }
+  elements.quickTitle.value = example.title || "";
+  elements.quickCharacters.value = Array.isArray(example.character_names)
+    ? example.character_names.join(", ")
+    : "";
+  elements.quickLanguage.value = example.language || elements.quickLanguage.value || "uk";
+  elements.quickDuration.value = String(example.target_duration_sec || elements.quickDuration.value || 8);
+  elements.quickPrompt.value = example.prompt || "";
+  if (example.stack_profile) {
+    elements.quickStackProfile.value = example.stack_profile;
+  }
+  renderQuickProfilePreview();
+}
+
+function renderQuickProfilePreview() {
+  if (!state.quickStartCatalog) {
+    elements.quickProfilePreview.innerHTML = `<div class="muted-copy">Quick generate catalog not loaded yet.</div>`;
+    return;
+  }
+  const profiles = state.quickStartCatalog.profiles || {};
+  const examples = Array.isArray(state.quickStartCatalog.examples) ? state.quickStartCatalog.examples : [];
+  const profileKey =
+    elements.quickStackProfile.value ||
+    state.quickStartCatalog.defaults?.stack_profile ||
+    "production_vertical";
+  const profile = profiles[profileKey] || {};
+  const example = examples.find((entry) => entry.slug === elements.quickExampleSelect.value) || null;
+  const backendProfile = profile.backend_profile || {};
+  const exampleSummary = example
+    ? `
+      <article class="preset-card">
+        <p class="eyebrow">Example</p>
+        <h3>${escapeHtml(example.title || example.slug || "Quick example")}</h3>
+        <p>${escapeHtml(example.description || "Curated starter scenario.")}</p>
+      </article>
+    `
+    : "";
+  elements.quickProfilePreview.innerHTML = `
+    ${exampleSummary}
+    <article class="preset-card">
+      <p class="eyebrow">Stack</p>
+      <h3>${escapeHtml(profile.label || profileKey)}</h3>
+      <p>${escapeHtml(profile.description || "")}</p>
+      <p class="muted-copy">
+        visual ${escapeHtml(backendProfile.visual_backend || "deterministic")} ·
+        video ${escapeHtml(backendProfile.video_backend || "deterministic")} ·
+        tts ${escapeHtml(backendProfile.tts_backend || "deterministic")} ·
+        music ${escapeHtml(backendProfile.music_backend || "deterministic")} ·
+        lipsync ${escapeHtml(backendProfile.lipsync_backend || "deterministic")}
+      </p>
+    </article>
+  `;
 }
 
 function populateSelect(select, catalog, selectedKey) {
@@ -465,6 +584,7 @@ function renderChrome() {
   renderQueue();
   renderProjectList();
   renderPresetPreview();
+  renderQuickProfilePreview();
 }
 
 function renderGlobalMetrics() {
@@ -1981,6 +2101,44 @@ async function createProjectFromForm() {
   }
   await refreshStudio({ forceProjectRefresh: true });
   setStatus(`Project ${projectId} created.`, "success", 1800);
+}
+
+async function quickGenerateProjectFromForm() {
+  const payload = {
+    prompt: elements.quickPrompt.value.trim(),
+    title: elements.quickTitle.value.trim() || null,
+    language: elements.quickLanguage.value,
+    target_duration_sec: Number.parseInt(elements.quickDuration.value || "8", 10) || 8,
+    character_names: elements.quickCharacters.value
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+    stack_profile: elements.quickStackProfile.value || "production_vertical",
+    example_slug: elements.quickExampleSelect.value || null,
+    run_immediately: Boolean(elements.quickRunImmediately.checked),
+  };
+  if (!payload.prompt && !payload.example_slug) {
+    setStatus("Add an idea or choose a quick example.", "warning", 2200);
+    return;
+  }
+  setStatus("Quick generate is building the project...", "info");
+  const snapshot = await fetchJson("/api/v1/projects/quick-generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const projectId = snapshot.project.project_id;
+  state.projectDetails.delete(projectId);
+  state.selectedProjectId = projectId;
+  state.selectedTarget = null;
+  await refreshStudio({ forceProjectRefresh: true });
+  setStatus(
+    payload.run_immediately
+      ? `Quick project ${projectId} generated.`
+      : `Quick project ${projectId} created.`,
+    "success",
+    2200,
+  );
 }
 
 async function fetchJson(url, options = {}) {

@@ -98,6 +98,8 @@ def test_dashboard_routes_and_assets() -> None:
     assert dashboard_response.status_code == 200
     assert "AI Shorts Factory Studio" in dashboard_response.text
     assert "Campaign Center" in dashboard_response.text
+    assert "Quick Generate" in dashboard_response.text
+    assert "Idea Or Script" in dashboard_response.text
     assert "Semantic Regressions Only" in dashboard_response.text
     assert "Release Handoff" in dashboard_response.text
 
@@ -108,12 +110,44 @@ def test_dashboard_routes_and_assets() -> None:
     js_response = client.get("/studio/assets/dashboard.js")
     assert js_response.status_code == 200
     assert "refreshStudio" in js_response.text
+    assert "/api/v1/projects/quick-start" in js_response.text
+    assert "/api/v1/projects/quick-generate" in js_response.text
     assert "/api/v1/campaigns/overview" in js_response.text
     assert "/api/v1/campaigns/compare" in js_response.text
     assert "/api/v1/campaigns/release/baseline" in js_response.text
     assert "/api/v1/campaigns/release/handoff" in js_response.text
     assert "/release" in js_response.text
     assert "canonical blocked" in js_response.text
+
+
+def test_quick_generate_endpoints_create_project_with_profile_defaults() -> None:
+    client = TestClient(create_app())
+
+    catalog_response = client.get("/api/v1/projects/quick-start")
+    assert catalog_response.status_code == 200
+    catalog_payload = catalog_response.json()
+    assert catalog_payload["defaults"]["stack_profile"] == "production_vertical"
+    assert any(example["slug"] == "fortnite_family_jump" for example in catalog_payload["examples"])
+
+    response = client.post(
+        "/api/v1/projects/quick-generate",
+        json={
+            "example_slug": "fortnite_family_jump",
+            "run_immediately": False,
+        },
+    )
+    assert response.status_code == 200
+    snapshot = response.json()
+    metadata = snapshot["project"]["metadata"]
+    assert metadata["quick_generate"]["mode"] == "quick_generate"
+    assert metadata["quick_generate"]["example_slug"] == "fortnite_family_jump"
+    assert metadata["visual_backend"] == "comfyui"
+    assert metadata["video_backend"] == "wan"
+    assert metadata["tts_backend"] == "piper"
+    assert metadata["music_backend"] == "ace_step"
+    assert metadata["lipsync_backend"] == "musetalk"
+    assert snapshot["project"]["title"] == "Tato and Syn Fortnite Jump"
+    assert snapshot["project"]["script"].startswith("SCENE 1.")
 
 
 def test_campaign_endpoints_surface_runtime_reports(tmp_path: Path, monkeypatch) -> None:
