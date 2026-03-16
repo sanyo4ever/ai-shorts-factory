@@ -148,12 +148,12 @@ If you want the simplest path instead of the full intake form, use the built-in 
 - `Production Vertical`: `ComfyUI + Wan + Piper + WhisperX + MuseTalk + ACE-Step + FFmpeg`
 - `Deterministic Preview`: faster local preview path with deterministic visuals and live `Piper`
 
-For `language=uk`, the canonical quick-intake screenplay is now Cyrillic-first:
+For `language=uk`, the canonical quick-intake screenplay is now UTF-8 and Cyrillic-first:
 
-- scene headings use `СЦЕНА`
-- action beats use `ГЕРОЙСЬКА ВСТАВКА`
-- narration uses `ОПОВІДАЧ`
-- transliterated Latin Ukrainian is treated as a legacy input to repair, not as the preferred generated contract
+- scene headings are emitted as Cyrillic screenplay labels
+- action beats use a dedicated Cyrillic hero-insert label
+- narration uses a dedicated Cyrillic narrator label
+- transliterated Latin Ukrainian is treated as legacy input to repair, not as the preferred generated contract
 
 The same surface is also exposed as API:
 
@@ -210,8 +210,8 @@ The resulting report is written to:
 ```powershell
 $body = @{
   title = "Hello vertical short"
-  language = "uk"
-  script = "Оповідач: Герой виходить у кадр. Герой: Ми будуємо локальну AI студію."
+  language = "en"
+  script = "NARRATOR: A hero steps into frame. HERO: We are building a local AI studio."
 } | ConvertTo-Json
 
 Invoke-RestMethod `
