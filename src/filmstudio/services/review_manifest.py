@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from filmstudio.domain.models import ProjectSnapshot, ReviewRecord, ScenePlan, ShotPlan, utc_now
+from filmstudio.services.path_display import format_local_display_path
 
 _SHOT_REVISION_ARTIFACT_KINDS = {
     "shot_video",
@@ -208,6 +209,7 @@ def _review_state_entry(review_state) -> dict[str, Any]:
     payload["canonical_artifacts"] = [
         {
             **artifact,
+            "path": format_local_display_path(artifact.get("path")),
             "exists": bool(artifact.get("path")) and Path(str(artifact["path"])).exists(),
         }
         for artifact in payload.get("canonical_artifacts", [])
@@ -220,6 +222,7 @@ def _review_record_entry(review: ReviewRecord) -> dict[str, Any]:
     payload["canonical_artifacts"] = [
         {
             **artifact,
+            "path": format_local_display_path(artifact.get("path")),
             "exists": bool(artifact.get("path")) and Path(str(artifact["path"])).exists(),
         }
         for artifact in payload.get("canonical_artifacts", [])
@@ -255,7 +258,7 @@ def _build_shot_revision_entries(snapshot: ProjectSnapshot, shot: ShotPlan) -> l
         artifact_entry = {
             "artifact_id": artifact.artifact_id,
             "kind": artifact.kind,
-            "path": artifact.path,
+            "path": format_local_display_path(artifact.path),
             "stage": artifact.stage,
             "created_at": artifact.created_at,
             "exists": Path(artifact.path).exists(),
