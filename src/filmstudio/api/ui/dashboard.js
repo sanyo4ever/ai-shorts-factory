@@ -1,4 +1,5 @@
 const state = {
+  currentView: "generate",
   presetCatalog: null,
   quickStartCatalog: null,
   overviews: [],
@@ -26,6 +27,14 @@ document.addEventListener("DOMContentLoaded", () => {
 function cacheElements() {
   const byId = (id) => document.getElementById(id);
   elements.refreshButton = byId("refresh-button");
+  elements.viewGenerateButton = byId("view-generate-button");
+  elements.viewSettingsButton = byId("view-settings-button");
+  elements.viewOperationsButton = byId("view-operations-button");
+  elements.generateView = byId("generate-view");
+  elements.settingsView = byId("settings-view");
+  elements.operationsView = byId("operations-view");
+  elements.openSettingsButton = byId("open-settings-button");
+  elements.openOperationsButton = byId("open-operations-button");
   elements.projectCountBadge = byId("project-count-badge");
   elements.queueCountBadge = byId("queue-count-badge");
   elements.campaignCountBadge = byId("campaign-count-badge");
@@ -82,6 +91,9 @@ function cacheElements() {
   elements.quickDuration = byId("quick-duration");
   elements.quickPrompt = byId("quick-prompt");
   elements.quickRunImmediately = byId("quick-run-immediately");
+  elements.quickProfileSpotlight = byId("quick-profile-spotlight");
+  elements.quickExamplePreview = byId("quick-example-preview");
+  elements.quickResult = byId("quick-result");
   elements.quickProfilePreview = byId("quick-profile-preview");
   elements.createProjectForm = byId("create-project-form");
   elements.createTitle = byId("create-title");
@@ -100,6 +112,11 @@ function bindEvents() {
   elements.refreshButton.addEventListener("click", () => {
     refreshStudio({ forceProjectRefresh: true }).catch(handleError);
   });
+  elements.viewGenerateButton.addEventListener("click", () => setStudioView("generate"));
+  elements.viewSettingsButton.addEventListener("click", () => setStudioView("settings"));
+  elements.viewOperationsButton.addEventListener("click", () => setStudioView("operations"));
+  elements.openSettingsButton.addEventListener("click", () => setStudioView("settings"));
+  elements.openOperationsButton.addEventListener("click", () => setStudioView("operations"));
   elements.refreshProjectButton.addEventListener("click", () => {
     if (!state.selectedProjectId) {
       return;
@@ -118,6 +135,8 @@ function bindEvents() {
   });
   elements.quickExampleSelect.addEventListener("change", applyQuickExampleSelection);
   elements.quickStackProfile.addEventListener("change", renderQuickProfilePreview);
+  elements.quickLanguage.addEventListener("change", renderQuickProfilePreview);
+  elements.quickDuration.addEventListener("input", renderQuickProfilePreview);
   elements.campaignList.addEventListener("click", (event) => {
     const campaignButton = event.target.closest("[data-campaign-name]");
     if (!campaignButton) {
@@ -165,6 +184,13 @@ function bindEvents() {
       return;
     }
     selectProject(projectCard.dataset.projectId).catch(handleError);
+  });
+  elements.quickResult.addEventListener("click", (event) => {
+    const projectButton = event.target.closest("[data-project-id]");
+    if (!projectButton) {
+      return;
+    }
+    selectProject(projectButton.dataset.projectId).catch(handleError);
   });
   elements.queueList.addEventListener("click", (event) => {
     const queueButton = event.target.closest("[data-queue-project-id]");
@@ -221,6 +247,28 @@ function bindEvents() {
     elements.createShortArchetype,
   ].forEach((select) => {
     select.addEventListener("change", renderPresetPreview);
+  });
+}
+
+function setStudioView(view) {
+  state.currentView = view;
+  const views = {
+    generate: elements.generateView,
+    settings: elements.settingsView,
+    operations: elements.operationsView,
+  };
+  Object.entries(views).forEach(([key, element]) => {
+    const active = key === view;
+    element.hidden = !active;
+    element.classList.toggle("is-active", active);
+  });
+  const buttons = {
+    generate: elements.viewGenerateButton,
+    settings: elements.viewSettingsButton,
+    operations: elements.viewOperationsButton,
+  };
+  Object.entries(buttons).forEach(([key, button]) => {
+    button.classList.toggle("is-active", key === view);
   });
 }
 
@@ -339,7 +387,10 @@ function applyQuickExampleSelection() {
 
 function renderQuickProfilePreview() {
   if (!state.quickStartCatalog) {
-    elements.quickProfilePreview.innerHTML = `<div class="muted-copy">Quick generate catalog not loaded yet.</div>`;
+    const emptyState = `<div class="muted-copy">Quick generate catalog not loaded yet.</div>`;
+    elements.quickProfilePreview.innerHTML = emptyState;
+    elements.quickProfileSpotlight.innerHTML = emptyState;
+    elements.quickExamplePreview.innerHTML = emptyState;
     return;
   }
   const profiles = state.quickStartCatalog.profiles || {};
@@ -351,7 +402,33 @@ function renderQuickProfilePreview() {
   const profile = profiles[profileKey] || {};
   const example = examples.find((entry) => entry.slug === elements.quickExampleSelect.value) || null;
   const backendProfile = profile.backend_profile || {};
-  const exampleSummary = example
+  const profileMarkup = `
+    <article class="preset-card">
+      <p class="eyebrow">Stack</p>
+      <h3>${escapeHtml(profile.label || profileKey)}</h3>
+      <p>${escapeHtml(profile.description || "")}</p>
+      ${
+        profile.hardware_hint
+          ? `<p class="muted-copy">${escapeHtml(profile.hardware_hint)}</p>`
+          : ""
+      }
+      <p class="muted-copy mono">
+        visual ${escapeHtml(backendProfile.visual_backend || "deterministic")} ·
+        video ${escapeHtml(backendProfile.video_backend || "deterministic")} ·
+        tts ${escapeHtml(backendProfile.tts_backend || "deterministic")} ·
+        music ${escapeHtml(backendProfile.music_backend || "deterministic")} ·
+        lipsync ${escapeHtml(backendProfile.lipsync_backend || "deterministic")} ·
+        subtitles ${escapeHtml(backendProfile.subtitle_backend || "deterministic")}
+      </p>
+      <p class="muted-copy">
+        language ${escapeHtml(elements.quickLanguage.value || "uk")} ·
+        target ${escapeHtml(String(elements.quickDuration.value || state.quickStartCatalog.defaults?.target_duration_sec || 8))} sec
+      </p>
+    </article>
+  `;
+  elements.quickProfilePreview.innerHTML = profileMarkup;
+  elements.quickProfileSpotlight.innerHTML = profileMarkup;
+  elements.quickExamplePreview.innerHTML = example
     ? `
       <article class="preset-card">
         <p class="eyebrow">Example</p>
@@ -359,22 +436,7 @@ function renderQuickProfilePreview() {
         <p>${escapeHtml(example.description || "Curated starter scenario.")}</p>
       </article>
     `
-    : "";
-  elements.quickProfilePreview.innerHTML = `
-    ${exampleSummary}
-    <article class="preset-card">
-      <p class="eyebrow">Stack</p>
-      <h3>${escapeHtml(profile.label || profileKey)}</h3>
-      <p>${escapeHtml(profile.description || "")}</p>
-      <p class="muted-copy">
-        visual ${escapeHtml(backendProfile.visual_backend || "deterministic")} ·
-        video ${escapeHtml(backendProfile.video_backend || "deterministic")} ·
-        tts ${escapeHtml(backendProfile.tts_backend || "deterministic")} ·
-        music ${escapeHtml(backendProfile.music_backend || "deterministic")} ·
-        lipsync ${escapeHtml(backendProfile.lipsync_backend || "deterministic")}
-      </p>
-    </article>
-  `;
+    : `<div class="muted-copy">Choose a template to preload a proven short format, or keep the prompt fully custom.</div>`;
 }
 
 function populateSelect(select, catalog, selectedKey) {
@@ -441,6 +503,7 @@ async function selectCampaign(campaignName) {
     state.campaignReleaseNoteKey = null;
   }
   state.selectedCampaignName = campaignName;
+  setStudioView("operations");
   renderChrome();
   await loadCampaignDetail(campaignName, { force: false });
 }
@@ -573,11 +636,13 @@ async function selectProject(projectId, target = null) {
   if (projectChanged && elements.reviewModeSelect) {
     elements.reviewModeSelect.value = "auto";
   }
+  setStudioView("operations");
   renderChrome();
   await loadProjectDetail(projectId, { force: false });
 }
 
 function renderChrome() {
+  renderStudioViews();
   renderGlobalMetrics();
   renderCampaignCenter();
   renderCampaignDetail();
@@ -585,6 +650,51 @@ function renderChrome() {
   renderProjectList();
   renderPresetPreview();
   renderQuickProfilePreview();
+  renderQuickResult();
+}
+
+function renderStudioViews() {
+  setStudioView(state.currentView || "generate");
+}
+
+function renderQuickResult() {
+  if (!elements.quickResult) {
+    return;
+  }
+  const latest = state.overviews[0] || null;
+  if (!latest) {
+    elements.quickResult.innerHTML = `<div class="muted-copy">No projects yet. Generate one from the main page.</div>`;
+    return;
+  }
+  const finalVideo = latest.deliverables?.named?.final_video || null;
+  elements.quickResult.innerHTML = `
+    <article class="queue-item">
+      <div class="card-topline">
+        <div>
+          <strong class="card-title">${escapeHtml(latest.title || "Latest project")}</strong>
+          <p>${escapeHtml(latest.project_id || "")}</p>
+        </div>
+        <span class="badge ${badgeClass(latest.status)}">${escapeHtml(latest.status || "queued")}</span>
+      </div>
+      <div class="chip-row">
+        <span class="chip">${escapeHtml(latest.language || "lang")}</span>
+        <span class="chip">${escapeHtml(latest.product_preset?.short_archetype || "archetype")}</span>
+        <span class="chip">${escapeHtml(latest.backend_profile?.visual_backend || "visual")}</span>
+      </div>
+      <div class="meta-row">
+        <span>next action ${escapeHtml(latest.action?.next_action || "inspect")}</span>
+        <span>${escapeHtml(String(latest.qc?.finding_count || 0))} QC findings</span>
+      </div>
+      <div class="card-actions">
+        <button class="button button-ghost" type="button" data-project-id="${escapeHtml(latest.project_id)}">Open In Operations</button>
+        ${
+          finalVideo?.download_url
+            ? `<a class="button button-primary" href="${escapeHtml(finalVideo.download_url)}" target="_blank" rel="noreferrer">Open Final Video</a>`
+            : ""
+        }
+      </div>
+    </article>
+  `;
 }
 
 function renderGlobalMetrics() {
@@ -2095,6 +2205,7 @@ async function createProjectFromForm() {
   state.projectDetails.delete(projectId);
   state.selectedProjectId = projectId;
   state.selectedTarget = null;
+  state.currentView = "operations";
   if (elements.createRunImmediately.checked) {
     await runProject(projectId);
     return;
@@ -2131,6 +2242,7 @@ async function quickGenerateProjectFromForm() {
   state.projectDetails.delete(projectId);
   state.selectedProjectId = projectId;
   state.selectedTarget = null;
+  state.currentView = "generate";
   await refreshStudio({ forceProjectRefresh: true });
   setStatus(
     payload.run_immediately

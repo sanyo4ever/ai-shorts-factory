@@ -141,12 +141,18 @@ For a first local run, start with the default baseline instead of enabling every
 .venv\Scripts\python.exe -m uvicorn filmstudio.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Once the API is up, open [http://127.0.0.1:8000/studio](http://127.0.0.1:8000/studio). The built-in operator dashboard lets you create projects, watch queue state, inspect campaign history, drill into campaign cases, compare release gates, promote canonical baselines, preview final videos, review shots, trigger rerenders, and download packaged outputs without standing up a separate frontend.
+Once the API is up, open [http://127.0.0.1:8000/studio](http://127.0.0.1:8000/studio). The built-in operator dashboard now defaults to a lighter intake-first layout:
 
-If you want the simplest path instead of the full intake form, use the built-in `Quick Generate` card in `/studio`. It wraps the same API with a smaller payload, curated starter examples, and explicit runtime-stack profiles:
+- `Generate`: the main creator-facing page with one large script box, starter examples, and a verified local stack button
+- `Settings`: stack profile, language, duration, and advanced intake controls
+- `Operations`: queue, campaigns, review, rerender, deliverables, release management, and project drilldown
 
-- `Production Vertical`: `ComfyUI + Wan + Piper + WhisperX + MuseTalk + ACE-Step + FFmpeg`
-- `Deterministic Preview`: faster local preview path with deterministic visuals and live `Piper`
+This keeps the first-run flow simple without removing the deeper operator surface.
+
+If you want the simplest path instead of the full intake form, use the built-in `Quick Generate` card in the default `Generate` view. It wraps the same API with a smaller payload, curated starter examples, and explicit runtime-stack profiles:
+
+- `My PC (RTX 4060) Verified`: `ComfyUI + Wan + Piper + WhisperX + MuseTalk + ACE-Step + FFmpeg`
+- `Fast Preview`: faster local preview path with deterministic visuals and live `Piper`
 
 For `language=uk`, the canonical quick-intake screenplay is now UTF-8 and Cyrillic-first:
 

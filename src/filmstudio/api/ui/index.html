@@ -8,414 +8,487 @@
     <script type="module" src="/studio/assets/dashboard.js"></script>
   </head>
   <body>
-    <div class="studio-shell">
-      <aside class="rail rail-left">
-        <section class="panel brand-panel">
-          <p class="eyebrow">Operator Surface</p>
-          <h1>AI Shorts Factory Studio</h1>
+    <div class="studio-app">
+      <header class="studio-topbar">
+        <div class="topbar-copy">
+          <p class="eyebrow">AI Shorts Factory</p>
+          <h1>Studio</h1>
           <p class="lead">
-            Review vertical-short runs, ship deliverables, and steer rerenders without leaving the control plane.
+            Start with one script box. Keep the heavy operator surface in separate views.
           </p>
+        </div>
+
+        <div class="topbar-actions">
+          <nav class="view-nav" aria-label="Studio views">
+            <button id="view-generate-button" class="view-tab is-active" type="button">Generate</button>
+            <button id="view-settings-button" class="view-tab" type="button">Settings</button>
+            <button id="view-operations-button" class="view-tab" type="button">Operations</button>
+          </nav>
           <div class="toolbar">
             <button id="refresh-button" class="button button-primary" type="button">Refresh Studio</button>
             <a class="button button-ghost" href="/api/v1/projects/overviews" target="_blank" rel="noreferrer">Raw API</a>
           </div>
-        </section>
+        </div>
 
-        <section class="panel">
-          <div class="panel-head">
-            <h2>Studio Pulse</h2>
-            <span id="project-count-badge" class="counter-pill">0 projects</span>
-          </div>
-          <div id="global-metrics" class="metric-grid"></div>
-        </section>
+        <div id="status-banner" class="status-banner status-idle">Studio idle.</div>
+      </header>
 
-        <section class="panel">
-          <div class="panel-head">
-            <h2>Campaign Center</h2>
-            <span id="campaign-count-badge" class="counter-pill">0 campaigns</span>
-          </div>
-          <div id="campaign-summary" class="mini-summary"></div>
-          <div id="campaign-list" class="queue-list"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <h2>Operator Queue</h2>
-            <span id="queue-count-badge" class="counter-pill">0 items</span>
-          </div>
-          <div id="queue-summary" class="mini-summary"></div>
-          <div id="queue-list" class="queue-list"></div>
-        </section>
-      </aside>
-
-      <main class="main-stage">
-        <section class="panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Release Management</p>
-              <h2>Campaign Drilldown</h2>
-            </div>
-            <span id="campaign-selection-hint" class="selection-hint">Select a campaign to inspect</span>
-          </div>
-          <div id="campaign-empty" class="muted-copy">Pick a campaign from Campaign Center to inspect release state and regressions.</div>
-          <div id="campaign-detail" class="detail-stack" hidden>
-            <div id="campaign-hero" class="focus-card"></div>
-            <div class="detail-grid">
-              <section class="focus-card">
-                <div class="panel-head">
-                  <div>
-                    <p class="eyebrow">Release Summary</p>
-                    <h2>Baseline Status</h2>
-                  </div>
+      <main class="studio-views">
+        <section id="generate-view" class="studio-view is-active">
+          <div class="generate-shell">
+            <section class="panel generate-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Quick Generate</p>
+                  <h2>Paste a script. Ship a short.</h2>
                 </div>
-                <div id="campaign-release-summary" class="queue-list"></div>
-              </section>
-
-              <section class="focus-card">
-                <div class="panel-head">
-                  <div>
-                    <p class="eyebrow">Promotion</p>
-                    <h2>Baseline Controls</h2>
-                  </div>
-                </div>
+              </div>
+              <p class="muted-copy generate-copy">
+                Use the verified workstation profile by default. Templates are optional. Paste a finished screenplay or a mixed idea prompt.
+              </p>
+              <form id="quick-generate-form" class="generate-form">
                 <label class="field">
-                  <span>Compare Against</span>
-                  <select id="campaign-compare-target"></select>
+                  <span>Template Example</span>
+                  <select id="quick-example-select"></select>
                 </label>
-                <label class="field">
-                  <span>Release Note</span>
-                  <textarea id="campaign-release-note" rows="4" placeholder="Document why this campaign becomes candidate, canonical, or superseded."></textarea>
+                <label class="field field-full">
+                  <span>Script Or Idea</span>
+                  <textarea
+                    id="quick-prompt"
+                    name="quick_prompt"
+                    rows="14"
+                    required
+                    placeholder="Paste a screenplay or a short idea. Example: SCENE 1. Tato and Syn stand on a ramp. TATO: Synu, hotovyi? SYN: Tak, tatu! Hero insert: They jump into a Fortnite-style action beat."
+                  ></textarea>
                 </label>
                 <div class="toolbar">
-                  <button id="campaign-mark-candidate-button" class="button button-ghost" type="button">Mark Candidate</button>
-                  <button id="campaign-mark-canonical-button" class="button button-primary" type="button">Promote Canonical</button>
-                  <button id="campaign-mark-superseded-button" class="button button-warning" type="button">Mark Superseded</button>
+                  <button class="button button-primary" type="submit">Generate On My PC</button>
+                  <button id="open-settings-button" class="button button-ghost" type="button">Open Settings</button>
+                  <button id="open-operations-button" class="button button-ghost" type="button">Open Operations</button>
                 </div>
-                <div id="campaign-release-blockers" class="mini-summary"></div>
-              </section>
+              </form>
+            </section>
 
-              <section class="focus-card">
+            <aside class="generate-rail">
+              <section class="panel">
                 <div class="panel-head">
                   <div>
-                    <p class="eyebrow">Regression Surface</p>
-                    <h2>Comparison</h2>
+                    <p class="eyebrow">Verified Profile</p>
+                    <h2>My Workstation</h2>
                   </div>
                 </div>
-                <div id="campaign-comparison" class="queue-list"></div>
+                <div id="quick-profile-spotlight" class="preset-preview"></div>
               </section>
 
-              <section class="focus-card">
+              <section class="panel">
                 <div class="panel-head">
                   <div>
-                    <p class="eyebrow">Release Desk</p>
-                    <h2>Registry Overview</h2>
+                    <p class="eyebrow">Template Notes</p>
+                    <h2>What The Example Does</h2>
                   </div>
                 </div>
-                <div id="campaign-release-desk" class="queue-list"></div>
+                <div id="quick-example-preview" class="mini-summary"></div>
               </section>
 
-              <section class="focus-card">
+              <section class="panel">
                 <div class="panel-head">
                   <div>
-                    <p class="eyebrow">Release Handoff</p>
-                    <h2>Ship Package</h2>
+                    <p class="eyebrow">Latest Project</p>
+                    <h2>Recent Output</h2>
                   </div>
                 </div>
-                <div id="campaign-release-handoff" class="queue-list"></div>
+                <div id="quick-result" class="queue-list"></div>
               </section>
-            </div>
+            </aside>
+          </div>
+        </section>
 
-            <section class="focus-card">
+        <section id="settings-view" class="studio-view" hidden>
+          <div class="settings-shell">
+            <section class="panel create-panel">
               <div class="panel-head">
                 <div>
-                  <p class="eyebrow">Campaign Cases</p>
-                  <h2>Case Table</h2>
+                  <p class="eyebrow">Quick Settings</p>
+                  <h2>Ready For This PC</h2>
                 </div>
               </div>
-              <div id="campaign-cases" class="queue-list"></div>
+              <div class="form-grid">
+                <label class="field">
+                  <span>Runtime Profile</span>
+                  <select id="quick-stack-profile"></select>
+                </label>
+                <label class="field">
+                  <span>Language</span>
+                  <select id="quick-language" name="quick_language">
+                    <option value="uk" selected>uk</option>
+                    <option value="en">en</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Duration (sec)</span>
+                  <input id="quick-duration" name="quick_duration" type="number" min="3" max="60" step="1" value="8">
+                </label>
+                <label class="field">
+                  <span>Run Immediately</span>
+                  <div class="checkbox-row">
+                    <input id="quick-run-immediately" type="checkbox" checked>
+                    <span>Start generation right after create</span>
+                  </div>
+                </label>
+                <label class="field">
+                  <span>Optional Title</span>
+                  <input id="quick-title" name="quick_title" type="text" placeholder="Tato and Syn Fortnite Jump">
+                </label>
+                <label class="field">
+                  <span>Optional Characters</span>
+                  <input id="quick-characters" name="quick_characters" type="text" placeholder="Tato, Syn">
+                </label>
+              </div>
+            </section>
+
+            <section class="panel preset-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Profile Preview</p>
+                  <h2>Current Stack</h2>
+                </div>
+              </div>
+              <div id="quick-profile-preview" class="preset-preview"></div>
+            </section>
+
+            <section class="panel create-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Advanced Intake</p>
+                  <h2>Full Create Project</h2>
+                </div>
+              </div>
+              <form id="create-project-form" class="form-grid">
+                <label class="field">
+                  <span>Title</span>
+                  <input id="create-title" name="title" type="text" placeholder="Weekend launch breakdown" required>
+                </label>
+                <label class="field">
+                  <span>Language</span>
+                  <select id="create-language" name="language">
+                    <option value="uk" selected>uk</option>
+                    <option value="en">en</option>
+                  </select>
+                </label>
+                <label class="field field-full">
+                  <span>Script</span>
+                  <textarea id="create-script" name="script" rows="10" required placeholder="SCENE 1. HERO steps into frame.&#10;HERO: ..."></textarea>
+                </label>
+                <label class="field">
+                  <span>Style Preset</span>
+                  <select id="create-style-preset" name="style_preset"></select>
+                </label>
+                <label class="field">
+                  <span>Voice Cast</span>
+                  <select id="create-voice-cast-preset" name="voice_cast_preset"></select>
+                </label>
+                <label class="field">
+                  <span>Music Preset</span>
+                  <select id="create-music-preset" name="music_preset"></select>
+                </label>
+                <label class="field">
+                  <span>Short Archetype</span>
+                  <select id="create-short-archetype" name="short_archetype"></select>
+                </label>
+                <label class="checkbox-row field-full">
+                  <input id="create-run-immediately" type="checkbox" checked>
+                  <span>Run immediately after create</span>
+                </label>
+                <div class="toolbar">
+                  <button class="button button-primary" type="submit">Create Project</button>
+                </div>
+              </form>
+            </section>
+
+            <section class="panel preset-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Preset Contract</p>
+                  <h2>Selected Direction</h2>
+                </div>
+              </div>
+              <div id="preset-preview" class="preset-preview"></div>
             </section>
           </div>
         </section>
 
-        <section class="panel project-stream-panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Project Stream</p>
-              <h2>Projects</h2>
-            </div>
-            <span id="selection-hint" class="selection-hint">Select a project to inspect</span>
+        <section id="operations-view" class="studio-view" hidden>
+          <div class="operations-shell">
+            <aside class="operations-rail">
+              <section class="panel brand-panel">
+                <p class="eyebrow">Operator Surface</p>
+                <h2>Operations</h2>
+                <p class="lead">
+                  Review runs, compare revisions, handle queue work, and ship release packages.
+                </p>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head">
+                  <h2>Studio Pulse</h2>
+                  <span id="project-count-badge" class="counter-pill">0 projects</span>
+                </div>
+                <div id="global-metrics" class="metric-grid"></div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head">
+                  <h2>Campaign Center</h2>
+                  <span id="campaign-count-badge" class="counter-pill">0 campaigns</span>
+                </div>
+                <div id="campaign-summary" class="mini-summary"></div>
+                <div id="campaign-list" class="queue-list"></div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head">
+                  <h2>Operator Queue</h2>
+                  <span id="queue-count-badge" class="counter-pill">0 items</span>
+                </div>
+                <div id="queue-summary" class="mini-summary"></div>
+                <div id="queue-list" class="queue-list"></div>
+              </section>
+
+              <section class="panel project-stream-panel">
+                <div class="panel-head">
+                  <div>
+                    <p class="eyebrow">Project Stream</p>
+                    <h2>Projects</h2>
+                  </div>
+                  <span id="selection-hint" class="selection-hint">Select a project to inspect</span>
+                </div>
+                <div id="project-list" class="project-list"></div>
+              </section>
+            </aside>
+
+            <main class="operations-main">
+              <section class="panel">
+                <div class="panel-head">
+                  <div>
+                    <p class="eyebrow">Release Management</p>
+                    <h2>Campaign Drilldown</h2>
+                  </div>
+                  <span id="campaign-selection-hint" class="selection-hint">Select a campaign to inspect</span>
+                </div>
+                <div id="campaign-empty" class="muted-copy">Pick a campaign from Campaign Center to inspect release state and regressions.</div>
+                <div id="campaign-detail" class="detail-stack" hidden>
+                  <div id="campaign-hero" class="focus-card"></div>
+                  <div class="detail-grid">
+                    <section class="focus-card">
+                      <div class="panel-head">
+                        <div>
+                          <p class="eyebrow">Release Summary</p>
+                          <h2>Baseline Status</h2>
+                        </div>
+                      </div>
+                      <div id="campaign-release-summary" class="queue-list"></div>
+                    </section>
+
+                    <section class="focus-card">
+                      <div class="panel-head">
+                        <div>
+                          <p class="eyebrow">Promotion</p>
+                          <h2>Baseline Controls</h2>
+                        </div>
+                      </div>
+                      <label class="field">
+                        <span>Compare Against</span>
+                        <select id="campaign-compare-target"></select>
+                      </label>
+                      <label class="field">
+                        <span>Release Note</span>
+                        <textarea id="campaign-release-note" rows="4" placeholder="Document why this campaign becomes candidate, canonical, or superseded."></textarea>
+                      </label>
+                      <div class="toolbar">
+                        <button id="campaign-mark-candidate-button" class="button button-ghost" type="button">Mark Candidate</button>
+                        <button id="campaign-mark-canonical-button" class="button button-primary" type="button">Promote Canonical</button>
+                        <button id="campaign-mark-superseded-button" class="button button-warning" type="button">Mark Superseded</button>
+                      </div>
+                      <div id="campaign-release-blockers" class="mini-summary"></div>
+                    </section>
+
+                    <section class="focus-card">
+                      <div class="panel-head">
+                        <div>
+                          <p class="eyebrow">Regression Surface</p>
+                          <h2>Comparison</h2>
+                        </div>
+                      </div>
+                      <div id="campaign-comparison" class="queue-list"></div>
+                    </section>
+
+                    <section class="focus-card">
+                      <div class="panel-head">
+                        <div>
+                          <p class="eyebrow">Release Desk</p>
+                          <h2>Registry Overview</h2>
+                        </div>
+                      </div>
+                      <div id="campaign-release-desk" class="queue-list"></div>
+                    </section>
+
+                    <section class="focus-card">
+                      <div class="panel-head">
+                        <div>
+                          <p class="eyebrow">Release Handoff</p>
+                          <h2>Ship Package</h2>
+                        </div>
+                      </div>
+                      <div id="campaign-release-handoff" class="queue-list"></div>
+                    </section>
+                  </div>
+
+                  <section class="focus-card">
+                    <div class="panel-head">
+                      <div>
+                        <p class="eyebrow">Campaign Cases</p>
+                        <h2>Case Table</h2>
+                      </div>
+                    </div>
+                    <div id="campaign-cases" class="queue-list"></div>
+                  </section>
+                </div>
+              </section>
+
+              <section id="project-empty" class="panel empty-panel">
+                <p class="eyebrow">No Selection</p>
+                <h2>Choose a project in Operations</h2>
+                <p>
+                  Generate first on the main page, then open Operations to inspect review, rerender, queue work, and deliverables.
+                </p>
+              </section>
+
+              <section id="project-detail" class="detail-stack" hidden>
+                <section class="panel hero-panel">
+                  <div id="project-hero"></div>
+                </section>
+
+                <div class="detail-grid">
+                  <section class="panel video-panel">
+                    <div class="panel-head">
+                      <div>
+                        <p class="eyebrow">Final Output</p>
+                        <h2>Preview</h2>
+                      </div>
+                      <div class="toolbar compact">
+                        <button id="run-project-button" class="button button-primary" type="button">Run Project</button>
+                        <button id="refresh-project-button" class="button button-ghost" type="button">Refresh Detail</button>
+                      </div>
+                    </div>
+                    <div id="video-preview" class="video-preview"></div>
+                  </section>
+
+                  <section class="panel semantic-panel">
+                    <div class="panel-head">
+                      <div>
+                        <p class="eyebrow">Quality Gate</p>
+                        <h2>Semantic Quality</h2>
+                      </div>
+                    </div>
+                    <div id="semantic-quality" class="quality-grid"></div>
+                  </section>
+
+                  <section class="panel review-action-panel">
+                    <div class="panel-head">
+                      <div>
+                        <p class="eyebrow">Review Loop</p>
+                        <h2>Focused Actions</h2>
+                      </div>
+                    </div>
+                    <div class="form-grid compact-grid">
+                      <label class="field">
+                        <span>Review Mode</span>
+                        <select id="review-mode-select">
+                          <option value="auto" selected>Auto Focus</option>
+                          <option value="semantic_regressions">Semantic Regressions Only</option>
+                          <option value="all_targets">All Targets</option>
+                        </select>
+                      </label>
+                    </div>
+                    <div id="review-workspace-summary" class="mini-summary"></div>
+                    <div id="review-focus" class="focus-card"></div>
+                    <div class="form-grid compact-grid">
+                      <label class="field">
+                        <span>Reviewer</span>
+                        <input id="reviewer-input" type="text" value="operator">
+                      </label>
+                      <label class="field">
+                        <span>Review Reason</span>
+                        <select id="review-reason-code">
+                          <option value="general" selected>general</option>
+                          <option value="visual">visual</option>
+                          <option value="timing">timing</option>
+                          <option value="subtitle">subtitle</option>
+                          <option value="audio">audio</option>
+                          <option value="identity">identity</option>
+                        </select>
+                      </label>
+                      <label class="field">
+                        <span>Rerender Stage</span>
+                        <select id="rerender-stage-select">
+                          <option value="build_characters">build_characters</option>
+                          <option value="generate_storyboards">generate_storyboards</option>
+                          <option value="synthesize_dialogue">synthesize_dialogue</option>
+                          <option value="generate_music">generate_music</option>
+                          <option value="render_shots" selected>render_shots</option>
+                          <option value="apply_lipsync">apply_lipsync</option>
+                          <option value="generate_subtitles">generate_subtitles</option>
+                          <option value="compose_project">compose_project</option>
+                          <option value="run_qc">run_qc</option>
+                        </select>
+                      </label>
+                      <label class="field">
+                        <span>Compare Against</span>
+                        <select id="review-compare-target">
+                          <option value="previous" selected>previous</option>
+                          <option value="approved">approved</option>
+                          <option value="current">current</option>
+                        </select>
+                      </label>
+                    </div>
+                    <label class="field">
+                      <span>Operator Note</span>
+                      <textarea id="review-note-input" rows="4" placeholder="Record why this shot is approved or why it should rerender."></textarea>
+                    </label>
+                    <div id="review-compare-panel" class="compare-panel"></div>
+                    <div class="toolbar">
+                      <button id="approve-focus-button" class="button button-primary" type="button">Approve Focus</button>
+                      <button id="mark-rerender-button" class="button button-warning" type="button">Flag Rerender</button>
+                      <button id="rerender-focus-button" class="button button-ghost" type="button">Rerender Now</button>
+                    </div>
+                  </section>
+
+                  <section class="panel deliverables-panel">
+                    <div class="panel-head">
+                      <div>
+                        <p class="eyebrow">Delivery</p>
+                        <h2>Deliverables</h2>
+                      </div>
+                    </div>
+                    <div id="deliverables-list" class="deliverables-list"></div>
+                  </section>
+                </div>
+
+                <section class="panel review-panel">
+                  <div class="panel-head">
+                    <div>
+                      <p class="eyebrow">Scene Review</p>
+                      <h2>Review Stack</h2>
+                    </div>
+                    <div id="review-summary" class="mini-summary"></div>
+                  </div>
+                  <div id="review-scenes" class="scene-stack"></div>
+                </section>
+              </section>
+            </main>
           </div>
-          <div id="project-list" class="project-list"></div>
-        </section>
-
-        <section id="project-empty" class="panel empty-panel">
-          <p class="eyebrow">No Selection</p>
-          <h2>Choose a project or create a new one</h2>
-          <p>
-            The dashboard becomes fully active once at least one project exists. Use the create form on the right to start a new vertical short.
-          </p>
-        </section>
-
-        <section id="project-detail" class="detail-stack" hidden>
-          <section class="panel hero-panel">
-            <div id="project-hero"></div>
-          </section>
-
-          <div class="detail-grid">
-            <section class="panel video-panel">
-              <div class="panel-head">
-                <div>
-                  <p class="eyebrow">Final Output</p>
-                  <h2>Preview</h2>
-                </div>
-                <div class="toolbar compact">
-                  <button id="run-project-button" class="button button-primary" type="button">Run Project</button>
-                  <button id="refresh-project-button" class="button button-ghost" type="button">Refresh Detail</button>
-                </div>
-              </div>
-              <div id="video-preview" class="video-preview"></div>
-            </section>
-
-            <section class="panel semantic-panel">
-              <div class="panel-head">
-                <div>
-                  <p class="eyebrow">Quality Gate</p>
-                  <h2>Semantic Quality</h2>
-                </div>
-              </div>
-              <div id="semantic-quality" class="quality-grid"></div>
-            </section>
-
-            <section class="panel review-action-panel">
-              <div class="panel-head">
-                <div>
-                  <p class="eyebrow">Review Loop</p>
-                  <h2>Focused Actions</h2>
-                </div>
-              </div>
-              <div class="form-grid compact-grid">
-                <label class="field">
-                  <span>Review Mode</span>
-                  <select id="review-mode-select">
-                    <option value="auto" selected>Auto Focus</option>
-                    <option value="semantic_regressions">Semantic Regressions Only</option>
-                    <option value="all_targets">All Targets</option>
-                  </select>
-                </label>
-              </div>
-              <div id="review-workspace-summary" class="mini-summary"></div>
-              <div id="review-focus" class="focus-card"></div>
-              <div class="form-grid compact-grid">
-                <label class="field">
-                  <span>Reviewer</span>
-                  <input id="reviewer-input" type="text" value="operator">
-                </label>
-                <label class="field">
-                  <span>Review Reason</span>
-                  <select id="review-reason-code">
-                    <option value="general" selected>general</option>
-                    <option value="visual">visual</option>
-                    <option value="timing">timing</option>
-                    <option value="subtitle">subtitle</option>
-                    <option value="audio">audio</option>
-                    <option value="identity">identity</option>
-                  </select>
-                </label>
-                <label class="field">
-                  <span>Rerender Stage</span>
-                  <select id="rerender-stage-select">
-                    <option value="build_characters">build_characters</option>
-                    <option value="generate_storyboards">generate_storyboards</option>
-                    <option value="synthesize_dialogue">synthesize_dialogue</option>
-                    <option value="generate_music">generate_music</option>
-                    <option value="render_shots" selected>render_shots</option>
-                    <option value="apply_lipsync">apply_lipsync</option>
-                    <option value="generate_subtitles">generate_subtitles</option>
-                    <option value="compose_project">compose_project</option>
-                    <option value="run_qc">run_qc</option>
-                  </select>
-                </label>
-                <label class="field">
-                  <span>Compare Against</span>
-                  <select id="review-compare-target">
-                    <option value="previous" selected>previous</option>
-                    <option value="approved">approved</option>
-                    <option value="current">current</option>
-                  </select>
-                </label>
-              </div>
-              <label class="field">
-                <span>Operator Note</span>
-                <textarea id="review-note-input" rows="4" placeholder="Record why this shot is approved or why it should rerender."></textarea>
-              </label>
-              <div id="review-compare-panel" class="compare-panel"></div>
-              <div class="toolbar">
-                <button id="approve-focus-button" class="button button-primary" type="button">Approve Focus</button>
-                <button id="mark-rerender-button" class="button button-warning" type="button">Flag Rerender</button>
-                <button id="rerender-focus-button" class="button button-ghost" type="button">Rerender Now</button>
-              </div>
-            </section>
-
-            <section class="panel deliverables-panel">
-              <div class="panel-head">
-                <div>
-                  <p class="eyebrow">Delivery</p>
-                  <h2>Deliverables</h2>
-                </div>
-              </div>
-              <div id="deliverables-list" class="deliverables-list"></div>
-            </section>
-          </div>
-
-          <section class="panel review-panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Scene Review</p>
-                <h2>Review Stack</h2>
-              </div>
-              <div id="review-summary" class="mini-summary"></div>
-            </div>
-            <div id="review-scenes" class="scene-stack"></div>
-          </section>
         </section>
       </main>
-
-      <aside class="rail rail-right">
-        <section class="panel create-panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Fast Path</p>
-              <h2>Quick Generate</h2>
-            </div>
-          </div>
-          <form id="quick-generate-form" class="form-grid">
-            <label class="field">
-              <span>Example</span>
-              <select id="quick-example-select"></select>
-            </label>
-            <label class="field">
-              <span>Runtime Profile</span>
-              <select id="quick-stack-profile"></select>
-            </label>
-            <label class="field">
-              <span>Title</span>
-              <input id="quick-title" name="quick_title" type="text" placeholder="Tato and Syn Fortnite Jump">
-            </label>
-            <label class="field">
-              <span>Characters</span>
-              <input id="quick-characters" name="quick_characters" type="text" placeholder="Tato, Syn">
-            </label>
-            <label class="field">
-              <span>Language</span>
-              <select id="quick-language" name="quick_language">
-                <option value="uk" selected>uk</option>
-                <option value="en">en</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Duration (sec)</span>
-              <input id="quick-duration" name="quick_duration" type="number" min="3" max="60" step="1" value="8">
-            </label>
-            <label class="field field-full">
-              <span>Idea Or Script</span>
-              <textarea
-                id="quick-prompt"
-                name="quick_prompt"
-                rows="8"
-                required
-                placeholder="One idea, one mixed prompt, or a ready screenplay. Example: SCENE 1. Tato and Syn stand on a ramp. TATO: Synu, hotovyi? SYN: Tak, tatu! Hero insert: They jump into a Fortnite-style action beat."
-              ></textarea>
-            </label>
-            <label class="checkbox-row field-full">
-              <input id="quick-run-immediately" type="checkbox" checked>
-              <span>Generate immediately after create</span>
-            </label>
-            <div class="toolbar">
-              <button class="button button-primary" type="submit">Quick Generate</button>
-            </div>
-          </form>
-        </section>
-
-        <section class="panel preset-panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Quick Profile</p>
-              <h2>What Will Run</h2>
-            </div>
-          </div>
-          <div id="quick-profile-preview" class="preset-preview"></div>
-        </section>
-
-        <section class="panel create-panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Advanced Intake</p>
-              <h2>Full Create Project</h2>
-            </div>
-          </div>
-          <form id="create-project-form" class="form-grid">
-            <label class="field">
-              <span>Title</span>
-              <input id="create-title" name="title" type="text" placeholder="Weekend launch breakdown" required>
-            </label>
-            <label class="field">
-              <span>Language</span>
-              <select id="create-language" name="language">
-                <option value="uk" selected>uk</option>
-                <option value="en">en</option>
-              </select>
-            </label>
-            <label class="field field-full">
-              <span>Script</span>
-              <textarea id="create-script" name="script" rows="10" required placeholder="SCENE 1. HERO steps into frame.&#10;HERO: ..."></textarea>
-            </label>
-            <label class="field">
-              <span>Style Preset</span>
-              <select id="create-style-preset" name="style_preset"></select>
-            </label>
-            <label class="field">
-              <span>Voice Cast</span>
-              <select id="create-voice-cast-preset" name="voice_cast_preset"></select>
-            </label>
-            <label class="field">
-              <span>Music Preset</span>
-              <select id="create-music-preset" name="music_preset"></select>
-            </label>
-            <label class="field">
-              <span>Short Archetype</span>
-              <select id="create-short-archetype" name="short_archetype"></select>
-            </label>
-            <label class="checkbox-row field-full">
-              <input id="create-run-immediately" type="checkbox" checked>
-              <span>Run immediately after create</span>
-            </label>
-            <div class="toolbar">
-              <button class="button button-primary" type="submit">Create Project</button>
-            </div>
-          </form>
-        </section>
-
-        <section class="panel preset-panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Preset Contract</p>
-              <h2>Selected Direction</h2>
-            </div>
-          </div>
-          <div id="preset-preview" class="preset-preview"></div>
-        </section>
-
-        <section class="panel status-panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Runtime</p>
-              <h2>Status</h2>
-            </div>
-          </div>
-          <div id="status-banner" class="status-banner status-idle">Studio idle.</div>
-        </section>
-      </aside>
     </div>
   </body>
 </html>

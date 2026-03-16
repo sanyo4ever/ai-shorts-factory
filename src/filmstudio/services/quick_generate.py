@@ -9,8 +9,9 @@ from filmstudio.services.product_preset_catalog import get_product_preset_catalo
 
 QUICK_STACK_PROFILES: dict[str, dict[str, Any]] = {
     "production_vertical": {
-        "label": "Production Vertical",
-        "description": "Verified one-box stack with live visuals, hero inserts, lipsync, music, and QC.",
+        "label": "My PC (RTX 4060) Verified",
+        "description": "Verified one-box stack for this workstation with live visuals, hero inserts, lipsync, music, and QC.",
+        "hardware_hint": "RTX 4060 · 32 GB RAM · sequential managed services",
         "backend_profile": {
             "orchestrator_backend": "local",
             "visual_backend": "comfyui",
@@ -22,8 +23,9 @@ QUICK_STACK_PROFILES: dict[str, dict[str, Any]] = {
         },
     },
     "deterministic_preview": {
-        "label": "Deterministic Preview",
+        "label": "Fast Preview",
         "description": "Fast preview path with deterministic visuals and live Ukrainian TTS.",
+        "hardware_hint": "Low-friction local preview path",
         "backend_profile": {
             "orchestrator_backend": "local",
             "visual_backend": "deterministic",
