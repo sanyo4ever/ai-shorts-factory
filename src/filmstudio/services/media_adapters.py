@@ -592,6 +592,14 @@ class DeterministicMediaAdapters:
                         + float(probe_result["face_isolation"].get("score", 0.0) or 0.0)
                         + (0.25 if quality_gate_passed else 0.0)
                     )
+                    if not quality_gate_passed:
+                        recovered_attempt = self._recover_character_reference_attempt(
+                            snapshot.project.project_id,
+                            character=character,
+                            selected_attempt=attempt_payload,
+                        )
+                        if recovered_attempt is not None:
+                            attempt_payload = recovered_attempt
                 if best_attempt is None or float(attempt_payload.get("score", 0.0) or 0.0) > float(
                     best_attempt.get("score", 0.0) or 0.0
                 ):
@@ -726,6 +734,7 @@ class DeterministicMediaAdapters:
     ) -> list[dict[str, str]]:
         product_preset = snapshot.project.metadata.get("product_preset") or {}
         style_preset = str(product_preset.get("style_preset") or "")
+        child_character = self._is_child_character(character)
         presenter_positive_hint = ""
         presenter_negative_hint = ""
         preferred_order = {
@@ -746,6 +755,25 @@ class DeterministicMediaAdapters:
                 "studio_headshot": 1,
                 "passport_portrait": 2,
             }
+        role_positive_hint = ""
+        role_negative_hint = ""
+        if child_character:
+            role_positive_hint = (
+                "single child only, one preteen only, no adults, no family group, no squad, "
+                "school-photo close-up, child face filling most of frame, youthful round cheeks, "
+                "small nose, big eyes, slim child shoulders, no weapon, "
+            )
+            role_negative_hint = (
+                "adult man, adult woman, mature face, beard, mustache, stubble, older teen, "
+                "family photo, duo portrait, team lineup, ensemble poster, splash art, hero roster, "
+                "background fighters, group selfie, sidekick beside subject, "
+            )
+            preferred_order = {
+                "child_headshot": 0,
+                "passport_portrait": 1,
+                "studio_headshot": 2,
+                "direct_portrait": 3,
+            }
         character_visual_fragment = self._character_visual_fragment_ascii(character)
         character_negative_fragment = self._character_negative_fragment(character)
         negative_suffix = (
@@ -753,16 +781,29 @@ class DeterministicMediaAdapters:
         )
         shared_negative = (
             f"{presenter_negative_hint}"
+            f"{role_negative_hint}"
             "multiple people, crowd, duo pose, second character, collage, extra faces, duplicate person, "
             "split face, deformed face, profile view, cropped head, blurry, watermark, text, full body, "
-            "action pose, running pose, weapon pose, face covering, full mask, visor, helmet shadow"
+            "action pose, running pose, weapon pose, face covering, full mask, visor, helmet shadow, "
+            "team poster, squad splash art, hero roster card"
             f"{negative_suffix}"
         )
         variants = [
             {
+                "label": "child_headshot",
+                "positive_prompt": (
+                    f"{snapshot.project.style}, {presenter_positive_hint}{role_positive_hint}"
+                    f"solo child portrait, head and shoulders only, front-facing, direct gaze, "
+                    f"both eyes visible, visible mouth, clean neutral background, crisp cel-shaded portrait, "
+                    f"{character_visual_fragment}"
+                ),
+                "negative_prompt": shared_negative,
+            },
+            {
                 "label": "studio_headshot",
                 "positive_prompt": (
-                    f"{snapshot.project.style}, {presenter_positive_hint}solo character portrait, one person only, single human subject, "
+                    f"{snapshot.project.style}, {presenter_positive_hint}{role_positive_hint}"
+                    f"solo character portrait, one person only, single human subject, "
                     f"head and shoulders only, studio headshot, direct gaze, both eyes visible, visible mouth, "
                     f"uncovered face, symmetrical facial features, clean neutral background, crisp cel-shaded portrait, "
                     f"{character_visual_fragment}"
@@ -772,7 +813,8 @@ class DeterministicMediaAdapters:
             {
                 "label": "passport_portrait",
                 "positive_prompt": (
-                    f"{snapshot.project.style}, {presenter_positive_hint}one person only, passport portrait, face filling most of frame, "
+                    f"{snapshot.project.style}, {presenter_positive_hint}{role_positive_hint}"
+                    f"one person only, passport portrait, face filling most of frame, "
                     f"front-facing closeup, visible mouth, uncovered face, no dramatic pose, simple neutral background, "
                     f"stylized game portrait, {character_visual_fragment}"
                 ),
@@ -781,15 +823,26 @@ class DeterministicMediaAdapters:
             {
                 "label": "direct_portrait",
                 "positive_prompt": (
-                    f"{snapshot.project.style}, {presenter_positive_hint}solo direct portrait, chest-up, one person only, no action, "
+                    f"{snapshot.project.style}, {presenter_positive_hint}{role_positive_hint}"
+                    f"solo direct portrait, chest-up, one person only, no action, "
                     f"clean readable silhouette, visible mouth, uncovered face, eyes looking at camera, "
                     f"hero-card portrait, {character_visual_fragment}"
                 ),
                 "negative_prompt": shared_negative,
             },
         ]
+        if not child_character:
+            variants = [variant for variant in variants if variant["label"] != "child_headshot"]
         variants.sort(key=lambda variant: preferred_order.get(variant["label"], len(preferred_order)))
         return variants
+
+    @staticmethod
+    def _is_child_character(character: CharacterProfile | dict[str, Any]) -> bool:
+        role_hint = str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip().lower()
+        age_hint = str(character.get("age_hint") if isinstance(character, dict) else character.age_hint).strip().lower()
+        if role_hint in {"son", "daughter", "child"}:
+            return True
+        return any(token in age_hint for token in ("child", "kid", "preteen", "school age", "boy", "girl"))
     def _can_probe_character_reference_faces(self) -> bool:
         return bool(
             self.musetalk_repo_path is not None
@@ -1197,6 +1250,9 @@ class DeterministicMediaAdapters:
                     "boyish features",
                     "short boy haircut",
                     "flat child torso",
+                    "school portrait framing",
+                    "single child only",
+                    "no adults nearby",
                 ]
             )
         seen: set[str] = set()
@@ -1342,6 +1398,9 @@ class DeterministicMediaAdapters:
                     "boyish features",
                     "short boy haircut",
                     "flat child torso",
+                    "school portrait framing",
+                    "single child only",
+                    "no adults nearby",
                 ]
             )
         seen: set[str] = set()
@@ -1476,6 +1535,9 @@ class DeterministicMediaAdapters:
                     "boyish features",
                     "short boy haircut",
                     "flat child torso",
+                    "school portrait framing",
+                    "single child only",
+                    "no adults nearby",
                 ]
             )
         seen: set[str] = set()
@@ -1609,6 +1671,9 @@ class DeterministicMediaAdapters:
                     "boyish features",
                     "short boy haircut",
                     "flat child torso",
+                    "school portrait framing",
+                    "single child only",
+                    "no adults nearby",
                 ]
             )
         seen: set[str] = set()
@@ -1650,6 +1715,10 @@ class DeterministicMediaAdapters:
                 [
                     "girl",
                     "woman",
+                    "adult man",
+                    "mature male face",
+                    "mustache",
+                    "stubble",
                     "female teen",
                     "feminine face",
                     "lipstick",
@@ -1659,6 +1728,10 @@ class DeterministicMediaAdapters:
                     "breasts",
                     "ponytail",
                     "glasses",
+                    "team lineup",
+                    "ensemble poster",
+                    "squad splash art",
+                    "hero roster",
                 ]
             )
         fragments = [fragment for fragment in [base, ", ".join(extra_parts)] if fragment]
@@ -6674,7 +6747,23 @@ class DeterministicMediaAdapters:
         ]
         subtitle_render_run = run_command(subtitle_render_command, timeout_sec=self.command_timeout_sec)
 
+        video_track_summary = summarize_probe(ffprobe_media(self.ffprobe_binary, subtitle_track_path))
+        video_duration_sec = float(video_track_summary.get("duration_sec", 0.0) or 0.0)
+        dialogue_duration_sec = wave_duration_sec(Path(dialogue_bus.path))
+        compose_target_duration_sec = max(video_duration_sec, dialogue_duration_sec)
+        video_extension_sec = max(0.0, compose_target_duration_sec - video_duration_sec)
+        trimmed_music_filter = (
+            f"[2:a]atrim=0:{compose_target_duration_sec:.3f},volume=0.18[music]"
+            if compose_target_duration_sec > 0.0
+            else "[2:a]volume=0.18[music]"
+        )
+
         final_path = project_dir / "renders/final.mp4"
+        compose_filter_parts = [
+            "[1:a]volume=1.00[dialogue]",
+            trimmed_music_filter,
+            "[dialogue][music]amix=inputs=2:duration=longest:normalize=0[aout]",
+        ]
         compose_command = [
             resolve_binary(self.ffmpeg_binary) or self.ffmpeg_binary,
             "-y",
@@ -6684,21 +6773,61 @@ class DeterministicMediaAdapters:
             dialogue_bus.path,
             "-i",
             music_bed.path,
-            "-filter_complex",
-            "[1:a]volume=1.00[dialogue];[2:a]volume=0.18[music];[dialogue][music]amix=inputs=2:duration=longest:normalize=0[aout]",
-            "-map",
-            "0:v:0",
-            "-map",
-            "[aout]",
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k",
-            "-shortest",
-            str(final_path),
         ]
+        compose_duration_policy = "match_video_track"
+        if video_extension_sec > 0.01:
+            compose_duration_policy = "pad_video_to_dialogue"
+            compose_filter_parts.insert(
+                0,
+                f"[0:v]tpad=stop_mode=clone:stop_duration={video_extension_sec:.3f}[vout]",
+            )
+            compose_command.extend(
+                [
+                    "-filter_complex",
+                    ";".join(compose_filter_parts),
+                    "-map",
+                    "[vout]",
+                    "-map",
+                    "[aout]",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "medium",
+                    "-crf",
+                    "18",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-movflags",
+                    "+faststart",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                    "-t",
+                    f"{compose_target_duration_sec:.3f}",
+                    str(final_path),
+                ]
+            )
+        else:
+            compose_command.extend(
+                [
+                    "-filter_complex",
+                    ";".join(compose_filter_parts),
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "[aout]",
+                    "-c:v",
+                    "copy",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                    "-t",
+                    f"{compose_target_duration_sec:.3f}",
+                    str(final_path),
+                ]
+            )
         compose_run = run_command(compose_command, timeout_sec=self.command_timeout_sec)
 
         poster_path = project_dir / "renders/poster.png"
@@ -6733,6 +6862,11 @@ class DeterministicMediaAdapters:
                     subtitle_layout_manifest.path if subtitle_layout_manifest is not None else None
                 ),
                 "subtitle_burned_in": True,
+                "compose_duration_policy": compose_duration_policy,
+                "compose_video_track_duration_sec": video_duration_sec,
+                "compose_dialogue_duration_sec": dialogue_duration_sec,
+                "compose_target_duration_sec": compose_target_duration_sec,
+                "compose_video_extension_sec": video_extension_sec,
                 "probe": final_summary,
                 "commands": {
                     "concat": concat_command,
