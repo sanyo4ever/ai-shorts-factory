@@ -7,6 +7,8 @@ def test_build_quick_generate_catalog_exposes_profiles_and_examples() -> None:
 
     assert payload["defaults"]["stack_profile"] == "production_vertical"
     assert "production_vertical" in payload["profiles"]
+    assert payload["profiles"]["production_vertical"]["label"] == "My PC (RTX 4060) Verified"
+    assert "RTX 4060" in payload["profiles"]["production_vertical"]["hardware_hint"]
     assert any(example["slug"] == "fortnite_family_jump" for example in payload["examples"])
 
 

@@ -97,9 +97,13 @@ def test_dashboard_routes_and_assets() -> None:
     dashboard_response = client.get("/studio")
     assert dashboard_response.status_code == 200
     assert "AI Shorts Factory Studio" in dashboard_response.text
+    assert "Paste a script. Ship a short." in dashboard_response.text
+    assert "Generate On My PC" in dashboard_response.text
+    assert "Settings" in dashboard_response.text
+    assert "Operations" in dashboard_response.text
     assert "Campaign Center" in dashboard_response.text
     assert "Quick Generate" in dashboard_response.text
-    assert "Idea Or Script" in dashboard_response.text
+    assert "Script Or Idea" in dashboard_response.text
     assert "Semantic Regressions Only" in dashboard_response.text
     assert "Release Handoff" in dashboard_response.text
 
@@ -127,6 +131,7 @@ def test_quick_generate_endpoints_create_project_with_profile_defaults() -> None
     assert catalog_response.status_code == 200
     catalog_payload = catalog_response.json()
     assert catalog_payload["defaults"]["stack_profile"] == "production_vertical"
+    assert catalog_payload["profiles"]["production_vertical"]["label"] == "My PC (RTX 4060) Verified"
     assert any(example["slug"] == "fortnite_family_jump" for example in catalog_payload["examples"])
 
     response = client.post(
