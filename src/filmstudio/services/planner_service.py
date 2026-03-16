@@ -44,6 +44,7 @@ class PlannerService:
     SON_ALIASES = ("syn", "son", "син", "хлопець", "boy")
     MOTHER_ALIASES = ("mama", "mom", "mother", "мама", "мати")
     DAUGHTER_ALIASES = ("dochka", "daughter", "донька", "girl")
+    NARRATOR_ALIASES = ("narrator", "оповідач")
     ACTION_SIGNAL_STEMS = (
         "fight",
         "run",
@@ -60,25 +61,46 @@ class PlannerService:
         "biy",
         "bitv",
         "stryb",
-        "stриб",
+        "стриб",
+        "стрибк",
+        "бій",
+        "битв",
         "pad",
         "atak",
+        "атак",
+        "атац",
         "vryvai",
         "vriv",
+        "врив",
+        "рив",
+        "спринт",
+        "мч",
         "rozriz",
+        "розріз",
         "slid",
+        "слід",
     )
     HERO_INSERT_HINTS = (
         "hero insert",
         "hero reveal",
         "vertykalnyi framing",
         "vertical framing",
+        "геройська вставка",
+        "геройський кадр",
+        "вертикальне кадрування",
+        "вертикальний кадр",
     )
     ACTION_SEGMENT_LABELS = (
         "hero insert",
         "hero reveal",
         "action",
         "action beat",
+        "геройська вставка",
+        "геройський кадр",
+        "екшн",
+        "екшн вставка",
+        "екшн-вставка",
+        "бойова вставка",
     )
 
     def __init__(
@@ -641,7 +663,9 @@ class PlannerService:
         return label.casefold() in {entry.casefold() for entry in self.ACTION_SEGMENT_LABELS}
 
     def _scene_label_aliases(self, characters: list[CharacterProfile]) -> dict[str, str]:
-        aliases: dict[str, str] = {"narrator": "Narrator"}
+        aliases: dict[str, str] = {}
+        for narrator_alias in self.NARRATOR_ALIASES:
+            aliases[narrator_alias.casefold()] = "Narrator"
         for label in self.ACTION_SEGMENT_LABELS:
             aliases[label.casefold()] = "__action__"
         for candidate in characters:
@@ -695,7 +719,7 @@ class PlannerService:
     @staticmethod
     def _normalize_scene_text_segment(text: str) -> str:
         collapsed = " ".join(text.split()).strip()
-        collapsed = re.sub(r"(?i)^scene\s+\d+\s*[:.]?\s*", "", collapsed)
+        collapsed = re.sub(r"(?i)^(?:scene|сцена)\s+\d+\s*[:.]?\s*", "", collapsed)
         return collapsed.strip(" -")
 
     def _build_dialogue_turn_shots(

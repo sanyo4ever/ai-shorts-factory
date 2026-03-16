@@ -148,6 +148,13 @@ If you want the simplest path instead of the full intake form, use the built-in 
 - `Production Vertical`: `ComfyUI + Wan + Piper + MuseTalk + ACE-Step + FFmpeg`
 - `Deterministic Preview`: faster local preview path with deterministic visuals and live `Piper`
 
+For `language=uk`, the canonical quick-intake screenplay is now Cyrillic-first:
+
+- scene headings use `СЦЕНА`
+- action beats use `ГЕРОЙСЬКА ВСТАВКА`
+- narration uses `ОПОВІДАЧ`
+- transliterated Latin Ukrainian is treated as a legacy input to repair, not as the preferred generated contract
+
 The same surface is also exposed as API:
 
 ```powershell

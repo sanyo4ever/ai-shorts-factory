@@ -207,3 +207,27 @@ def test_planner_splits_inline_dialogue_plus_action_into_closeups_and_hero_inser
     assert shots[2].dialogue == []
     assert shots[2].composition.subtitle_lane == "top"
     assert sum(shot.duration_sec for shot in shots) == 5
+
+
+def test_planner_parses_cyrillic_scene_and_hero_insert_labels() -> None:
+    planner = PlannerService()
+    request = ProjectCreateRequest(
+        title="Кириличний screenplay",
+        style="fortnite_stylized_action",
+        script=(
+            "СЦЕНА 1. Яскравий острів у стилі Fortnite на заході сонця. "
+            "ТАТО: Сину, готовий до стрибка? "
+            "СИН: Так, тату, полетіли! "
+            "ГЕРОЙСЬКА ВСТАВКА: Тато і син стрибають із трапа, ривком біжать до сяйливої корони та святкують перемогу."
+        ),
+        language="uk",
+        target_duration_sec=5,
+    )
+
+    bundle = planner.build_planning_bundle("proj_test", request)
+    shots = bundle.scenes[0].shots
+
+    assert [shot.strategy for shot in shots] == ["portrait_lipsync", "portrait_lipsync", "hero_insert"]
+    assert shots[0].dialogue[0].text == "Сину, готовий до стрибка?"
+    assert shots[1].dialogue[0].text == "Так, тату, полетіли!"
+    assert shots[2].composition.subtitle_lane == "top"

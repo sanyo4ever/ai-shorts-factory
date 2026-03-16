@@ -146,8 +146,8 @@ def test_quick_generate_endpoints_create_project_with_profile_defaults() -> None
     assert metadata["tts_backend"] == "piper"
     assert metadata["music_backend"] == "ace_step"
     assert metadata["lipsync_backend"] == "musetalk"
-    assert snapshot["project"]["title"] == "Tato and Syn Fortnite Jump"
-    assert snapshot["project"]["script"].startswith("SCENE 1.")
+    assert snapshot["project"]["title"] == "Тато і син: Fortnite-стрибок"
+    assert snapshot["project"]["script"].startswith("СЦЕНА 1.")
 
 
 def test_campaign_endpoints_surface_runtime_reports(tmp_path: Path, monkeypatch) -> None:

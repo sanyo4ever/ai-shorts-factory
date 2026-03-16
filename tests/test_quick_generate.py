@@ -19,23 +19,23 @@ def test_build_quick_project_request_uses_example_defaults() -> None:
         )
     )
 
-    assert request.title == "Tato and Syn Fortnite Jump"
+    assert request.title == "Тато і син: Fortnite-стрибок"
     assert request.visual_backend == "comfyui"
     assert request.video_backend == "wan"
     assert request.tts_backend == "piper"
     assert request.music_backend == "ace_step"
     assert request.lipsync_backend == "musetalk"
-    assert request.character_names == ["Tato", "Syn"]
-    assert request.script.startswith("SCENE 1.")
-    assert "Hero insert:" in request.script
+    assert request.character_names == ["Тато", "Син"]
+    assert request.script.startswith("СЦЕНА 1.")
+    assert "ГЕРОЙСЬКА ВСТАВКА:" in request.script
     assert metadata["example_slug"] == "fortnite_family_jump"
 
 
 def test_build_quick_project_request_generates_dialogue_action_script_from_idea() -> None:
     request, metadata = build_quick_project_request(
         QuickGenerateRequest(
-            prompt="Tato and Syn rush through a Fortnite crown challenge",
-            character_names=["Tato", "Syn"],
+            prompt="Тато і син мчать крізь Fortnite-випробування за короною",
+            character_names=["Тато", "Син"],
             short_archetype="dialogue_pivot",
             stack_profile="deterministic_preview",
             run_immediately=False,
@@ -45,9 +45,9 @@ def test_build_quick_project_request_generates_dialogue_action_script_from_idea(
     assert request.visual_backend == "deterministic"
     assert request.video_backend == "deterministic"
     assert request.music_backend == "deterministic"
-    assert "TATO:" in request.script
-    assert "SYN:" in request.script
-    assert "Hero insert:" in request.script
+    assert "ТАТО:" in request.script
+    assert "СИН:" in request.script
+    assert "ГЕРОЙСЬКА ВСТАВКА:" in request.script
     assert metadata["profile"]["backend_profile"]["visual_backend"] == "deterministic"
 
 
