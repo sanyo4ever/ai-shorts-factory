@@ -46,6 +46,7 @@ def run_command(
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
     capture_output: bool = True,
+    hide_window: bool = False,
 ) -> CommandResult:
     started_at = time.perf_counter()
     run_kwargs = {
@@ -60,6 +61,10 @@ def run_command(
     }
     if capture_output:
         run_kwargs["capture_output"] = True
+    if hide_window and os.name == "nt":
+        create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if create_no_window:
+            run_kwargs["creationflags"] = create_no_window
     completed = subprocess.run(**run_kwargs)
     result = CommandResult(
         args=args,

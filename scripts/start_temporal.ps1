@@ -15,6 +15,30 @@ $binaryPath = Join-Path $repoRoot "runtime\tools\temporal-cli\temporal.exe"
 $defaultLogRoot = Join-Path $repoRoot "runtime\logs\temporal"
 $stateRoot = Join-Path $repoRoot "runtime\services\temporal-dev"
 
+function Write-ServiceBanner {
+    param(
+        [string]$Mode,
+        [string]$Endpoint,
+        [string]$LogHint,
+        [string[]]$Details = @()
+    )
+
+    try {
+        $Host.UI.RawUI.WindowTitle = "Filmstudio - Temporal ($Mode)"
+    } catch {
+    }
+
+    Write-Host ""
+    Write-Host "=== Filmstudio Managed Service: Temporal ===" -ForegroundColor Cyan
+    Write-Host "Mode:     $Mode"
+    Write-Host "Endpoint: $Endpoint"
+    Write-Host "Logs:     $LogHint"
+    foreach ($detail in $Details) {
+        Write-Host $detail
+    }
+    Write-Host "-------------------------------------------" -ForegroundColor DarkGray
+}
+
 function Get-TemporalListenerPid {
     param([int]$ListenPort)
     $listener = Get-NetTCPConnection -LocalPort $ListenPort -State Listen -ErrorAction SilentlyContinue |
@@ -85,11 +109,19 @@ if ($Detach) {
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $stdoutLog = Join-Path $resolvedLogRoot "stdout-$timestamp.log"
     $stderrLog = Join-Path $resolvedLogRoot "stderr-$timestamp.log"
+    $baseAddress = "$ListenHost`:$Port"
+
+    Write-ServiceBanner -Mode "detached" -Endpoint $baseAddress -LogHint $resolvedLogRoot -Details @(
+        "Binary:   $binaryPath",
+        "UI:       http://$ListenHost`:$UiPort",
+        "State:    $stateRoot"
+    )
 
     $process = Start-Process `
         -FilePath $binaryPath `
         -ArgumentList $arguments `
         -WorkingDirectory $repoRoot `
+        -WindowStyle Hidden `
         -RedirectStandardOutput $stdoutLog `
         -RedirectStandardError $stderrLog `
         -PassThru
@@ -118,5 +150,11 @@ if ($Detach) {
     Write-Host "Started Temporal dev server in background. PID=$($process.Id) address=$ListenHost`:$Port"
     exit 0
 }
+
+Write-ServiceBanner -Mode "interactive" -Endpoint "$ListenHost`:$Port" -LogHint $defaultLogRoot -Details @(
+    "Binary:   $binaryPath",
+    "UI:       http://$ListenHost`:$UiPort",
+    "State:    $stateRoot"
+)
 
 & $binaryPath @arguments

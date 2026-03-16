@@ -183,7 +183,7 @@ class RuntimeServiceManager:
         stop_command = self._powershell_command(spec.stop_script)
         record.stop_command = stop_command
         try:
-            run_command(stop_command, timeout_sec=60.0, cwd=self.repo_root)
+            run_command(stop_command, timeout_sec=60.0, cwd=self.repo_root, hide_window=True)
             record.stopped_by_manager = True
         except Exception as exc:  # pragma: no cover - best-effort cleanup path
             record.error = str(exc)
@@ -230,6 +230,7 @@ class RuntimeServiceManager:
                 [self.powershell_binary, "-ExecutionPolicy", "Bypass", "-Command", script],
                 timeout_sec=10.0,
                 cwd=self.repo_root,
+                hide_window=True,
             )
         except Exception:
             return []
@@ -264,6 +265,7 @@ class RuntimeServiceManager:
             timeout_sec=self._start_timeout_sec(spec),
             cwd=self.repo_root,
             capture_output=False,
+            hide_window=True,
         )
         return start_command
 
