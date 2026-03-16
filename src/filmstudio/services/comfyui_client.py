@@ -32,10 +32,14 @@ class ComfyUIClient:
         base_url: str,
         timeout_sec: float = 300.0,
         poll_interval_sec: float = 2.0,
+        max_image_attempts: int = 2,
+        retry_delay_sec: float = 1.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_sec = timeout_sec
         self.poll_interval_sec = poll_interval_sec
+        self.max_image_attempts = max(1, max_image_attempts)
+        self.retry_delay_sec = max(0.0, retry_delay_sec)
 
     def generate_image(
         self,
@@ -44,24 +48,48 @@ class ComfyUIClient:
         output_node_id: str = "7",
     ) -> ComfyUIImageResult:
         started_at = time.perf_counter()
-        prompt_id = self._queue_prompt(workflow)
-        history = self._wait_for_history(prompt_id)
-        image_ref = self._extract_image_ref(history, prompt_id, output_node_id)
-        image_bytes = self._download_image(
-            filename=image_ref["filename"],
-            subfolder=image_ref.get("subfolder", ""),
-            output_type=image_ref.get("type", "output"),
-        )
-        return ComfyUIImageResult(
-            prompt_id=prompt_id,
-            filename=image_ref["filename"],
-            subfolder=image_ref.get("subfolder", ""),
-            output_type=image_ref.get("type", "output"),
-            image_bytes=image_bytes,
-            workflow=workflow,
-            history=history,
-            duration_sec=time.perf_counter() - started_at,
-        )
+        last_error: ComfyUIExecutionError | None = None
+        for attempt_index in range(1, self.max_image_attempts + 1):
+            prompt_id = self._queue_prompt(workflow)
+            history = self._wait_for_history(prompt_id)
+            history_error = self._extract_history_error(history, prompt_id)
+            try:
+                image_ref = self._extract_image_ref(history, prompt_id, output_node_id)
+            except ComfyUIExecutionError as exc:
+                if history_error is None:
+                    raise
+                last_error = ComfyUIExecutionError(
+                    self._format_history_error_message(
+                        prompt_id=prompt_id,
+                        history_error=history_error,
+                    )
+                )
+                if (
+                    attempt_index < self.max_image_attempts
+                    and self._is_retryable_history_error(history_error)
+                ):
+                    if self.retry_delay_sec > 0:
+                        time.sleep(self.retry_delay_sec)
+                    continue
+                raise last_error from exc
+            image_bytes = self._download_image(
+                filename=image_ref["filename"],
+                subfolder=image_ref.get("subfolder", ""),
+                output_type=image_ref.get("type", "output"),
+            )
+            return ComfyUIImageResult(
+                prompt_id=prompt_id,
+                filename=image_ref["filename"],
+                subfolder=image_ref.get("subfolder", ""),
+                output_type=image_ref.get("type", "output"),
+                image_bytes=image_bytes,
+                workflow=workflow,
+                history=history,
+                duration_sec=time.perf_counter() - started_at,
+            )
+        if last_error is not None:
+            raise last_error
+        raise ComfyUIExecutionError("ComfyUI image generation exhausted attempts without output.")
 
     def _queue_prompt(self, workflow: dict[str, Any]) -> str:
         response = self._request_json("/prompt", payload={"prompt": workflow})
@@ -132,6 +160,46 @@ class ComfyUIClient:
             if images:
                 return images[0]
         raise ComfyUIExecutionError(f"ComfyUI prompt {prompt_id} produced no images.")
+
+    @staticmethod
+    def _extract_history_error(history: dict[str, Any], prompt_id: str) -> dict[str, Any] | None:
+        prompt_history = history.get(prompt_id) or {}
+        status = prompt_history.get("status") or {}
+        messages = status.get("messages") or []
+        for entry in messages:
+            if not isinstance(entry, list | tuple) or len(entry) < 2:
+                continue
+            event_name = str(entry[0])
+            payload = entry[1]
+            if event_name != "execution_error" or not isinstance(payload, dict):
+                continue
+            return {
+                "event_name": event_name,
+                "node_id": str(payload.get("node_id", "")),
+                "node_type": str(payload.get("node_type", "")),
+                "exception_type": str(payload.get("exception_type", "")),
+                "exception_message": str(payload.get("exception_message", "")),
+            }
+        return None
+
+    @staticmethod
+    def _is_retryable_history_error(history_error: dict[str, Any]) -> bool:
+        return (
+            history_error.get("node_type") == "KSampler"
+            and history_error.get("exception_type") == "OSError"
+            and "Invalid argument" in history_error.get("exception_message", "")
+        )
+
+    @staticmethod
+    def _format_history_error_message(*, prompt_id: str, history_error: dict[str, Any]) -> str:
+        node_type = history_error.get("node_type") or "unknown_node"
+        node_id = history_error.get("node_id") or "unknown"
+        exception_type = history_error.get("exception_type") or "RuntimeError"
+        exception_message = history_error.get("exception_message") or "unknown ComfyUI failure"
+        return (
+            f"ComfyUI prompt {prompt_id} failed at node {node_type} ({node_id}) "
+            f"with {exception_type}: {exception_message}"
+        )
 
 
 def stable_visual_seed(*parts: str) -> int:
