@@ -11,6 +11,7 @@ from filmstudio.domain.models import (
     ProductPresetContract,
     ProjectCreateRequest,
     ProjectSnapshot,
+    QuickGenerateRequest,
     utc_now,
 )
 from filmstudio.services.revision_release import build_revision_release_summary
@@ -81,6 +82,37 @@ class FullDryRunCase:
     expected_portrait_shot_count_min: int = 1
     expected_wan_shot_count_min: int = 1
     expected_music_backend: str | None = "ace_step"
+
+
+@dataclass(frozen=True)
+class QuickGenerateAcceptanceCase:
+    slug: str
+    title: str
+    prompt: str = ""
+    language: str = "uk"
+    target_duration_sec: int = 8
+    character_names: tuple[str, ...] = ()
+    example_slug: str | None = None
+    stack_profile: str = "production_vertical"
+    style_preset: str | None = None
+    voice_cast_preset: str | None = None
+    music_preset: str | None = None
+    short_archetype: str | None = None
+    expected_input_mode: str = "prompt"
+    expected_example_slug: str | None = None
+    expected_stack_profile: str | None = None
+    expected_style_preset: str = "studio_illustrated"
+    expected_voice_cast_preset: str = "solo_host"
+    expected_music_preset: str = "uplift_pulse"
+    expected_short_archetype: str = "creator_hook"
+    expected_strategies: tuple[str, ...] = ("portrait_lipsync", "hero_insert")
+    expected_subtitle_lanes: tuple[str, ...] = ("top", "bottom")
+    expected_scene_count_min: int = 1
+    expected_character_count_min: int = 1
+    expected_speaker_count_min: int = 1
+    expected_portrait_shot_count_min: int = 1
+    expected_wan_shot_count_min: int = 0
+    expected_music_backend: str | None = "deterministic"
 
 
 DEFAULT_PORTRAIT_STABILITY_CASES: tuple[PortraitStabilityCase, ...] = (
@@ -244,6 +276,78 @@ DEFAULT_FULL_DRY_RUN_CASES: tuple[FullDryRunCase, ...] = (
             "SCENE 3. HERO posmikhaietsia i robyt korotkyi CTA.\n"
             "HERO: Yakshcho vsі kontrakty zійshlysia, my hotovi do pershoho korystuvatskoho dry run."
         ),
+    ),
+)
+
+
+DEFAULT_QUICK_GENERATE_ACCEPTANCE_CASES: tuple[QuickGenerateAcceptanceCase, ...] = (
+    QuickGenerateAcceptanceCase(
+        slug="fortnite_family_jump_live",
+        title="Quick Generate Fortnite Family Jump",
+        example_slug="fortnite_family_jump",
+        stack_profile="production_vertical",
+        expected_input_mode="example",
+        expected_example_slug="fortnite_family_jump",
+        expected_stack_profile="production_vertical",
+        expected_style_preset="kinetic_graphic",
+        expected_voice_cast_preset="duo_contrast",
+        expected_music_preset="heroic_surge",
+        expected_short_archetype="dialogue_pivot",
+        expected_scene_count_min=1,
+        expected_character_count_min=2,
+        expected_speaker_count_min=2,
+        expected_portrait_shot_count_min=2,
+        expected_wan_shot_count_min=1,
+        expected_music_backend="ace_step",
+    ),
+    QuickGenerateAcceptanceCase(
+        slug="creator_hook_preview",
+        title="Quick Generate Creator Hook Preview",
+        example_slug="creator_hook_breakdown",
+        stack_profile="deterministic_preview",
+        expected_input_mode="example",
+        expected_example_slug="creator_hook_breakdown",
+        expected_stack_profile="deterministic_preview",
+        expected_style_preset="studio_illustrated",
+        expected_voice_cast_preset="solo_host",
+        expected_music_preset="uplift_pulse",
+        expected_short_archetype="creator_hook",
+        expected_strategies=("portrait_lipsync", "parallax_comp"),
+        expected_subtitle_lanes=("bottom",),
+        expected_scene_count_min=1,
+        expected_character_count_min=1,
+        expected_speaker_count_min=1,
+        expected_portrait_shot_count_min=1,
+        expected_wan_shot_count_min=0,
+        expected_music_backend="deterministic",
+    ),
+    QuickGenerateAcceptanceCase(
+        slug="duo_myth_prompt_preview",
+        title="Quick Generate Duo Myth Prompt Preview",
+        prompt=(
+            "Veduchyi ta Ekspert stoat u studii ta bystro rozbyvaiut mif pro te, "
+            "shcho lokalnyi shorts-pipeline ne mozhe buty kerovanym."
+        ),
+        character_names=("Veduchyi", "Ekspert"),
+        stack_profile="deterministic_preview",
+        style_preset="broadcast_panel",
+        voice_cast_preset="duo_contrast",
+        music_preset="debate_tension",
+        short_archetype="dialogue_pivot",
+        expected_input_mode="prompt",
+        expected_stack_profile="deterministic_preview",
+        expected_style_preset="broadcast_panel",
+        expected_voice_cast_preset="duo_contrast",
+        expected_music_preset="debate_tension",
+        expected_short_archetype="dialogue_pivot",
+        expected_strategies=("portrait_lipsync", "parallax_comp"),
+        expected_subtitle_lanes=("bottom",),
+        expected_scene_count_min=1,
+        expected_character_count_min=2,
+        expected_speaker_count_min=2,
+        expected_portrait_shot_count_min=2,
+        expected_wan_shot_count_min=0,
+        expected_music_backend="deterministic",
     ),
 )
 
@@ -572,6 +676,114 @@ def load_full_dry_run_cases(path: Path) -> list[FullDryRunCase]:
                 expected_portrait_shot_count_min=expected_portrait_shot_count_min,
                 expected_wan_shot_count_min=expected_wan_shot_count_min,
                 expected_music_backend=expected_music_backend,
+            )
+        )
+    return cases
+
+
+def load_quick_generate_acceptance_cases(path: Path) -> list[QuickGenerateAcceptanceCase]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    raw_cases = payload.get("cases", payload) if isinstance(payload, dict) else payload
+    if not isinstance(raw_cases, list):
+        raise ValueError(
+            f"Quick-generate acceptance cases must be a JSON list or object with 'cases': {path}"
+        )
+    cases: list[QuickGenerateAcceptanceCase] = []
+    for index, raw_case in enumerate(raw_cases, start=1):
+        if not isinstance(raw_case, dict):
+            raise ValueError(f"Case #{index} is not an object in {path}")
+        slug = str(raw_case.get("slug") or f"case_{index:02d}")
+        title = str(raw_case.get("title") or slug.replace("_", " ").title())
+        prompt = str(raw_case.get("prompt") or "")
+        language = str(raw_case.get("language") or "uk")
+        target_duration_sec = max(3, int(raw_case.get("target_duration_sec") or 8))
+        character_names = tuple(
+            str(value).strip()
+            for value in (raw_case.get("character_names") or [])
+            if str(value).strip()
+        )
+        example_slug_raw = raw_case.get("example_slug")
+        style_preset_raw = raw_case.get("style_preset")
+        voice_cast_preset_raw = raw_case.get("voice_cast_preset")
+        music_preset_raw = raw_case.get("music_preset")
+        short_archetype_raw = raw_case.get("short_archetype")
+        expected_strategies_raw = raw_case.get("expected_strategies")
+        expected_subtitle_lanes_raw = raw_case.get("expected_subtitle_lanes")
+        cases.append(
+            QuickGenerateAcceptanceCase(
+                slug=slug,
+                title=title,
+                prompt=prompt,
+                language=language,
+                target_duration_sec=target_duration_sec,
+                character_names=character_names,
+                example_slug=(
+                    str(example_slug_raw).strip()
+                    if example_slug_raw not in (None, "")
+                    else None
+                ),
+                stack_profile=str(raw_case.get("stack_profile") or "production_vertical"),
+                style_preset=(
+                    str(style_preset_raw).strip()
+                    if style_preset_raw not in (None, "")
+                    else None
+                ),
+                voice_cast_preset=(
+                    str(voice_cast_preset_raw).strip()
+                    if voice_cast_preset_raw not in (None, "")
+                    else None
+                ),
+                music_preset=(
+                    str(music_preset_raw).strip()
+                    if music_preset_raw not in (None, "")
+                    else None
+                ),
+                short_archetype=(
+                    str(short_archetype_raw).strip()
+                    if short_archetype_raw not in (None, "")
+                    else None
+                ),
+                expected_input_mode=str(raw_case.get("expected_input_mode") or "prompt"),
+                expected_example_slug=(
+                    str(raw_case.get("expected_example_slug")).strip()
+                    if raw_case.get("expected_example_slug") not in (None, "")
+                    else None
+                ),
+                expected_stack_profile=(
+                    str(raw_case.get("expected_stack_profile")).strip()
+                    if raw_case.get("expected_stack_profile") not in (None, "")
+                    else None
+                ),
+                expected_style_preset=str(raw_case.get("expected_style_preset") or "studio_illustrated"),
+                expected_voice_cast_preset=str(raw_case.get("expected_voice_cast_preset") or "solo_host"),
+                expected_music_preset=str(raw_case.get("expected_music_preset") or "uplift_pulse"),
+                expected_short_archetype=str(raw_case.get("expected_short_archetype") or "creator_hook"),
+                expected_strategies=tuple(
+                    str(value).strip()
+                    for value in expected_strategies_raw
+                    if str(value).strip()
+                )
+                if isinstance(expected_strategies_raw, list)
+                else ("portrait_lipsync", "hero_insert"),
+                expected_subtitle_lanes=tuple(
+                    str(value).strip().lower()
+                    for value in expected_subtitle_lanes_raw
+                    if str(value).strip()
+                )
+                if isinstance(expected_subtitle_lanes_raw, list)
+                else ("top", "bottom"),
+                expected_scene_count_min=max(1, int(raw_case.get("expected_scene_count_min") or 1)),
+                expected_character_count_min=max(1, int(raw_case.get("expected_character_count_min") or 1)),
+                expected_speaker_count_min=max(1, int(raw_case.get("expected_speaker_count_min") or 1)),
+                expected_portrait_shot_count_min=max(
+                    0, int(raw_case.get("expected_portrait_shot_count_min") or 1)
+                ),
+                expected_wan_shot_count_min=max(0, int(raw_case.get("expected_wan_shot_count_min") or 0)),
+                expected_music_backend=(
+                    str(raw_case.get("expected_music_backend")).strip()
+                    if raw_case.get("expected_music_backend") not in (None, "")
+                    else "deterministic"
+                ),
             )
         )
     return cases
@@ -961,6 +1173,8 @@ def extract_music_summary(snapshot: ProjectSnapshot) -> dict[str, Any]:
         else {}
     )
     backend = payload.get("backend") if isinstance(payload, dict) else None
+    if not backend:
+        backend = snapshot.project.metadata.get("music_backend")
     cue_count = int(payload.get("cue_count") or 0) if isinstance(payload, dict) else 0
     return {
         "manifest_available": music_manifest_artifact is not None,
@@ -1095,6 +1309,51 @@ def extract_deliverables_summary(snapshot: ProjectSnapshot) -> dict[str, Any]:
     }
 
 
+def _extract_quick_generate_summary(
+    snapshot: ProjectSnapshot,
+    backend_profile: dict[str, str],
+) -> dict[str, Any]:
+    metadata = snapshot.project.metadata.get("quick_generate") or {}
+    if not isinstance(metadata, dict):
+        return {
+            "available": False,
+            "mode": None,
+            "stack_profile": None,
+            "example_slug": None,
+            "input_mode": None,
+            "run_immediately": None,
+            "source_prompt_length": 0,
+            "generated_script_length": 0,
+            "backend_profile_matches": False,
+        }
+    raw_profile = metadata.get("profile") or {}
+    expected_backend_profile = (
+        dict(raw_profile.get("backend_profile") or {})
+        if isinstance(raw_profile, dict)
+        else {}
+    )
+    backend_profile_matches = bool(expected_backend_profile) and all(
+        str(backend_profile.get(key) or "").strip() == str(value or "").strip()
+        for key, value in expected_backend_profile.items()
+    )
+    source_prompt = str(metadata.get("source_prompt") or "")
+    generated_script = str(metadata.get("generated_script") or "")
+    example_slug = str(metadata.get("example_slug") or "").strip()
+    stack_profile = str(metadata.get("stack_profile") or "").strip()
+    return {
+        "available": True,
+        "mode": str(metadata.get("mode") or ""),
+        "stack_profile": stack_profile or None,
+        "example_slug": example_slug or None,
+        "input_mode": "example" if example_slug else "prompt",
+        "run_immediately": bool(metadata.get("run_immediately")),
+        "source_prompt_length": len(source_prompt.strip()),
+        "generated_script_length": len(generated_script.strip()),
+        "backend_profile_matches": backend_profile_matches,
+        "expected_backend_profile": expected_backend_profile,
+    }
+
+
 def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
     jobs_by_id = {job.job_id: job for job in snapshot.jobs}
     lipsync_attempts = [
@@ -1171,6 +1430,7 @@ def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
         )
     }
     product_preset = dict(snapshot.project.metadata.get("product_preset") or {})
+    quick_generate = _extract_quick_generate_summary(snapshot, backend_profile)
     portrait_retry_free = bool(portrait_shots) and all(
         bool(shot.get("first_attempt_success")) for shot in portrait_shots
     )
@@ -1189,6 +1449,9 @@ def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
         "final_render_exists": bool(final_render_path and Path(final_render_path).exists()),
         "backend_profile": backend_profile,
         "product_preset": product_preset,
+        "quick_generate": quick_generate,
+        "quick_stack_profile": str(quick_generate.get("stack_profile") or ""),
+        "quick_example_slug": str(quick_generate.get("example_slug") or ""),
         "style_preset": str(product_preset.get("style_preset") or ""),
         "voice_cast_preset": str(product_preset.get("voice_cast_preset") or ""),
         "music_preset": str(product_preset.get("music_preset") or ""),
@@ -1311,6 +1574,35 @@ def _run_matches_expected_product_preset(run: dict[str, Any]) -> bool:
     return True
 
 
+def _run_has_expected_quick_generate_contract(run: dict[str, Any]) -> bool:
+    quick_generate = run.get("quick_generate", {})
+    if not isinstance(quick_generate, dict):
+        return False
+    if not bool(quick_generate.get("available")):
+        return False
+    if str(quick_generate.get("mode") or "").strip() != "quick_generate":
+        return False
+    expected_stack_profile = str(run.get("expected_stack_profile") or "").strip()
+    actual_stack_profile = str(quick_generate.get("stack_profile") or "").strip()
+    if expected_stack_profile and actual_stack_profile != expected_stack_profile:
+        return False
+    expected_example_slug = str(run.get("expected_example_slug") or "").strip()
+    actual_example_slug = str(quick_generate.get("example_slug") or "").strip()
+    expected_input_mode = str(run.get("expected_input_mode") or "").strip()
+    actual_input_mode = str(quick_generate.get("input_mode") or "").strip()
+    if expected_example_slug and actual_example_slug != expected_example_slug:
+        return False
+    if expected_input_mode and actual_input_mode != expected_input_mode:
+        return False
+    if expected_input_mode == "prompt" and actual_example_slug:
+        return False
+    if int(quick_generate.get("source_prompt_length") or 0) <= 0:
+        return False
+    if int(quick_generate.get("generated_script_length") or 0) <= 0:
+        return False
+    return bool(quick_generate.get("backend_profile_matches"))
+
+
 def _run_has_ready_deliverables(run: dict[str, Any]) -> bool:
     deliverables_summary = run.get("deliverables_summary", {})
     if not isinstance(deliverables_summary, dict):
@@ -1321,6 +1613,85 @@ def _run_has_ready_deliverables(run: dict[str, Any]) -> bool:
         and deliverables_summary.get("deliverables_package_available")
         and deliverables_summary.get("review_summary_consistent")
         and deliverables_summary.get("package_ready")
+    )
+
+
+def _run_quick_generate_stack_profile(run: dict[str, Any]) -> str:
+    quick_generate = run.get("quick_generate", {})
+    if isinstance(quick_generate, dict):
+        stack_profile = str(quick_generate.get("stack_profile") or "").strip()
+        if stack_profile:
+            return stack_profile
+    return str(run.get("expected_stack_profile") or "").strip()
+
+
+def _run_resolve_music_backend(run: dict[str, Any]) -> str:
+    music_summary = run.get("music_summary", {})
+    if isinstance(music_summary, dict):
+        backend = str(music_summary.get("backend") or "").strip()
+        if backend:
+            return backend
+    backend_profile = run.get("backend_profile", {})
+    if isinstance(backend_profile, dict):
+        backend = str(backend_profile.get("music_backend") or "").strip()
+        if backend:
+            return backend
+    quick_generate = run.get("quick_generate", {})
+    if isinstance(quick_generate, dict):
+        expected_backend_profile = quick_generate.get("expected_backend_profile", {})
+        if isinstance(expected_backend_profile, dict):
+            backend = str(expected_backend_profile.get("music_backend") or "").strip()
+            if backend:
+                return backend
+    operator_overview = run.get("operator_overview", {})
+    if isinstance(operator_overview, dict):
+        backend_profile = operator_overview.get("backend_profile", {})
+        if isinstance(backend_profile, dict):
+            backend = str(backend_profile.get("music_backend") or "").strip()
+            if backend:
+                return backend
+    return ""
+
+
+def _run_has_quick_generate_music_ready(run: dict[str, Any]) -> bool:
+    music_summary = run.get("music_summary", {})
+    if not isinstance(music_summary, dict):
+        return False
+    expected_music_backend = str(run.get("expected_music_backend") or "").strip()
+    actual_music_backend = _run_resolve_music_backend(run)
+    music_bed_exists = bool(music_summary.get("music_bed_exists"))
+    manifest_available = bool(music_summary.get("manifest_available"))
+    if expected_music_backend and actual_music_backend != expected_music_backend:
+        return False
+    if _run_quick_generate_stack_profile(run) == "deterministic_preview":
+        return music_bed_exists
+    return manifest_available and music_bed_exists
+
+
+def _run_meets_quick_generate_acceptance_requirements(run: dict[str, Any]) -> bool:
+    portrait_shots = [shot for shot in run.get("portrait_shots", []) if isinstance(shot, dict)]
+    wan_shots = [shot for shot in run.get("wan_shots", []) if isinstance(shot, dict)]
+    render_summary = run.get("render_summary", {})
+    return bool(
+        not run.get("qc_findings")
+        and _run_has_expected_quick_generate_contract(run)
+        and _run_matches_expected_product_preset(run)
+        and _run_has_expected_strategies(run)
+        and _run_has_expected_lanes(run)
+        and int(run.get("scene_count") or 0) >= int(run.get("expected_scene_count_min") or 0)
+        and int(run.get("character_count") or 0) >= int(run.get("expected_character_count_min") or 0)
+        and int(run.get("speaker_count") or 0) >= int(run.get("expected_speaker_count_min") or 0)
+        and len(portrait_shots) >= int(run.get("expected_portrait_shot_count_min") or 0)
+        and len(wan_shots) >= int(run.get("expected_wan_shot_count_min") or 0)
+        and bool(run.get("subtitle_visibility_clean"))
+        and bool(isinstance(render_summary, dict) and render_summary.get("subtitle_burned_in"))
+        and bool(isinstance(render_summary, dict) and render_summary.get("target_matches_actual"))
+        and _run_has_quick_generate_music_ready(run)
+        and _run_has_ready_deliverables(run)
+        and _run_has_semantic_quality_gate_passed(run)
+        and _run_has_revision_semantic_gate_passed(run)
+        and _run_has_operator_overview_ready(run)
+        and _run_has_operator_queue_ready(run)
     )
 
 
@@ -2211,6 +2582,67 @@ def aggregate_product_readiness_results(run_summaries: Iterable[dict[str, Any]])
     }
 
 
+def aggregate_quick_generate_acceptance_results(run_summaries: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    runs = list(run_summaries)
+    base = aggregate_full_dry_run_results(runs)
+    example_slug_counts: Counter[str] = Counter()
+    input_mode_counts: Counter[str] = Counter()
+    stack_profile_counts: Counter[str] = Counter()
+    expected_stack_profile_counts: Counter[str] = Counter()
+    quick_generate_runs = 0
+    quick_contract_match_runs = 0
+    quick_backend_profile_match_runs = 0
+    quick_example_match_runs = 0
+    quick_acceptance_ready_runs = 0
+
+    for run in runs:
+        quick_generate = run.get("quick_generate", {})
+        if not isinstance(quick_generate, dict) or not bool(quick_generate.get("available")):
+            continue
+        quick_generate_runs += 1
+        input_mode = str(quick_generate.get("input_mode") or "").strip()
+        stack_profile = str(quick_generate.get("stack_profile") or "").strip()
+        example_slug = str(quick_generate.get("example_slug") or "").strip()
+        expected_stack_profile = str(run.get("expected_stack_profile") or "").strip()
+        expected_example_slug = str(run.get("expected_example_slug") or "").strip()
+        if input_mode:
+            input_mode_counts.update([input_mode])
+        if stack_profile:
+            stack_profile_counts.update([stack_profile])
+        if expected_stack_profile:
+            expected_stack_profile_counts.update([expected_stack_profile])
+        if example_slug:
+            example_slug_counts.update([example_slug])
+        if bool(quick_generate.get("backend_profile_matches")):
+            quick_backend_profile_match_runs += 1
+        if (not expected_example_slug and not example_slug) or (
+            expected_example_slug and example_slug == expected_example_slug
+        ):
+            quick_example_match_runs += 1
+        if _run_has_expected_quick_generate_contract(run):
+            quick_contract_match_runs += 1
+        if _run_meets_quick_generate_acceptance_requirements(run):
+            quick_acceptance_ready_runs += 1
+
+    return {
+        **base,
+        "quick_generate_runs": quick_generate_runs,
+        "quick_generate_rate": _rate(quick_generate_runs, len(runs)),
+        "quick_contract_match_runs": quick_contract_match_runs,
+        "quick_contract_match_rate": _rate(quick_contract_match_runs, len(runs)),
+        "quick_backend_profile_match_runs": quick_backend_profile_match_runs,
+        "quick_backend_profile_match_rate": _rate(quick_backend_profile_match_runs, len(runs)),
+        "quick_example_match_runs": quick_example_match_runs,
+        "quick_example_match_rate": _rate(quick_example_match_runs, len(runs)),
+        "quick_acceptance_ready_runs": quick_acceptance_ready_runs,
+        "quick_acceptance_ready_rate": _rate(quick_acceptance_ready_runs, len(runs)),
+        "example_slug_counts": dict(example_slug_counts),
+        "input_mode_counts": dict(input_mode_counts),
+        "stack_profile_counts": dict(stack_profile_counts),
+        "expected_stack_profile_counts": dict(expected_stack_profile_counts),
+    }
+
+
 def aggregate_wan_hero_shot_results(
     run_summaries: Iterable[dict[str, Any]],
     *,
@@ -2791,6 +3223,133 @@ def run_product_readiness_campaign(
             "cases": [asdict(case_item) for case_item in selected_cases],
             "runs": run_summaries,
             "aggregate": aggregate_product_readiness_results(run_summaries),
+        }
+        report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
+
+    return json.loads(report_path.read_text(encoding="utf-8"))
+
+
+def run_quick_generate_acceptance_campaign(
+    settings: Settings,
+    cases: Iterable[QuickGenerateAcceptanceCase],
+    *,
+    campaign_name: str,
+    resume: bool = False,
+    replace_existing_case_slugs: Iterable[str] = (),
+) -> dict[str, Any]:
+    settings.ensure_runtime_dirs()
+    report_root = settings.runtime_root / "campaigns" / campaign_name
+    runs_root = report_root / "runs"
+    runs_root.mkdir(parents=True, exist_ok=True)
+    service, worker = build_local_runtime(settings)
+    selected_cases = list(cases)
+    report_path = report_root / "stability_report.json"
+    run_summaries, completed_case_slugs = _load_existing_campaign_runs(report_path) if resume else ([], set())
+    replaced_case_slugs = {
+        str(case_slug).strip()
+        for case_slug in replace_existing_case_slugs
+        if str(case_slug).strip()
+    }
+    if replaced_case_slugs:
+        run_summaries = _remove_existing_case_runs(
+            run_summaries,
+            case_slugs=replaced_case_slugs,
+            runs_root=runs_root,
+        )
+        completed_case_slugs = {
+            str(run.get("case_slug") or "").strip()
+            for run in run_summaries
+            if str(run.get("case_slug") or "").strip()
+        }
+    skipped_case_slugs: list[str] = []
+
+    for index, case in enumerate(selected_cases, start=1):
+        if resume and case.slug in completed_case_slugs:
+            skipped_case_slugs.append(case.slug)
+            continue
+        payload = QuickGenerateRequest(
+            prompt=case.prompt,
+            title=case.title,
+            language=case.language,
+            target_duration_sec=case.target_duration_sec,
+            character_names=list(case.character_names),
+            style_preset=case.style_preset,
+            voice_cast_preset=case.voice_cast_preset,
+            music_preset=case.music_preset,
+            short_archetype=case.short_archetype,
+            stack_profile=case.stack_profile,
+            example_slug=case.example_slug,
+            run_immediately=True,
+        )
+        project_snapshot = service.create_quick_project(payload)
+        run_error: str | None = None
+        try:
+            project_snapshot = worker.run_project(project_snapshot.project.project_id)
+        except Exception as exc:
+            run_error = str(exc)
+            project_snapshot = service.require_snapshot(project_snapshot.project.project_id)
+        run_summary = summarize_project_run(project_snapshot)
+        operator_overview = service.build_project_overview(project_snapshot)
+        operator_queue = service.build_operator_queue_for_snapshots([project_snapshot])
+        run_summary.update(
+            {
+                "case_slug": case.slug,
+                "case_index": index,
+                "case_category": "quick_generate",
+                "expected_input_mode": case.expected_input_mode,
+                "expected_example_slug": case.expected_example_slug or "",
+                "expected_stack_profile": case.expected_stack_profile or case.stack_profile,
+                "expected_style_preset": case.expected_style_preset,
+                "expected_voice_cast_preset": case.expected_voice_cast_preset,
+                "expected_music_preset": case.expected_music_preset,
+                "expected_short_archetype": case.expected_short_archetype,
+                "expected_strategies": list(case.expected_strategies),
+                "expected_subtitle_lanes": list(case.expected_subtitle_lanes),
+                "expected_scene_count_min": case.expected_scene_count_min,
+                "expected_character_count_min": case.expected_character_count_min,
+                "expected_speaker_count_min": case.expected_speaker_count_min,
+                "expected_portrait_shot_count_min": case.expected_portrait_shot_count_min,
+                "expected_wan_shot_count_min": case.expected_wan_shot_count_min,
+                "expected_music_backend": case.expected_music_backend,
+                "operator_overview": operator_overview,
+                "operator_queue_summary": operator_queue.get("summary", {}),
+                "operator_queue_items": operator_queue.get("items", []),
+                "run_error": run_error,
+            }
+        )
+        run_summaries.append(run_summary)
+        (runs_root / f"{index:02d}_{case.slug}_{project_snapshot.project.project_id}.json").write_text(
+            json.dumps(run_summary, indent=2),
+            encoding="utf-8",
+        )
+        report_payload = {
+            "generated_at": utc_now(),
+            "campaign_name": campaign_name,
+            "runtime_root": str(settings.runtime_root),
+            "report_root": str(report_root),
+            "resume_mode": resume,
+            "replaced_case_slugs": sorted(replaced_case_slugs),
+            "skipped_case_slugs": skipped_case_slugs,
+            "backend_profile": worker.engine.adapters.backend_profile(),
+            "cases": [asdict(case_item) for case_item in selected_cases],
+            "runs": run_summaries,
+            "aggregate": aggregate_quick_generate_acceptance_results(run_summaries),
+        }
+        report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
+
+    if not report_path.exists():
+        report_payload = {
+            "generated_at": utc_now(),
+            "campaign_name": campaign_name,
+            "runtime_root": str(settings.runtime_root),
+            "report_root": str(report_root),
+            "resume_mode": resume,
+            "replaced_case_slugs": sorted(replaced_case_slugs),
+            "skipped_case_slugs": skipped_case_slugs,
+            "backend_profile": worker.engine.adapters.backend_profile(),
+            "cases": [asdict(case_item) for case_item in selected_cases],
+            "runs": run_summaries,
+            "aggregate": aggregate_quick_generate_acceptance_results(run_summaries),
         }
         report_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
 

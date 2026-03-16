@@ -169,6 +169,35 @@ Invoke-RestMethod `
 
 `quick-generate` stores the generated screenplay and chosen stack profile in project metadata, so operators can still inspect or rerender the result through the normal review flow afterward.
 
+For the simplest creator-flow release gate, the repo now also carries a dedicated `Quick Generate` acceptance campaign runner. It exercises the real `create_quick_project(...)` path instead of the advanced intake API and writes a normal campaign report under `runtime/campaigns/`.
+
+List the curated cases:
+
+```powershell
+.venv\Scripts\python.exe .\scripts\run_quick_generate_acceptance_campaign.py --list-cases
+```
+
+Run only the lighter preview cases:
+
+```powershell
+.venv\Scripts\python.exe .\scripts\run_quick_generate_acceptance_campaign.py `
+  --campaign-name quick_generate_acceptance_preview_v1 `
+  --stack-profiles deterministic_preview
+```
+
+Run the full creator-flow suite with the pinned verified local profile:
+
+```powershell
+.venv\Scripts\python.exe .\scripts\run_quick_generate_acceptance_campaign.py `
+  --campaign-name quick_generate_acceptance_v1 `
+  --runtime-profile verified_live
+```
+
+The resulting report is written to:
+
+- `runtime/campaigns/<campaign_name>/stability_report.json`
+- `runtime/campaigns/<campaign_name>/runs/`
+
 2. In another terminal, create a project:
 
 ```powershell

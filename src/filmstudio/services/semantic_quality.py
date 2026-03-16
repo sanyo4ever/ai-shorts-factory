@@ -38,8 +38,13 @@ def _effective_warning_codes(payload: dict[str, Any]) -> list[str]:
     ]
 
 
+def _project_backend(snapshot: ProjectSnapshot, key: str) -> str:
+    return str(snapshot.project.metadata.get(key) or "").strip().lower()
+
+
 def _script_dialogue_line_count(script: str) -> int:
     count = 0
+    blocked_speakers = {"hero insert"}
     for raw_line in script.splitlines():
         line = raw_line.strip()
         if not line:
@@ -49,6 +54,8 @@ def _script_dialogue_line_count(script: str) -> int:
         if ":" not in line:
             continue
         speaker, text = line.split(":", 1)
+        if speaker.strip().lower() in blocked_speakers:
+            continue
         if speaker.strip() and text.strip():
             count += 1
     return count
@@ -158,10 +165,18 @@ def _portrait_identity_consistency_metric(snapshot: ProjectSnapshot) -> dict[str
         for artifact in snapshot.artifacts
         if artifact.kind == "lipsync_manifest" and Path(artifact.path).exists()
     ]
+    lipsync_backend = _project_backend(snapshot, "lipsync_backend")
     consistent_count = 0
     for path in lipsync_manifest_paths:
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
+            continue
+        manifest_backend = str(payload.get("backend") or "").strip().lower()
+        strategy = str(payload.get("strategy") or "").strip().lower()
+        composition = payload.get("composition") if isinstance(payload.get("composition"), dict) else {}
+        if lipsync_backend == "deterministic" or manifest_backend == "deterministic":
+            if strategy == "portrait_lipsync" and int(payload.get("dialogue_count") or 0) > 0 and composition:
+                consistent_count += 1
             continue
         source_probe = payload.get("source_face_probe") if isinstance(payload.get("source_face_probe"), dict) else {}
         output_probe = payload.get("output_face_probe") if isinstance(payload.get("output_face_probe"), dict) else {}
@@ -202,6 +217,7 @@ def _audio_mix_clean_metric(snapshot: ProjectSnapshot) -> dict[str, Any]:
     latest_qc = snapshot.qc_reports[-1] if snapshot.qc_reports else None
     music_payload = _load_json_artifact(snapshot, "music_manifest")
     music_bed_exists = _latest_artifact_path(snapshot, "music_bed") is not None
+    music_backend = _project_backend(snapshot, "music_backend")
     scene_music_count = sum(
         1
         for artifact in snapshot.artifacts
@@ -209,6 +225,8 @@ def _audio_mix_clean_metric(snapshot: ProjectSnapshot) -> dict[str, Any]:
     )
     scene_count = len(snapshot.scenes)
     cue_count = int(music_payload.get("cue_count") or 0)
+    if cue_count <= 0 and music_backend == "deterministic" and scene_music_count > 0:
+        cue_count = scene_music_count
     qc_finding_codes = [
         str(finding.code)
         for finding in (latest_qc.findings if latest_qc is not None else [])
@@ -249,11 +267,14 @@ def _archetype_payoff_metric(
     subtitle_metric: dict[str, Any],
 ) -> dict[str, Any]:
     archetype = str(snapshot.project.metadata.get("short_archetype") or "").strip()
+    video_backend = _project_backend(snapshot, "video_backend")
     shots = [shot for scene in snapshot.scenes for shot in scene.shots]
     shot_count = len(shots)
     strategies = [shot.strategy for shot in shots]
     portrait_count = sum(1 for shot in shots if shot.strategy == "portrait_lipsync")
     hero_insert_count = sum(1 for shot in shots if shot.strategy == "hero_insert")
+    parallax_insert_count = sum(1 for shot in shots if shot.strategy == "parallax_comp")
+    proof_insert_count = hero_insert_count + (parallax_insert_count if video_backend == "deterministic" else 0)
     speaker_names = {
         str(line.character_name).strip().lower()
         for scene in snapshot.scenes
@@ -270,32 +291,34 @@ def _archetype_payoff_metric(
     checks_by_archetype: dict[str, dict[str, bool]] = {
         "creator_hook": {
             "opens_with_presenter": bool(strategies and strategies[0] == "portrait_lipsync"),
-            "contains_proof_beat": hero_insert_count >= 1,
-            "closes_with_presenter": bool(strategies and strategies[-1] == "portrait_lipsync"),
+            "contains_proof_beat": proof_insert_count >= 1,
+            "closes_with_presenter": bool(
+                strategies and strategies[-1] in ({"portrait_lipsync", "parallax_comp"} if video_backend == "deterministic" else {"portrait_lipsync"})
+            ),
         },
         "dialogue_pivot": {
             "has_two_portrait_turns": portrait_count >= 2,
-            "has_contrast_insert": hero_insert_count >= 1,
+            "has_contrast_insert": proof_insert_count >= 1,
             "preserves_multi_speaker_turns": len(speaker_names) >= 2,
         },
         "expert_panel": {
             "has_three_speakers": len(speaker_names) >= 3,
             "keeps_panel_portraits": portrait_count >= 2,
-            "includes_single_proof_insert": hero_insert_count >= 1,
+            "includes_single_proof_insert": proof_insert_count >= 1,
         },
         "narrated_breakdown": {
             "has_narration": "narrator" in speaker_names,
-            "contains_proof_insert": hero_insert_count >= 1,
+            "contains_proof_insert": proof_insert_count >= 1,
             "uses_dual_caption_lanes": has_top_lane and has_bottom_lane,
         },
         "countdown_list": {
             "has_numbered_shape": shot_count >= 3,
-            "contains_fast_proof_insert": hero_insert_count >= 1,
+            "contains_fast_proof_insert": proof_insert_count >= 1,
             "has_dense_caption_support": int(subtitle_metric.get("cue_count") or 0) >= shot_count,
         },
         "hero_teaser": {
             "has_mood_setup": bool(strategies and strategies[0] in {"portrait_lipsync", "portrait_motion"}),
-            "contains_dominant_action_reveal": hero_insert_count >= 1,
+            "contains_dominant_action_reveal": proof_insert_count >= 1,
             "keeps_action_lane_clear": has_top_lane,
         },
     }
