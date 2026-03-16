@@ -4,6 +4,7 @@ from filmstudio.services.comfyui_client import (
     build_character_portrait_workflow,
     build_lipsync_source_reference_workflow,
     build_lipsync_source_workflow,
+    sanitize_comfyui_filename_prefix,
     stable_visual_seed,
 )
 
@@ -206,3 +207,15 @@ def test_lipsync_source_reference_workflow_uses_loadimage_and_saveimage_contract
     assert workflow["2"]["inputs"]["image"] == "hero_reference.png"
     assert workflow["8"]["class_type"] == "SaveImage"
     assert workflow["8"]["inputs"]["filename_prefix"] == "filmstudio/tests/lipsync_source_ref"
+
+
+def test_comfyui_filename_prefix_sanitizes_cyrillic_segments() -> None:
+    prefix = "filmstudio/proj_123/characters/01_Тато_студійний"
+    sanitized = sanitize_comfyui_filename_prefix(prefix)
+    assert sanitized.startswith("filmstudio/proj_123/characters/")
+    assert "тато" not in sanitized
+    assert "студійний" not in sanitized
+    last_segment = sanitized.rsplit("/", 1)[-1]
+    assert "?" not in last_segment
+    assert last_segment.startswith("01")
+    assert len(last_segment.split("-")[-1]) == 8
