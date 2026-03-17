@@ -79,6 +79,30 @@ def test_character_reference_prompt_variants_use_child_headshot_first_for_son(tm
     assert "adult man" in variants[0]["negative_prompt"]
 
 
+def test_character_reference_prompt_variants_use_passport_first_for_father(tmp_path) -> None:
+    adapters = DeterministicMediaAdapters(ArtifactStore(tmp_path / "artifacts"))
+    snapshot = SimpleNamespace(project=SimpleNamespace(metadata={"product_preset": {}}, style="fortnite_stylized"))
+    character = CharacterProfile(
+        character_id="char_tato",
+        name="Тато",
+        voice_hint="тато",
+        visual_hint="adult in his 30s, male, graphite hoodie, tactical vest, fortnite-inspired",
+        role_hint="father",
+        relationship_hint="father of Син",
+        age_hint="adult in his 30s",
+        gender_hint="male",
+        wardrobe_hint="graphite hoodie, tactical vest",
+        negative_visual_hint="woman, girl, child-sized face",
+    )
+
+    variants = adapters._character_reference_prompt_variants(snapshot, character)
+
+    assert variants[0]["label"] == "passport_portrait"
+    assert "single adult parent only" in variants[0]["positive_prompt"]
+    assert "family photo" in variants[0]["negative_prompt"]
+    assert "second child" in variants[0]["negative_prompt"]
+
+
 def test_build_characters_uses_recovered_attempt_before_final_quality_failure(tmp_path, monkeypatch) -> None:
     artifact_store = ArtifactStore(tmp_path / "artifacts")
     adapters = DeterministicMediaAdapters(
@@ -173,6 +197,85 @@ def test_build_characters_uses_recovered_attempt_before_final_quality_failure(tm
     assert manifest["selected_attempt_index"] == 1
     assert manifest["selected_prompt_variant"].endswith("_reframed")
     assert manifest["quality_gate_passed"] is True
+
+
+def test_recover_character_reference_attempt_allows_group_crop_recovery(tmp_path, monkeypatch) -> None:
+    artifact_store = ArtifactStore(tmp_path / "artifacts")
+    adapters = DeterministicMediaAdapters(
+        artifact_store,
+        visual_backend="comfyui",
+        ffmpeg_binary="ffmpeg",
+    )
+    character = CharacterProfile(
+        character_id="char_tato",
+        name="Тато",
+        voice_hint="тато",
+        visual_hint="adult in his 30s, male, graphite hoodie",
+        role_hint="father",
+        relationship_hint="father of Син",
+        age_hint="adult in his 30s",
+        gender_hint="male",
+    )
+    source_path = artifact_store.project_dir("proj_test") / "characters/char_tato/reference_attempt_02.png"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(b"source-png")
+
+    selected_attempt = {
+        "attempt_index": 2,
+        "prompt_variant": "passport_portrait",
+        "image_path": str(source_path),
+        "image_bytes": b"source-png",
+        "quality_gate_passed": False,
+        "quality_gate_reason": "face_probe_failed",
+        "score": 1.0,
+        "face_probe": {
+            "image_width": 768,
+            "image_height": 768,
+            "detected_face_count": 2,
+            "selected_bbox": [342.0, 147.0, 457.0, 267.0],
+            "checks": {
+                "face_detected": True,
+                "landmarks_detected": True,
+                "semantic_layout_ok": True,
+                "face_size_ok": False,
+            },
+        },
+        "face_isolation": {"score": 0.16, "status": "reject", "secondary_face_count": 1},
+    }
+
+    monkeypatch.setattr(
+        "filmstudio.services.media_adapters.run_command",
+        lambda *args, **kwargs: SimpleNamespace(duration_sec=0.1),
+    )
+
+    def fake_probe(**kwargs):
+        reframed_path = Path(kwargs["image_path"])
+        reframed_path.write_bytes(b"reframed-png")
+        return {
+            "face_probe": {"checks": {"face_detected": True}},
+            "face_probe_path": str(tmp_path / "probe.json"),
+            "face_probe_stdout_path": str(tmp_path / "probe_stdout.log"),
+            "face_probe_stderr_path": str(tmp_path / "probe_stderr.log"),
+            "face_probe_command": ["probe"],
+            "face_probe_duration_sec": 0.1,
+            "face_quality": {"score": 0.9, "status": "excellent"},
+            "face_occupancy": {"score": 0.9, "status": "excellent"},
+            "face_isolation": {"score": 0.9, "status": "excellent", "secondary_face_count": 0},
+        }
+
+    monkeypatch.setattr(adapters, "_probe_character_reference_face", fake_probe)
+    monkeypatch.setattr(adapters, "_character_reference_quality_gate", lambda *args, **kwargs: (True, "quality_gate_passed"))
+
+    recovered = adapters._recover_character_reference_attempt(
+        "proj_test",
+        character=character,
+        selected_attempt=selected_attempt,
+    )
+
+    assert recovered is not None
+    assert recovered["reframe_applied"] is True
+    assert recovered["quality_gate_passed"] is True
+    assert recovered["prompt_variant"].endswith("_reframed")
 
 
 def test_visual_prompt_identity_label_maps_ukrainian_roles_to_ascii() -> None:

@@ -86,6 +86,7 @@ class PlannerService:
         "hero reveal",
         "vertykalnyi framing",
         "vertical framing",
+        "героїська вставка",
         "геройська вставка",
         "геройський кадр",
         "вертикальне кадрування",
@@ -96,6 +97,7 @@ class PlannerService:
         "hero reveal",
         "action",
         "action beat",
+        "героїська вставка",
         "геройська вставка",
         "геройський кадр",
         "екшн",
@@ -680,6 +682,19 @@ class PlannerService:
                 aliases[self._scene_casefold(normalized)] = normalized
         return aliases
 
+    @staticmethod
+    def _scene_label_pattern_variants(labels: set[str]) -> list[str]:
+        variants: set[str] = set()
+        for label in labels:
+            collapsed = " ".join(label.split()).strip()
+            if not collapsed:
+                continue
+            variants.add(collapsed)
+            variants.add(collapsed.capitalize())
+            variants.add(collapsed.upper())
+            variants.add(collapsed.title())
+        return sorted(variants, key=len, reverse=True)
+
     def _parse_scene_block(
         self,
         block: str,
@@ -691,9 +706,10 @@ class PlannerService:
         if not aliases:
             normalized_block = self._normalize_scene_text_segment(block)
             return [], [normalized_block] if normalized_block else [], []
+        pattern_labels = self._scene_label_pattern_variants(set(aliases))
         pattern = re.compile(
             r"(?<![\w])("
-            + "|".join(re.escape(label) for label in sorted(aliases, key=len, reverse=True))
+            + "|".join(re.escape(label) for label in pattern_labels)
             + r")\s*:",
             re.IGNORECASE,
         )

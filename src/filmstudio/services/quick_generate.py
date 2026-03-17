@@ -54,7 +54,7 @@ QUICK_EXAMPLES: list[dict[str, Any]] = [
             "СЦЕНА 1. Яскравий острів у стилі Fortnite. Тато і син стоять на дерев'яному трапі перед бурею.\n"
             "ТАТО: Сину, готовий до стрибка?\n"
             "СИН: Так, тату, полетіли!\n\n"
-            "ГЕРОЙСЬКА ВСТАВКА: Тато і син стрибають із трапа, ривком біжать до сяйливої корони, "
+            "ГЕРОЇСЬКА ВСТАВКА: Тато і син стрибають із трапа, ривком біжать до сяйливої корони, "
             "будують стіну й завмирають у переможній позі."
         ),
         "description": "Короткий сімейний Fortnite-біт із двома діалоговими крупностями та однією героїчною вставкою.",
@@ -73,7 +73,7 @@ QUICK_EXAMPLES: list[dict[str, Any]] = [
         "prompt": (
             "СЦЕНА 1. Ведучий дивиться в камеру у яскравій студії й одразу підводить до головної думки.\n"
             "ВЕДУЧИЙ: За 8 секунд поясню, чому це працює.\n\n"
-            "ГЕРОЙСЬКА ВСТАВКА: Швидкий proof beat у продуктному стилі з виразною графікою руху й чистим фінальним кадром.\n\n"
+            "ГЕРОЇСЬКА ВСТАВКА: Швидкий proof beat у продуктному стилі з виразною графікою руху й чистим фінальним кадром.\n\n"
             "СЦЕНА 2. Ведучий повертається в кадр і впевнено підсумовує результат.\n"
             "ВЕДУЧИЙ: План, рух і фінальний кадр уже зібрані в один короткий шорт."
         ),
@@ -94,7 +94,7 @@ QUICK_EXAMPLES: list[dict[str, Any]] = [
             "СЦЕНА 1. Гострий студійний кадр дискусії з ведучим та експертом.\n"
             "ВЕДУЧИЙ: Кажуть, що це міф.\n"
             "ЕКСПЕРТ: Ні, ось чому це працює.\n\n"
-            "ГЕРОЙСЬКА ВСТАВКА: Швидкий монтаж доказів, який закриває суперечку."
+            "ГЕРОЇСЬКА ВСТАВКА: Швидкий монтаж доказів, який закриває суперечку."
         ),
         "description": "Двоголосий формат myth-busting із швидкою вставкою доказів.",
     },
@@ -256,7 +256,7 @@ def _ensure_scene_heading(text: str, *, language: str) -> str:
 
 
 def _extract_description_from_text(text: str) -> str:
-    working = re.sub(r"(?im)\b(?:hero insert|геройська вставка):\s*", "", text)
+    working = re.sub(r"(?im)\b(?:hero insert|героїська вставка|геройська вставка):\s*", "", text)
     working = re.sub(
         r"(?m)(?:^|\s)([A-Za-zА-Яа-яІіЇїЄєҐґ0-9_][A-Za-zА-Яа-яІіЇїЄєҐґ0-9_ ]{1,30}):",
         "\n",
@@ -273,7 +273,7 @@ def _compose_dialogue_action_script(text: str, *, language: str, character_names
         first_line = f"{second}, готовий?"
         second_line = "Так, поїхали!"
         scene_heading = "СЦЕНА 1."
-        hero_insert_label = "ГЕРОЙСЬКА ВСТАВКА"
+        hero_insert_label = "ГЕРОЇСЬКА ВСТАВКА"
     else:
         first_line = f"{second}, ready?"
         second_line = "Yes, let's go!"
@@ -295,7 +295,7 @@ def _compose_single_host_script(text: str, *, language: str, speaker_name: str) 
         else "In a few seconds I will explain the main idea."
     )
     scene_heading = "СЦЕНА 1." if language == "uk" else "SCENE 1."
-    hero_insert_label = "ГЕРОЙСЬКА ВСТАВКА" if language == "uk" else "Hero insert"
+    hero_insert_label = "ГЕРОЇСЬКА ВСТАВКА" if language == "uk" else "Hero insert"
     return (
         f"{scene_heading} {prompt_line}\n"
         f"{speaker_name.upper()}: {host_line}\n\n"
@@ -330,7 +330,15 @@ def _extract_inline_character_names(text: str) -> list[str]:
         text or "",
     )
     deduped: list[str] = []
-    blocked = {"scene", "сцена", "hero insert", "геройська вставка", "narrator", "оповідач"}
+    blocked = {
+        "scene",
+        "сцена",
+        "hero insert",
+        "героїська вставка",
+        "геройська вставка",
+        "narrator",
+        "оповідач",
+    }
     for match in matches:
         name = re.sub(r"\s+", " ", match).strip()
         normalized = name.lower()

@@ -357,6 +357,51 @@ class DeterministicMediaAdapters:
             return shots
         return [shot for shot in shots if shot.shot_id in target_shot_ids]
 
+    def _rerender_scope_start_stage(self, snapshot: ProjectSnapshot) -> str | None:
+        scope = self._active_rerender_scope(snapshot)
+        if scope is None:
+            return None
+        start_stage = str(scope.get("start_stage") or "").strip()
+        return start_stage or None
+
+    def _is_shot_only_visual_rerender(self, snapshot: ProjectSnapshot) -> bool:
+        start_stage = self._rerender_scope_start_stage(snapshot)
+        if start_stage not in {"build_characters", "generate_storyboards", "render_shots", "apply_lipsync"}:
+            return False
+        return bool(self._rerender_target_shot_ids(snapshot))
+
+    def _should_reuse_existing_dialogue(self, snapshot: ProjectSnapshot) -> bool:
+        if not self._is_shot_only_visual_rerender(snapshot):
+            return False
+        return (
+            self._find_artifact(snapshot, "dialogue_manifest") is not None
+            and self._find_artifact(snapshot, "dialogue_bus") is not None
+        )
+
+    def _should_reuse_existing_music(self, snapshot: ProjectSnapshot) -> bool:
+        if not self._is_shot_only_visual_rerender(snapshot):
+            return False
+        if self.music_backend == "ace_step":
+            return (
+                self._find_artifact(snapshot, "music_manifest") is not None
+                and self._find_artifact(snapshot, "music_bed") is not None
+            )
+        return (
+            self._find_artifact(snapshot, "music_bed") is not None
+            and self._find_artifact(snapshot, "music_theme") is not None
+        )
+
+    def _should_reuse_existing_subtitles(self, snapshot: ProjectSnapshot) -> bool:
+        if not self._is_shot_only_visual_rerender(snapshot):
+            return False
+        required_kinds = (
+            "subtitle_srt",
+            "subtitle_ass",
+            "subtitle_layout_manifest",
+            "subtitle_word_timestamps",
+        )
+        return all(self._find_artifact(snapshot, kind) is not None for kind in required_kinds)
+
     @staticmethod
     def _retime_dialogue_entries(
         entries: list[dict[str, Any]],
@@ -735,6 +780,7 @@ class DeterministicMediaAdapters:
         product_preset = snapshot.project.metadata.get("product_preset") or {}
         style_preset = str(product_preset.get("style_preset") or "")
         child_character = self._is_child_character(character)
+        parent_character = self._is_parent_character(character)
         presenter_positive_hint = ""
         presenter_negative_hint = ""
         preferred_order = {
@@ -773,6 +819,21 @@ class DeterministicMediaAdapters:
                 "passport_portrait": 1,
                 "studio_headshot": 2,
                 "direct_portrait": 3,
+            }
+        elif parent_character:
+            role_positive_hint = (
+                "single adult parent only, one father only, no child beside subject, no family group, "
+                "solo parent portrait, adult male face filling most of frame, head and shoulders only, "
+                "clear jawline, visible eyes nose and mouth, neutral background, no weapon, "
+            )
+            role_negative_hint = (
+                "child, son, daughter, family photo, duo portrait, pair pose, team lineup, ensemble poster, "
+                "squad splash art, second adult, second child, cropped family selfie, "
+            )
+            preferred_order = {
+                "passport_portrait": 0,
+                "studio_headshot": 1,
+                "direct_portrait": 2,
             }
         character_visual_fragment = self._character_visual_fragment_ascii(character)
         character_negative_fragment = self._character_negative_fragment(character)
@@ -843,6 +904,14 @@ class DeterministicMediaAdapters:
         if role_hint in {"son", "daughter", "child"}:
             return True
         return any(token in age_hint for token in ("child", "kid", "preteen", "school age", "boy", "girl"))
+
+    @staticmethod
+    def _is_parent_character(character: CharacterProfile | dict[str, Any]) -> bool:
+        role_hint = str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip().lower()
+        relationship_hint = str(
+            character.get("relationship_hint") if isinstance(character, dict) else character.relationship_hint
+        ).strip().lower()
+        return role_hint in {"father", "mother", "parent"} or "father of" in relationship_hint or "mother of" in relationship_hint
     def _can_probe_character_reference_faces(self) -> bool:
         return bool(
             self.musetalk_repo_path is not None
@@ -908,8 +977,8 @@ class DeterministicMediaAdapters:
             return None
         if bool(selected_attempt.get("quality_gate_passed")):
             return None
-        face_isolation = selected_attempt.get("face_isolation")
-        if not isinstance(face_isolation, dict) or self._is_rejected_face_quality(face_isolation):
+        prompt_variant = str(selected_attempt.get("prompt_variant") or "")
+        if bool(selected_attempt.get("reframe_applied")) or prompt_variant.endswith("_reframed"):
             return None
         reframe_plan = self._character_reference_reframe_plan(face_probe_payload)
         if reframe_plan is None:
@@ -994,9 +1063,11 @@ class DeterministicMediaAdapters:
         x1, y1, x2, y2 = [float(value) for value in selected_bbox[:4]]
         bbox_width = max(1.0, x2 - x1)
         bbox_height = max(1.0, y2 - y1)
-        side = min(float(min(image_width, image_height)), max(bbox_width, bbox_height) * 2.2)
+        detected_face_count = int(face_probe_payload.get("detected_face_count") or 0)
+        side_multiplier = 1.65 if detected_face_count > 1 else 2.2
+        side = min(float(min(image_width, image_height)), max(bbox_width, bbox_height) * side_multiplier)
         center_x = (x1 + x2) / 2.0
-        center_y = ((y1 + y2) / 2.0) + (bbox_height * 0.18)
+        center_y = ((y1 + y2) / 2.0) + (bbox_height * (0.08 if detected_face_count > 1 else 0.18))
         crop_x = max(0.0, min(center_x - (side / 2.0), float(image_width) - side))
         crop_y = max(0.0, min(center_y - (side / 2.0), float(image_height) - side))
         return {
@@ -1118,6 +1189,20 @@ class DeterministicMediaAdapters:
         primary_descriptor = self._character_visual_fragment_ascii(primary_character)
         primary_negative = self._character_negative_fragment(primary_character)
         group_descriptor = self._shot_character_prompt_fragment(snapshot, shot)
+        shot_character_profiles = [
+            character
+            for name in shot.characters
+            for character in [self._resolve_project_character(snapshot, name)]
+            if character is not None
+        ]
+        shot_negative_fragments = [
+            fragment
+            for fragment in (
+                self._character_negative_fragment(character) for character in shot_character_profiles
+            )
+            if fragment
+        ]
+        shot_negative_hint = ", ".join(shot_negative_fragments)
         composition_hint = self._composition_prompt_fragment(shot)
         lane_hint = self._subtitle_lane_prompt_fragment(shot)
         if shot.strategy == "portrait_lipsync":
@@ -1155,6 +1240,33 @@ class DeterministicMediaAdapters:
                     "important details inside the subtitle lane, hands covering face, "
                     f"blurry, bad anatomy, watermark, text, logo"
                     f"{', ' + primary_negative if primary_negative else ''}"
+                ),
+            )
+        if shot.strategy == "hero_insert":
+            duo_focus = "one clear action subject, no extra crowd, "
+            if len(shot_character_profiles) == 2:
+                duo_labels = [
+                    self._visual_prompt_identity_label_ascii(character)
+                    for character in shot_character_profiles
+                ]
+                duo_focus = (
+                    f"exactly two characters only, {duo_labels[0]} and {duo_labels[1]} only, "
+                    "same duo from the dialogue closeups, no extra fighters, no squad, no crowd, "
+                )
+            return (
+                (
+                    f"{snapshot.project.style}, storyboard frame, {shot.title}, {shot.purpose}, "
+                    f"hero action insert, {duo_focus}"
+                    f"characters: {group_descriptor}, one shared payoff beat, readable vertical action, "
+                    "freeze-frame readability, not a poster, not a roster card, "
+                    f"{composition_hint}, {lane_hint}, "
+                    f"seed hint: {shot.prompt_seed}"
+                ),
+                (
+                    "crowd, squad, team lineup, roster poster, splash art, ensemble poster, collage, "
+                    "extra fighters, third person, fourth person, distant background people, duplicate heroes, "
+                    "busy key art, title card, logo, watermark, text, blurry, bad anatomy, duplicate body parts"
+                    f"{', ' + shot_negative_hint if shot_negative_hint else ''}"
                 ),
             )
         return (
@@ -4378,6 +4490,16 @@ class DeterministicMediaAdapters:
         }
 
     def synthesize_dialogue(self, snapshot: ProjectSnapshot) -> StageExecutionResult:
+        if self._should_reuse_existing_dialogue(snapshot):
+            result = StageExecutionResult()
+            result.logs.append(
+                {
+                    "message": "reused existing dialogue artifacts for shot-only visual rerender",
+                    "tts_backend": self.tts_backend,
+                    "selective_rerender": True,
+                }
+            )
+            return result
         result = StageExecutionResult()
         planned_entries = self._planned_dialogue_entries(snapshot)
         target_shot_ids = self._rerender_target_shot_ids(snapshot)
@@ -4500,6 +4622,16 @@ class DeterministicMediaAdapters:
         return result
 
     def generate_music(self, snapshot: ProjectSnapshot) -> StageExecutionResult:
+        if self._should_reuse_existing_music(snapshot):
+            result = StageExecutionResult()
+            result.logs.append(
+                {
+                    "message": "reused existing music artifacts for shot-only visual rerender",
+                    "music_backend": self.music_backend,
+                    "selective_rerender": True,
+                }
+            )
+            return result
         if self.music_backend == "ace_step":
             return self._generate_music_ace_step(snapshot)
         if self.music_backend != "deterministic":
@@ -6430,6 +6562,16 @@ class DeterministicMediaAdapters:
         return result
 
     def generate_subtitles(self, snapshot: ProjectSnapshot) -> StageExecutionResult:
+        if self._should_reuse_existing_subtitles(snapshot):
+            result = StageExecutionResult()
+            result.logs.append(
+                {
+                    "message": "reused existing subtitle artifacts for shot-only visual rerender",
+                    "subtitle_backend": self.subtitle_backend,
+                    "selective_rerender": True,
+                }
+            )
+            return result
         if self.subtitle_backend == "whisperx":
             return self._generate_subtitles_whisperx(snapshot)
         if self.subtitle_backend != "deterministic":
@@ -9162,6 +9304,7 @@ class DeterministicMediaAdapters:
             base_url=self.comfyui_base_url,
             timeout_sec=self.comfyui_request_timeout_sec,
             poll_interval_sec=self.comfyui_poll_interval_sec,
+            output_root=self.comfyui_input_dir.parent / "output",
         )
         return self._comfyui_client
 
@@ -9380,24 +9523,31 @@ class DeterministicMediaAdapters:
         )
 
     def _wan_prompt(self, snapshot: ProjectSnapshot, shot: ShotPlan) -> str:
-        character_names = self._shot_character_prompt_fragment(snapshot, shot, compact=True)
+        character_names = DeterministicMediaAdapters._compact_prompt_text(
+            self._shot_character_prompt_fragment(snapshot, shot, compact=True),
+            limit=110,
+        )
         composition = shot.composition
         prompt_seed_hint = DeterministicMediaAdapters._compact_prompt_text(
             shot.prompt_seed,
-            limit=68,
+            limit=52,
         )
         purpose_hint = DeterministicMediaAdapters._compact_prompt_text(
             shot.purpose,
-            limit=36,
+            limit=28,
         )
         style_fragment = self._wan_style_fragment(snapshot)
+        duo_focus = "one clear action subject, no crowd, no poster"
+        if len(shot.characters) == 2:
+            duo_focus = "exactly two characters, father-son duo, no squad, no crowd, no poster"
         return (
             f"{style_fragment}, animated hero insert. "
             f"Purpose: {purpose_hint}. "
             f"Scene beat: {prompt_seed_hint}. Characters: {character_names}. "
+            f"{duo_focus}. "
             f"{composition.orientation} {composition.aspect_ratio}, centered readable action, "
             f"clean {composition.subtitle_lane} subtitle lane. "
-            "Fortnite-inspired readable duo action, clean silhouettes, one clear payoff motion, stable motion."
+            "Fortnite-inspired readable duo action, clean silhouettes, one clear payoff motion, stable motion, no extra fighters."
         )
 
     @staticmethod
