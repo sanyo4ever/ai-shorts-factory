@@ -6978,6 +6978,11 @@ class DeterministicMediaAdapters:
         json_source = output_dir / f"{stem}.json"
         if not srt_source.exists() or not vtt_source.exists() or not json_source.exists():
             raise RuntimeError("WhisperX did not produce the expected subtitle artifacts.")
+        self._rewrite_windows_text_exports(
+            srt_source,
+            vtt_source,
+            output_dir / f"{stem}.txt",
+        )
         whisperx_payload = json.loads(json_source.read_text(encoding="utf-8", errors="replace"))
         word_entries = self._whisperx_word_entries(whisperx_payload)
         cues = self._canonical_subtitle_cues(snapshot)
@@ -9128,7 +9133,11 @@ class DeterministicMediaAdapters:
                     "",
                 ]
             )
-        srt_path = write_text(project_dir / "subtitles/full.srt", "\n".join(srt_lines).strip() + "\n")
+        srt_path = write_text(
+            project_dir / "subtitles/full.srt",
+            "\n".join(srt_lines).strip() + "\n",
+            utf8_bom=True,
+        )
         vtt_lines = ["WEBVTT", ""]
         for cue_index, cue in enumerate(cues, start=1):
             vtt_lines.extend(
@@ -9139,7 +9148,11 @@ class DeterministicMediaAdapters:
                     "",
                 ]
             )
-        vtt_path = write_text(project_dir / "subtitles/full.vtt", "\n".join(vtt_lines).strip() + "\n")
+        vtt_path = write_text(
+            project_dir / "subtitles/full.vtt",
+            "\n".join(vtt_lines).strip() + "\n",
+            utf8_bom=True,
+        )
         layout_payload = self._subtitle_layout_for_cues(
             snapshot,
             cues,
@@ -9642,7 +9655,28 @@ class DeterministicMediaAdapters:
 
     @staticmethod
     def _copy_text_artifact(source: Path, destination: Path) -> Path:
-        return write_text(destination, source.read_text(encoding="utf-8", errors="replace"))
+        source_is_windows_text = source.suffix.lower() in {".srt", ".vtt", ".txt"}
+        return write_text(
+            destination,
+            source.read_text(
+                encoding="utf-8-sig" if source_is_windows_text else "utf-8",
+                errors="replace",
+            ),
+            utf8_bom=source_is_windows_text,
+        )
+
+    @staticmethod
+    def _rewrite_windows_text_exports(*paths: Path) -> None:
+        for path in paths:
+            if not path.exists():
+                continue
+            if path.suffix.lower() not in {".srt", ".vtt", ".txt"}:
+                continue
+            write_text(
+                path,
+                path.read_text(encoding="utf-8-sig", errors="replace"),
+                utf8_bom=True,
+            )
 
     @staticmethod
     def _whisperx_word_entries(payload: dict[str, Any]) -> list[dict[str, Any]]:
