@@ -28,6 +28,11 @@ from filmstudio.services.product_preset_catalog import (
     get_product_preset_catalog,
 )
 from filmstudio.services.runtime_support import list_ollama_models, ollama_generate_json
+from filmstudio.services.scenario_expander import (
+    apply_scenario_expansion_to_scenes,
+    build_scenario_expansion,
+    merge_expansion_fragments,
+)
 
 
 @dataclass
@@ -35,6 +40,7 @@ class PlanningBundle:
     characters: list[CharacterProfile]
     scenes: list[ScenePlan]
     product_preset: dict[str, Any]
+    scenario_expansion: dict[str, Any]
     story_bible: dict[str, Any]
     character_bible: dict[str, Any]
     scene_plan: dict[str, Any]
@@ -313,7 +319,20 @@ class PlannerService:
                     shots=shots,
                 )
             )
-        return self._compose_bundle(request, characters, scenes, product_preset=product_preset)
+        scenario_expansion = build_scenario_expansion(
+            request,
+            characters=characters,
+            scenes=scenes,
+            product_preset=product_preset,
+        )
+        expanded_scenes = apply_scenario_expansion_to_scenes(scenes, scenario_expansion)
+        return self._compose_bundle(
+            request,
+            characters,
+            expanded_scenes,
+            product_preset=product_preset,
+            scenario_expansion=scenario_expansion,
+        )
 
     def _compose_bundle(
         self,
@@ -322,6 +341,7 @@ class PlannerService:
         scenes: list[ScenePlan],
         *,
         product_preset: dict[str, Any] | None = None,
+        scenario_expansion: dict[str, Any] | None = None,
         story_bible: dict[str, Any] | None = None,
         character_bible: dict[str, Any] | None = None,
         scene_plan: dict[str, Any] | None = None,
@@ -330,18 +350,32 @@ class PlannerService:
         continuity_bible: dict[str, Any] | None = None,
     ) -> PlanningBundle:
         resolved_product_preset = product_preset or self._build_product_preset(request)
+        resolved_scenario_expansion = scenario_expansion or build_scenario_expansion(
+            request,
+            characters=characters,
+            scenes=scenes,
+            product_preset=resolved_product_preset,
+        )
         return PlanningBundle(
             characters=characters,
             scenes=scenes,
             product_preset=resolved_product_preset,
-            story_bible=story_bible or self._build_story_bible(request, scenes, resolved_product_preset),
+            scenario_expansion=resolved_scenario_expansion,
+            story_bible=story_bible
+            or self._build_story_bible(
+                request,
+                scenes,
+                resolved_product_preset,
+                resolved_scenario_expansion,
+            ),
             character_bible=character_bible
             or self._build_character_bible(request, characters, resolved_product_preset),
-            scene_plan=scene_plan or self._build_scene_plan(scenes),
-            shot_plan=shot_plan or self._build_shot_plan(scenes),
-            asset_strategy=asset_strategy or self._build_asset_strategy(scenes, resolved_product_preset),
+            scene_plan=scene_plan or self._build_scene_plan(scenes, resolved_scenario_expansion),
+            shot_plan=shot_plan or self._build_shot_plan(scenes, resolved_scenario_expansion),
+            asset_strategy=asset_strategy
+            or self._build_asset_strategy(scenes, resolved_product_preset, resolved_scenario_expansion),
             continuity_bible=continuity_bible
-            or self._build_continuity_bible(scenes, resolved_product_preset),
+            or self._build_continuity_bible(scenes, resolved_product_preset, resolved_scenario_expansion),
         )
 
     @staticmethod
@@ -358,20 +392,57 @@ class PlannerService:
         )
         return build_product_preset_payload(contract)
 
+    @staticmethod
+    def _scenario_scene_map(scenario_expansion: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+        if not isinstance(scenario_expansion, dict):
+            return {}
+        return {
+            str(entry.get("scene_id") or ""): entry
+            for entry in scenario_expansion.get("scene_expansions", [])
+            if isinstance(entry, dict)
+        }
+
+    @classmethod
+    def _scenario_shot_map(
+        cls,
+        scenario_expansion: dict[str, Any] | None,
+    ) -> dict[str, dict[str, Any]]:
+        shot_map: dict[str, dict[str, Any]] = {}
+        for scene_entry in cls._scenario_scene_map(scenario_expansion).values():
+            for shot_entry in scene_entry.get("shot_contexts", []):
+                if not isinstance(shot_entry, dict):
+                    continue
+                shot_id = str(shot_entry.get("shot_id") or "")
+                if not shot_id:
+                    continue
+                shot_map[shot_id] = shot_entry
+        return shot_map
+
     def _build_story_bible(
         self,
         request: ProjectCreateRequest,
         scenes: list[ScenePlan],
         product_preset: dict[str, Any],
+        scenario_expansion: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         first_line = next((line.strip() for line in request.script.splitlines() if line.strip()), request.title)
         synopsis_parts = [scene.summary for scene in scenes[:3]]
         orientation = self._render_orientation()
         aspect_ratio = self._render_aspect_ratio()
+        expansion_summary = dict(scenario_expansion or {})
         return {
             "title": request.title,
-            "logline": self._planning_text(first_line, source_language=request.language, limit=180),
-            "synopsis": " ".join(synopsis_parts)[:500],
+            "logline": merge_expansion_fragments(
+                str(expansion_summary.get("story_premise_en") or ""),
+                self._planning_text(first_line, source_language=request.language, limit=180),
+                limit=180,
+            ),
+            "synopsis": merge_expansion_fragments(
+                str(expansion_summary.get("visual_world_en") or ""),
+                " ".join(synopsis_parts)[:500],
+                str(expansion_summary.get("narrative_goal_en") or ""),
+                limit=500,
+            ),
             "theme": "to_be_refined",
             "tone": request.style,
             "language": request.language,
@@ -405,6 +476,12 @@ class PlannerService:
             "style_direction": product_preset["style_direction"],
             "music_direction": product_preset["music_direction"],
             "archetype_direction": product_preset["archetype_direction"],
+            "scenario_expansion": {
+                "story_premise_en": expansion_summary.get("story_premise_en", ""),
+                "visual_world_en": expansion_summary.get("visual_world_en", ""),
+                "narrative_goal_en": expansion_summary.get("narrative_goal_en", ""),
+                "dialogue_language": expansion_summary.get("dialogue_language", request.language),
+            },
         }
 
     def _build_character_bible(
@@ -442,8 +519,13 @@ class PlannerService:
             ],
         }
 
-    @staticmethod
-    def _build_scene_plan(scenes: list[ScenePlan]) -> dict[str, Any]:
+    @classmethod
+    def _build_scene_plan(
+        cls,
+        scenes: list[ScenePlan],
+        scenario_expansion: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        scene_map = cls._scenario_scene_map(scenario_expansion)
         return {
             "planning_language": "en",
             "scenes": [
@@ -455,13 +537,21 @@ class PlannerService:
                     "duration_sec": scene.duration_sec,
                     "shot_ids": [shot.shot_id for shot in scene.shots],
                     "characters": sorted({name for shot in scene.shots for name in shot.characters}),
+                    "dramatic_beat_en": str(scene_map.get(scene.scene_id, {}).get("dramatic_beat_en") or scene.summary),
+                    "visual_context_en": str(scene_map.get(scene.scene_id, {}).get("visual_context_en") or ""),
+                    "dialogue_goal_en": str(scene_map.get(scene.scene_id, {}).get("dialogue_goal_en") or ""),
                 }
                 for scene in scenes
             ]
         }
 
-    @staticmethod
-    def _build_shot_plan(scenes: list[ScenePlan]) -> dict[str, Any]:
+    @classmethod
+    def _build_shot_plan(
+        cls,
+        scenes: list[ScenePlan],
+        scenario_expansion: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        shot_map = cls._scenario_shot_map(scenario_expansion)
         return {
             "planning_language": "en",
             "shots": [
@@ -479,14 +569,23 @@ class PlannerService:
                     "prompt_seed": shot.prompt_seed,
                     "composition": shot.composition.model_dump(),
                     "subtitle_lane": shot.composition.subtitle_lane,
+                    "scenario_context_en": str(shot_map.get(shot.shot_id, {}).get("visual_prompt_en") or shot.prompt_seed),
+                    "continuity_anchor_en": str(shot_map.get(shot.shot_id, {}).get("continuity_anchor_en") or ""),
+                    "action_choreography_en": str(shot_map.get(shot.shot_id, {}).get("action_choreography_en") or ""),
                 }
                 for scene in scenes
                 for shot in scene.shots
             ]
         }
 
-    @staticmethod
-    def _build_asset_strategy(scenes: list[ScenePlan], product_preset: dict[str, Any]) -> dict[str, Any]:
+    @classmethod
+    def _build_asset_strategy(
+        cls,
+        scenes: list[ScenePlan],
+        product_preset: dict[str, Any],
+        scenario_expansion: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        shot_map = cls._scenario_shot_map(scenario_expansion)
         strategies = []
         for scene in scenes:
             for shot in scene.shots:
@@ -515,6 +614,8 @@ class PlannerService:
                         },
                         "caption_safe_required": True,
                         "vertical_safe_zone_lock": True,
+                        "scenario_context_en": str(shot_map.get(shot.shot_id, {}).get("visual_prompt_en") or shot.prompt_seed),
+                        "continuity_anchor_en": str(shot_map.get(shot.shot_id, {}).get("continuity_anchor_en") or ""),
                         "product_preset": {
                             "style_preset": product_preset["style_preset"],
                             "music_preset": product_preset["music_preset"],
@@ -532,11 +633,14 @@ class PlannerService:
             "shots": strategies,
         }
 
-    @staticmethod
+    @classmethod
     def _build_continuity_bible(
+        cls,
         scenes: list[ScenePlan],
         product_preset: dict[str, Any],
+        scenario_expansion: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        scene_map = cls._scenario_scene_map(scenario_expansion)
         return {
             "planning_language": "en",
             "product_preset": {
@@ -547,6 +651,7 @@ class PlannerService:
                 {
                     "scene_id": scene.scene_id,
                     "summary": scene.summary,
+                    "dramatic_beat_en": str(scene_map.get(scene.scene_id, {}).get("dramatic_beat_en") or scene.summary),
                     "characters_present": sorted({name for shot in scene.shots for name in shot.characters}),
                     "transition_in": "hard_cut",
                     "transition_out": "hard_cut",
@@ -1121,15 +1226,26 @@ class OllamaPlannerService(PlannerService):
             timeout_sec=self.timeout_sec,
         )
         characters, scenes = self._normalize_plan(request, payload, anchor_bundle=anchor_bundle)
-        return self._compose_bundle(
+        scenario_expansion = self._normalize_scenario_expansion(
             request,
             characters,
             scenes,
+            product_preset,
+            payload.get("scenario_expansion"),
+            anchor_bundle=anchor_bundle,
+        )
+        expanded_scenes = apply_scenario_expansion_to_scenes(scenes, scenario_expansion)
+        return self._compose_bundle(
+            request,
+            characters,
+            expanded_scenes,
             product_preset=product_preset,
+            scenario_expansion=scenario_expansion,
             story_bible=self._normalize_story_bible(
                 request,
-                scenes,
+                expanded_scenes,
                 product_preset,
+                scenario_expansion,
                 payload.get("story_bible"),
             ),
             character_bible=self._normalize_character_bible(
@@ -1138,16 +1254,18 @@ class OllamaPlannerService(PlannerService):
                 product_preset,
                 payload.get("character_bible"),
             ),
-            scene_plan=self._normalize_scene_plan(scenes, payload.get("scene_plan")),
-            shot_plan=self._normalize_shot_plan(scenes, payload.get("shot_plan")),
+            scene_plan=self._normalize_scene_plan(expanded_scenes, scenario_expansion, payload.get("scene_plan")),
+            shot_plan=self._normalize_shot_plan(expanded_scenes, scenario_expansion, payload.get("shot_plan")),
             asset_strategy=self._normalize_asset_strategy(
-                scenes,
+                expanded_scenes,
                 product_preset,
+                scenario_expansion,
                 payload.get("asset_strategy"),
             ),
             continuity_bible=self._normalize_continuity_bible(
-                scenes,
+                expanded_scenes,
                 product_preset,
+                scenario_expansion,
                 payload.get("continuity_bible"),
             ),
         )
@@ -1161,6 +1279,11 @@ class OllamaPlannerService(PlannerService):
                 "Keep named characters and spoken dialogue text unchanged.",
                 "Use English only for planning descriptions, purposes, summaries, and prompt seeds.",
             ],
+            "scenario_expansion": {
+                "story_premise_en": bundle.scenario_expansion.get("story_premise_en", ""),
+                "visual_world_en": bundle.scenario_expansion.get("visual_world_en", ""),
+                "narrative_goal_en": bundle.scenario_expansion.get("narrative_goal_en", ""),
+            },
             "characters": [
                 {
                     "name": character.name,
@@ -1571,9 +1694,10 @@ class OllamaPlannerService(PlannerService):
         request: ProjectCreateRequest,
         scenes: list[ScenePlan],
         product_preset: dict[str, Any],
+        scenario_expansion: dict[str, Any] | None,
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        base = self._build_story_bible(request, scenes, product_preset)
+        base = self._build_story_bible(request, scenes, product_preset, scenario_expansion)
         if not isinstance(payload, dict):
             return base
         base.update({key: value for key, value in payload.items() if value not in (None, "", [])})
@@ -1593,6 +1717,218 @@ class OllamaPlannerService(PlannerService):
         base["music_direction"] = product_preset["music_direction"]
         base["archetype_direction"] = product_preset["archetype_direction"]
         base["language_contract"] = bilingual_language_contract(request.language)
+        return base
+
+    def _normalize_scenario_expansion(
+        self,
+        request: ProjectCreateRequest,
+        characters: list[CharacterProfile],
+        scenes: list[ScenePlan],
+        product_preset: dict[str, Any],
+        payload: dict[str, Any] | None,
+        *,
+        anchor_bundle: PlanningBundle | None = None,
+    ) -> dict[str, Any]:
+        base = (
+            dict(anchor_bundle.scenario_expansion)
+            if anchor_bundle is not None
+            else build_scenario_expansion(
+                request,
+                characters=characters,
+                scenes=scenes,
+                product_preset=product_preset,
+            )
+        )
+        if not isinstance(payload, dict):
+            return base
+
+        base["story_premise_en"] = coerce_planning_english(
+            str(payload.get("story_premise_en") or base.get("story_premise_en") or ""),
+            source_language=request.language,
+            limit=240,
+        )
+        base["visual_world_en"] = coerce_planning_english(
+            str(payload.get("visual_world_en") or base.get("visual_world_en") or ""),
+            source_language=request.language,
+            limit=240,
+        )
+        base["narrative_goal_en"] = coerce_planning_english(
+            str(payload.get("narrative_goal_en") or base.get("narrative_goal_en") or ""),
+            source_language=request.language,
+            limit=220,
+        )
+
+        if isinstance(payload.get("character_grounding"), list) and payload["character_grounding"]:
+            base_by_name = {
+                str(entry.get("name") or "").casefold(): dict(entry)
+                for entry in base.get("character_grounding", [])
+                if isinstance(entry, dict) and str(entry.get("name") or "").strip()
+            }
+            merged_grounding: list[dict[str, Any]] = []
+            for raw_entry in payload["character_grounding"][: len(characters)]:
+                if not isinstance(raw_entry, dict):
+                    continue
+                name = str(raw_entry.get("name") or "").strip()
+                if not name:
+                    continue
+                base_entry = base_by_name.get(name.casefold(), {})
+                merged_grounding.append(
+                    {
+                        "name": name,
+                        "role_en": coerce_planning_english(
+                            str(raw_entry.get("role_en") or base_entry.get("role_en") or ""),
+                            source_language=request.language,
+                            limit=80,
+                        ),
+                        "relationship_en": coerce_planning_english(
+                            str(raw_entry.get("relationship_en") or base_entry.get("relationship_en") or ""),
+                            source_language=request.language,
+                            limit=120,
+                        ),
+                        "visual_hook_en": coerce_planning_english(
+                            str(raw_entry.get("visual_hook_en") or base_entry.get("visual_hook_en") or ""),
+                            source_language=request.language,
+                            limit=240,
+                        ),
+                        "dialogue_voice_hint": str(
+                            raw_entry.get("dialogue_voice_hint")
+                            or base_entry.get("dialogue_voice_hint")
+                            or name.lower().replace(" ", "_")
+                        )[:80],
+                    }
+                )
+            if merged_grounding:
+                base["character_grounding"] = merged_grounding
+
+        if isinstance(payload.get("scene_expansions"), list) and payload["scene_expansions"]:
+            base_scene_map = self._scenario_scene_map(base)
+            merged_scenes: list[dict[str, Any]] = []
+            for scene in scenes:
+                raw_scene = next(
+                    (
+                        entry
+                        for entry in payload["scene_expansions"]
+                        if isinstance(entry, dict) and str(entry.get("scene_id") or "") == scene.scene_id
+                    ),
+                    {},
+                )
+                base_scene = dict(base_scene_map.get(scene.scene_id) or {})
+                raw_shot_contexts = raw_scene.get("shot_contexts") if isinstance(raw_scene, dict) else None
+                base_shot_map = {
+                    str(entry.get("shot_id") or ""): dict(entry)
+                    for entry in base_scene.get("shot_contexts", [])
+                    if isinstance(entry, dict)
+                }
+                merged_shots: list[dict[str, Any]] = []
+                for shot in scene.shots:
+                    raw_shot = next(
+                        (
+                            entry
+                            for entry in (raw_shot_contexts or [])
+                            if isinstance(entry, dict) and str(entry.get("shot_id") or "") == shot.shot_id
+                        ),
+                        {},
+                    )
+                    base_shot = dict(base_shot_map.get(shot.shot_id) or {})
+                    merged_shots.append(
+                        {
+                            "shot_id": shot.shot_id,
+                            "title_en": coerce_planning_english(
+                                str(raw_shot.get("title_en") or base_shot.get("title_en") or shot.title),
+                                source_language=request.language,
+                                limit=120,
+                            ),
+                            "strategy": shot.strategy,
+                            "intent_en": coerce_planning_english(
+                                str(raw_shot.get("intent_en") or base_shot.get("intent_en") or shot.purpose),
+                                source_language=request.language,
+                                limit=160,
+                            ),
+                            "visual_prompt_en": coerce_planning_english(
+                                str(raw_shot.get("visual_prompt_en") or base_shot.get("visual_prompt_en") or shot.prompt_seed),
+                                source_language=request.language,
+                                limit=320,
+                                label="English planning beat",
+                            ),
+                            "continuity_anchor_en": coerce_planning_english(
+                                str(raw_shot.get("continuity_anchor_en") or base_shot.get("continuity_anchor_en") or ""),
+                                source_language=request.language,
+                                limit=220,
+                            ),
+                            "action_choreography_en": coerce_planning_english(
+                                str(raw_shot.get("action_choreography_en") or base_shot.get("action_choreography_en") or ""),
+                                source_language=request.language,
+                                limit=260,
+                            ),
+                            "dialogue_lines": [
+                                {
+                                    "character_name": line.character_name,
+                                    "text": line.text,
+                                }
+                                for line in shot.dialogue
+                            ],
+                        }
+                    )
+                merged_scenes.append(
+                    {
+                        "scene_id": scene.scene_id,
+                        "title_en": coerce_planning_english(
+                            str(raw_scene.get("title_en") or base_scene.get("title_en") or scene.title),
+                            source_language=request.language,
+                            limit=120,
+                        ),
+                        "dramatic_beat_en": coerce_planning_english(
+                            str(raw_scene.get("dramatic_beat_en") or base_scene.get("dramatic_beat_en") or scene.summary),
+                            source_language=request.language,
+                            limit=220,
+                        ),
+                        "visual_context_en": coerce_planning_english(
+                            str(raw_scene.get("visual_context_en") or base_scene.get("visual_context_en") or scene.summary),
+                            source_language=request.language,
+                            limit=260,
+                        ),
+                        "action_choreography_en": coerce_planning_english(
+                            str(raw_scene.get("action_choreography_en") or base_scene.get("action_choreography_en") or ""),
+                            source_language=request.language,
+                            limit=280,
+                        ),
+                        "dialogue_goal_en": coerce_planning_english(
+                            str(raw_scene.get("dialogue_goal_en") or base_scene.get("dialogue_goal_en") or ""),
+                            source_language=request.language,
+                            limit=180,
+                        ),
+                        "dialogue_lines": [
+                            {
+                                "shot_id": shot.shot_id,
+                                "character_name": line.character_name,
+                                "text": line.text,
+                            }
+                            for shot in scene.shots
+                            for line in shot.dialogue
+                        ],
+                        "shot_contexts": merged_shots,
+                    }
+                )
+            if merged_scenes:
+                base["scene_expansions"] = merged_scenes
+
+        dialogue_contract = dict(base.get("dialogue_contract") or {})
+        if isinstance(payload.get("dialogue_contract"), dict):
+            raw_contract = payload["dialogue_contract"]
+            dialogue_contract["language"] = str(raw_contract.get("language") or dialogue_contract.get("language") or request.language)
+            dialogue_contract["preserve_original_dialogue"] = bool(
+                raw_contract.get("preserve_original_dialogue", dialogue_contract.get("preserve_original_dialogue", True))
+            )
+            dialogue_contract["speaker_count"] = int(
+                raw_contract.get("speaker_count") or dialogue_contract.get("speaker_count") or 0
+            )
+            dialogue_contract["line_count"] = int(
+                raw_contract.get("line_count") or dialogue_contract.get("line_count") or 0
+            )
+        base["dialogue_contract"] = dialogue_contract
+        base["language_contract"] = bilingual_language_contract(request.language)
+        base["planning_language"] = "en"
+        base["dialogue_language"] = request.language
         return base
 
     def _normalize_character_bible(
@@ -1634,9 +1970,10 @@ class OllamaPlannerService(PlannerService):
     def _normalize_scene_plan(
         self,
         scenes: list[ScenePlan],
+        scenario_expansion: dict[str, Any] | None,
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        base = self._build_scene_plan(scenes)
+        base = self._build_scene_plan(scenes, scenario_expansion)
         if not isinstance(payload, dict):
             return base
         if isinstance(payload.get("scenes"), list) and payload["scenes"]:
@@ -1666,6 +2003,21 @@ class OllamaPlannerService(PlannerService):
                             if str(name).strip()
                         ][:3]
                         or base_scene["characters"],
+                        "dramatic_beat_en": coerce_planning_english(
+                            str(raw_scene.get("dramatic_beat_en") or base_scene["dramatic_beat_en"]),
+                            source_language="uk",
+                            limit=220,
+                        ),
+                        "visual_context_en": coerce_planning_english(
+                            str(raw_scene.get("visual_context_en") or base_scene["visual_context_en"]),
+                            source_language="uk",
+                            limit=260,
+                        ),
+                        "dialogue_goal_en": coerce_planning_english(
+                            str(raw_scene.get("dialogue_goal_en") or base_scene["dialogue_goal_en"]),
+                            source_language="uk",
+                            limit=180,
+                        ),
                     }
                 )
             base["scenes"] = merged_scenes
@@ -1674,9 +2026,10 @@ class OllamaPlannerService(PlannerService):
     def _normalize_shot_plan(
         self,
         scenes: list[ScenePlan],
+        scenario_expansion: dict[str, Any] | None,
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        base = self._build_shot_plan(scenes)
+        base = self._build_shot_plan(scenes, scenario_expansion)
         if not isinstance(payload, dict):
             return base
         if isinstance(payload.get("shots"), list) and payload["shots"]:
@@ -1718,6 +2071,22 @@ class OllamaPlannerService(PlannerService):
                         ),
                         "composition": composition,
                         "subtitle_lane": composition["subtitle_lane"],
+                        "scenario_context_en": coerce_planning_english(
+                            str(raw_shot.get("scenario_context_en") or base_shot["scenario_context_en"]),
+                            source_language="uk",
+                            limit=320,
+                            label="English planning beat",
+                        ),
+                        "continuity_anchor_en": coerce_planning_english(
+                            str(raw_shot.get("continuity_anchor_en") or base_shot["continuity_anchor_en"]),
+                            source_language="uk",
+                            limit=220,
+                        ),
+                        "action_choreography_en": coerce_planning_english(
+                            str(raw_shot.get("action_choreography_en") or base_shot["action_choreography_en"]),
+                            source_language="uk",
+                            limit=260,
+                        ),
                     }
                 )
             base["shots"] = merged_shots
@@ -1727,9 +2096,10 @@ class OllamaPlannerService(PlannerService):
         self,
         scenes: list[ScenePlan],
         product_preset: dict[str, Any],
+        scenario_expansion: dict[str, Any] | None,
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        base = self._build_asset_strategy(scenes, product_preset)
+        base = self._build_asset_strategy(scenes, product_preset, scenario_expansion)
         if not isinstance(payload, dict):
             return base
         if isinstance(payload.get("shots"), list) and payload["shots"]:
@@ -1760,6 +2130,17 @@ class OllamaPlannerService(PlannerService):
                         "execution_path": raw_entry.get("execution_path") or base_entry["execution_path"],
                         "locked": bool(raw_entry.get("locked", base_entry["locked"])),
                         "layout_contract": layout_contract,
+                        "scenario_context_en": coerce_planning_english(
+                            str(raw_entry.get("scenario_context_en") or base_entry["scenario_context_en"]),
+                            source_language="uk",
+                            limit=320,
+                            label="English planning beat",
+                        ),
+                        "continuity_anchor_en": coerce_planning_english(
+                            str(raw_entry.get("continuity_anchor_en") or base_entry["continuity_anchor_en"]),
+                            source_language="uk",
+                            limit=220,
+                        ),
                         "notes": self._clean_optional_list(raw_entry.get("notes")),
                     }
                 )
@@ -1775,9 +2156,10 @@ class OllamaPlannerService(PlannerService):
         self,
         scenes: list[ScenePlan],
         product_preset: dict[str, Any],
+        scenario_expansion: dict[str, Any] | None,
         payload: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        base = self._build_continuity_bible(scenes, product_preset)
+        base = self._build_continuity_bible(scenes, product_preset, scenario_expansion)
         if not isinstance(payload, dict):
             return base
         if isinstance(payload.get("scene_states"), list) and payload["scene_states"]:
@@ -1794,6 +2176,11 @@ class OllamaPlannerService(PlannerService):
                             str(raw_state.get("summary") or base_state["summary"]),
                             source_language="uk",
                             limit=240,
+                        ),
+                        "dramatic_beat_en": coerce_planning_english(
+                            str(raw_state.get("dramatic_beat_en") or base_state["dramatic_beat_en"]),
+                            source_language="uk",
+                            limit=220,
                         ),
                         "transition_in": str(raw_state.get("transition_in") or base_state["transition_in"])[:80],
                         "transition_out": str(raw_state.get("transition_out") or base_state["transition_out"])[:80],

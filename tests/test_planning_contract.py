@@ -33,6 +33,8 @@ def test_build_planner_request_payload_declares_bilingual_contract() -> None:
     payload = build_planner_request_payload(request)
 
     assert payload["language_contract"] == bilingual_language_contract("uk")
+    assert "scenario_expansion" in payload["required_schema"]
+    assert payload["required_schema"]["scenario_expansion"]["story_premise_en"] == "english string"
     assert payload["required_schema"]["scenes"][0]["shots"][0]["prompt_seed"] == "english string"
     assert payload["required_schema"]["scenes"][0]["shots"][0]["dialogue"][0]["text"] == "original-language string"
 
@@ -43,6 +45,7 @@ def test_build_planner_system_prompt_requires_english_non_dialogue_fields() -> N
     assert "input screenplay may be Ukrainian" in prompt
     assert "Preserve spoken dialogue lines in the original screenplay language" in prompt
     assert "All non-dialogue planning fields must be English" in prompt
+    assert "scenario_expansion" in prompt
 
 
 def test_build_planner_request_prompt_uses_instruction_style_not_raw_payload_echo() -> None:
@@ -58,6 +61,7 @@ def test_build_planner_request_prompt_uses_instruction_style_not_raw_payload_ech
     assert "Do not echo this request." in prompt
     assert "<<<SCREENPLAY" in prompt
     assert "Return schema:" in prompt
+    assert "Return scenario_expansion" in prompt
     assert "\"required_schema\"" not in prompt
 
 

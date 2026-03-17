@@ -143,6 +143,11 @@ class ProjectService:
             "language": request.language,
             "style": request.style,
             "product_preset": planning_bundle.product_preset,
+            "scenario_expansion": {
+                "story_premise_en": planning_bundle.scenario_expansion.get("story_premise_en", ""),
+                "visual_world_en": planning_bundle.scenario_expansion.get("visual_world_en", ""),
+                "narrative_goal_en": planning_bundle.scenario_expansion.get("narrative_goal_en", ""),
+            },
             "render_profile": planning_bundle.story_bible.get("delivery_profile", {}),
             "characters": [character.model_dump() for character in characters],
             "scenes": [scene.model_dump() for scene in scenes],
@@ -177,7 +182,7 @@ class ProjectService:
                 "music_backend": resolved_music_backend,
                 "lipsync_backend": resolved_lipsync_backend,
                 "subtitle_backend": resolved_subtitle_backend,
-                "planning_bundle_version": "v2",
+                "planning_bundle_version": "v3",
                 "product_preset": planning_bundle.product_preset,
                 "style_preset": planning_bundle.product_preset["style_preset"],
                 "voice_cast_preset": planning_bundle.product_preset["voice_cast_preset"],
@@ -253,6 +258,7 @@ class ProjectService:
         artifact_specs = [
             ("planning_manifest", "planning/project_plan.json", planning_manifest),
             ("product_preset", "planning/product_preset.json", bundle.product_preset),
+            ("scenario_expansion", "planning/scenario_expansion.json", bundle.scenario_expansion),
             ("story_bible", "planning/story_bible.json", bundle.story_bible),
             ("character_bible", "planning/character_bible.json", bundle.character_bible),
             ("scene_plan", "planning/scene_plan.json", bundle.scene_plan),

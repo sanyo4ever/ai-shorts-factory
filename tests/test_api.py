@@ -137,6 +137,20 @@ def test_quick_generate_endpoints_create_project_with_profile_defaults() -> None
     assert any(example["slug"] == "fortnite_family_jump" for example in catalog_payload["examples"])
 
     planner_payload = {
+        "scenario_expansion": {
+            "story_premise_en": "Father Tato and son Syn launch into a quick Fortnite-style payoff.",
+            "visual_world_en": "Bright Fortnite-style island with a clean vertical action corridor.",
+            "narrative_goal_en": "Set up the duo and land a fast heroic action beat.",
+            "character_grounding": [],
+            "scene_expansions": [],
+            "dialogue_contract": {
+                "language": "uk",
+                "preserve_original_dialogue": True,
+                "speaker_count": 2,
+                "line_count": 2,
+                "lines": [],
+            },
+        },
         "characters": [
             {
                 "name": "Тато",
@@ -481,10 +495,12 @@ def test_create_and_run_project() -> None:
     assert planning_response.status_code == 200
     planning_payload = planning_response.json()
     assert "product_preset" in planning_payload
+    assert "scenario_expansion" in planning_payload
     assert planning_payload["product_preset"]["style_preset"] == "broadcast_panel"
     assert "story_bible" in planning_payload
     assert "asset_strategy" in planning_payload
     assert planning_payload["story_bible"]["product_preset"]["voice_cast_preset"] == "duo_contrast"
+    assert planning_payload["scenario_expansion"]["planning_language"] == "en"
     assert planning_payload["shot_plan"]["shots"][0]["composition"]["subtitle_lane"] in {"top", "bottom"}
     assert planning_payload["asset_strategy"]["shots"][0]["layout_contract"]["safe_zones"]
     jobs_response = client.get(f"/api/v1/projects/{project_id}/jobs")
