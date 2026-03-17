@@ -22,6 +22,7 @@ from filmstudio.services.planning_contract import (
     build_planner_enrichment_prompt,
     build_planner_system_prompt,
     coerce_planning_english,
+    normalize_screenplay_labels,
     romanize_ukrainian_ascii,
 )
 from filmstudio.services.product_preset_catalog import (
@@ -297,7 +298,7 @@ class PlannerService:
         del project_id
         product_preset = self._build_product_preset(request)
         characters = self.extract_characters(request, product_preset=product_preset)
-        raw_blocks = [block.strip() for block in re.split(r"\n\s*\n", request.script) if block.strip()]
+        raw_blocks = self._split_script_into_scene_blocks(request.script)
         if not raw_blocks:
             raw_blocks = [request.script.strip()]
         scenes: list[ScenePlan] = []
@@ -321,6 +322,7 @@ class PlannerService:
                     shots=shots,
                 )
             )
+        self._rebalance_scene_shot_durations(scenes, target_duration_sec=request.target_duration_sec)
         scenario_expansion = build_scenario_expansion(
             request,
             characters=characters,
@@ -859,6 +861,17 @@ class PlannerService:
                 aliases[self._scene_casefold(normalized)] = normalized
         return aliases
 
+    def _scene_label_match_sources(self, characters: list[CharacterProfile]) -> set[str]:
+        sources: set[str] = set(self.NARRATOR_ALIASES) | set(self.ACTION_SEGMENT_LABELS)
+        for candidate in characters:
+            normalized = self._normalize_scene_label(candidate.name)
+            if normalized:
+                sources.add(normalized)
+            stripped_name = candidate.name.strip()
+            if stripped_name:
+                sources.add(stripped_name)
+        return {source for source in sources if source.strip()}
+
     @staticmethod
     def _scene_label_pattern_variants(labels: set[str]) -> list[str]:
         variants: set[str] = set()
@@ -883,7 +896,7 @@ class PlannerService:
         if not aliases:
             normalized_block = self._normalize_scene_text_segment(block)
             return [], [normalized_block] if normalized_block else [], []
-        pattern_labels = self._scene_label_pattern_variants(set(aliases))
+        pattern_labels = self._scene_label_pattern_variants(self._scene_label_match_sources(characters))
         pattern = re.compile(
             r"(?<![\w])("
             + "|".join(re.escape(label) for label in pattern_labels)
@@ -950,8 +963,111 @@ class PlannerService:
     @staticmethod
     def _scene_casefold(text: str) -> str:
         repaired = PlannerService._repair_utf8_mojibake(text)
-        normalized = unicodedata.normalize("NFKC", repaired)
+        normalized = normalize_screenplay_labels(unicodedata.normalize("NFKC", repaired))
         return " ".join(normalized.replace("_", " ").split()).strip().casefold()
+
+    @classmethod
+    def _looks_like_scene_heading(cls, text: str) -> bool:
+        normalized = cls._scene_casefold(text)
+        return bool(re.match(r"^scene\s+\d+\b", normalized))
+
+    @classmethod
+    def _split_script_into_scene_blocks(cls, script: str) -> list[str]:
+        normalized_script = cls._repair_utf8_mojibake(script).replace("\r\n", "\n").replace("\r", "\n")
+        fallback_blocks = [block.strip() for block in re.split(r"\n\s*\n", normalized_script) if block.strip()]
+        lines = normalized_script.splitlines()
+        blocks: list[str] = []
+        current_block: list[str] = []
+        saw_scene_heading = False
+        for raw_line in lines:
+            line = raw_line.strip()
+            if cls._looks_like_scene_heading(line):
+                saw_scene_heading = True
+                if current_block and any(part.strip() for part in current_block):
+                    blocks.append("\n".join(current_block).strip())
+                    current_block = []
+                current_block.append(line)
+                continue
+            if not line:
+                if current_block:
+                    current_block.append("")
+                continue
+            current_block.append(line)
+        if current_block and any(part.strip() for part in current_block):
+            blocks.append("\n".join(current_block).strip())
+        return blocks if saw_scene_heading else fallback_blocks
+
+    @staticmethod
+    def _minimum_shot_duration_sec(strategy: str) -> int:
+        if strategy == "hero_insert":
+            return 2
+        if strategy == "parallax_comp":
+            return 2
+        return 1
+
+    @staticmethod
+    def _duration_expand_priority(strategy: str) -> int:
+        if strategy == "hero_insert":
+            return 0
+        if strategy == "portrait_motion":
+            return 1
+        if strategy == "parallax_comp":
+            return 2
+        return 3
+
+    @staticmethod
+    def _duration_reduce_priority(strategy: str) -> int:
+        if strategy == "portrait_motion":
+            return 0
+        if strategy == "parallax_comp":
+            return 1
+        if strategy == "hero_insert":
+            return 2
+        return 3
+
+    @classmethod
+    def _rebalance_scene_shot_durations(cls, scenes: list[ScenePlan], *, target_duration_sec: int) -> None:
+        shots = [shot for scene in scenes for shot in scene.shots]
+        if not shots or target_duration_sec <= 0:
+            return
+        total_duration_sec = sum(shot.duration_sec for shot in shots)
+        if total_duration_sec == target_duration_sec:
+            return
+        if total_duration_sec > target_duration_sec:
+            excess = total_duration_sec - target_duration_sec
+            candidates = sorted(
+                shots,
+                key=lambda shot: (cls._duration_reduce_priority(shot.strategy), -shot.duration_sec, shot.index),
+            )
+            while excess > 0:
+                changed = False
+                for shot in candidates:
+                    minimum = cls._minimum_shot_duration_sec(shot.strategy)
+                    if shot.duration_sec <= minimum:
+                        continue
+                    shot.duration_sec -= 1
+                    excess -= 1
+                    changed = True
+                    if excess <= 0:
+                        break
+                if not changed:
+                    break
+        else:
+            deficit = target_duration_sec - total_duration_sec
+            if len(shots) <= 1:
+                return
+            candidates = sorted(
+                shots,
+                key=lambda shot: (cls._duration_expand_priority(shot.strategy), shot.index),
+            )
+            while deficit > 0:
+                for shot in candidates:
+                    shot.duration_sec += 1
+                    deficit -= 1
+                    if deficit <= 0:
+                        break
+        for scene in scenes:
+            scene.duration_sec = sum(shot.duration_sec for shot in scene.shots)
 
     @staticmethod
     def _join_planning_parts(*parts: str, limit: int) -> str:
@@ -1351,13 +1467,16 @@ class OllamaPlannerService(PlannerService):
         )
         anchor_bundle = anchor_planner.build_planning_bundle(project_id, request)
         product_preset = self._build_product_preset(request)
-        payload = ollama_generate_json(
-            base_url=self.base_url,
-            model=self.model_name,
-            system_prompt=self._system_prompt(),
-            prompt=self._prompt(request, structural_anchor=self._structural_anchor(anchor_bundle)),
-            timeout_sec=self.timeout_sec,
-        )
+        try:
+            payload = ollama_generate_json(
+                base_url=self.base_url,
+                model=self.model_name,
+                system_prompt=self._system_prompt(),
+                prompt=self._prompt(request, structural_anchor=self._structural_anchor(anchor_bundle)),
+                timeout_sec=self.timeout_sec,
+            )
+        except RuntimeError:
+            return anchor_bundle
         characters, scenes = self._normalize_plan(request, payload, anchor_bundle=anchor_bundle)
         scenario_expansion = self._normalize_scenario_expansion(
             request,

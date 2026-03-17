@@ -281,10 +281,10 @@ def test_planner_routes_creator_hook_hero_insert_scene_to_hero_insert() -> None:
 
     bundle = planner.build_planning_bundle("proj_test", request)
 
-    assert len(bundle.scenes) == 2
+    assert len(bundle.scenes) == 1
     assert bundle.scenes[0].shots[0].strategy == "portrait_lipsync"
-    assert bundle.scenes[1].shots[0].strategy == "hero_insert"
-    assert bundle.scenes[1].shots[0].composition.subtitle_lane == "top"
+    assert bundle.scenes[0].shots[1].strategy == "hero_insert"
+    assert bundle.scenes[0].shots[1].composition.subtitle_lane == "top"
 
 
 def test_planner_treats_explicit_action_label_without_motion_stems_as_hero_insert() -> None:
@@ -304,13 +304,13 @@ def test_planner_treats_explicit_action_label_without_motion_stems_as_hero_inser
 
     bundle = planner.build_planning_bundle("proj_test", request)
 
-    assert len(bundle.scenes) == 3
-    assert [scene.shots[0].strategy for scene in bundle.scenes] == [
+    assert len(bundle.scenes) == 2
+    assert [shot.strategy for shot in bundle.scenes[0].shots] == [
         "portrait_lipsync",
         "hero_insert",
-        "portrait_lipsync",
     ]
-    assert bundle.scenes[1].shots[0].composition.subtitle_lane == "top"
+    assert bundle.scenes[1].shots[0].strategy == "portrait_lipsync"
+    assert bundle.scenes[0].shots[1].composition.subtitle_lane == "top"
 
 
 def test_planner_parses_cyrillic_scene_and_hero_insert_labels() -> None:
@@ -335,6 +335,36 @@ def test_planner_parses_cyrillic_scene_and_hero_insert_labels() -> None:
     assert shots[0].dialogue[0].text == "Сину, готовий до стрибка?"
     assert shots[1].dialogue[0].text == "Так, тату, полетіли!"
     assert shots[2].composition.subtitle_lane == "top"
+
+
+def test_planner_groups_hero_insert_under_current_scene_and_rebalances_target_duration() -> None:
+    planner = PlannerService()
+    request = ProjectCreateRequest(
+        title="Tato and Syn Fortnite rich",
+        style="fortnite_stylized_action",
+        script=(
+            "SCENE 1. Bright Fortnite island at dawn. TATO in a blue jacket and SYN in a yellow hoodie stand on a wooden ramp before the storm.\n"
+            "TATO: Synu, hotovyi do strybka?\n"
+            "SYN: Tak, tatu, poletily!\n\n"
+            "HERO INSERT: TATO and SYN jump from the ramp, sprint toward the glowing crown, build a quick wall, and freeze in a victory pose.\n\n"
+            "SCENE 2. TATO and SYN smile at camera with the glowing crown behind them.\n"
+            "TATO: Os tak vyhliadaie peremoha za desiat sekund."
+        ),
+        language="uk",
+        target_duration_sec=10,
+    )
+
+    bundle = planner.build_planning_bundle("proj_test", request)
+
+    assert len(bundle.scenes) == 2
+    assert [shot.strategy for shot in bundle.scenes[0].shots] == [
+        "portrait_lipsync",
+        "portrait_lipsync",
+        "hero_insert",
+        "portrait_motion",
+    ]
+    assert bundle.scenes[1].shots[0].strategy == "portrait_lipsync"
+    assert sum(scene.duration_sec for scene in bundle.scenes) == 10
 
 
 def test_planner_keeps_ukrainian_dialogue_but_switches_planning_to_english() -> None:
@@ -429,3 +459,36 @@ def test_ollama_scene_overrides_are_grouped_by_scene_and_shot_index() -> None:
     assert grouped[0]["title"] == "Scene 1"
     assert [shot["title"] for shot in grouped[0]["shots"]] == ["Shot 1", "Shot 2"]
     assert grouped[1]["summary"] == "Action beat"
+
+
+def test_ollama_planner_falls_back_to_deterministic_anchor_when_json_is_invalid(monkeypatch) -> None:
+    def fake_ollama_generate_json(**kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("Ollama response was not valid JSON.")
+
+    monkeypatch.setattr("filmstudio.services.planner_service.ollama_generate_json", fake_ollama_generate_json)
+
+    planner = OllamaPlannerService(
+        base_url="http://127.0.0.1:11434",
+        model_name="qwen3:8b",
+        timeout_sec=1,
+    )
+    request = ProjectCreateRequest(
+        title="Fallback planner",
+        script=(
+            "SCENE 1. Bright Fortnite island at dawn.\n"
+            "TATO: Synu, hotovyi do strybka?\n"
+            "SYN: Tak, tatu, poletily!\n\n"
+            "HERO INSERT: TATO and SYN jump from the ramp and freeze in a victory pose."
+        ),
+        language="uk",
+        target_duration_sec=8,
+        character_names=["Tato", "Syn"],
+    )
+
+    bundle = planner.build_planning_bundle("proj_test", request)
+
+    assert [shot.strategy for shot in bundle.scenes[0].shots] == [
+        "portrait_lipsync",
+        "portrait_lipsync",
+        "hero_insert",
+    ]
