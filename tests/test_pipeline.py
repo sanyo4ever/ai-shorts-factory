@@ -1311,6 +1311,10 @@ def test_generate_subtitles_builds_layout_aware_ass_track(tmp_path) -> None:
     ass_text = ass_path.read_text(encoding="utf-8")
     assert "Style: BottomLane" in ass_text
     assert "Dialogue:" in ass_text
+    srt_path = Path(next(artifact.path for artifact in subtitle_result.artifacts if artifact.kind == "subtitle_srt"))
+    vtt_path = Path(next(artifact.path for artifact in subtitle_result.artifacts if artifact.kind == "subtitle_vtt"))
+    assert srt_path.read_bytes().startswith(b"\xef\xbb\xbf")
+    assert vtt_path.read_bytes().startswith(b"\xef\xbb\xbf")
 
     layout_path = Path(
         next(
@@ -1567,6 +1571,10 @@ def test_whisperx_stage_emits_manifest_and_raw_json(tmp_path, monkeypatch) -> No
             "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.000\nPryvit!\n",
             encoding="utf-8",
         )
+        (output_dir / f"{stem}.txt").write_text(
+            "Pryvit!\nVitayu!\n",
+            encoding="utf-8",
+        )
         (output_dir / f"{stem}.json").write_text(
             json.dumps(
                 {
@@ -1643,6 +1651,23 @@ def test_whisperx_stage_emits_manifest_and_raw_json(tmp_path, monkeypatch) -> No
         "Friend: Vitayu!",
     ]
     assert layout_manifest["cues"][0]["fits_safe_zone"] is True
+    assert Path(manifest["source_files"]["srt"]).read_bytes().startswith(b"\xef\xbb\xbf")
+    assert Path(manifest["source_files"]["vtt"]).read_bytes().startswith(b"\xef\xbb\xbf")
+    assert Path(manifest["output_dir"], "dialogue_bus.txt").read_bytes().startswith(b"\xef\xbb\xbf")
+    assert Path(
+        next(
+            artifact.path
+            for artifact in subtitle_result.artifacts
+            if artifact.kind == "subtitle_srt"
+        )
+    ).read_bytes().startswith(b"\xef\xbb\xbf")
+    assert Path(
+        next(
+            artifact.path
+            for artifact in subtitle_result.artifacts
+            if artifact.kind == "subtitle_vtt"
+        )
+    ).read_bytes().startswith(b"\xef\xbb\xbf")
 
 
 def test_compact_prompt_text_uses_ascii_ellipsis() -> None:

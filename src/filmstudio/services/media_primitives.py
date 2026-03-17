@@ -127,9 +127,16 @@ def wave_duration_sec(path: Path) -> float:
     return frames / rate
 
 
-def write_text(path: Path, text: str) -> Path:
+def write_text(
+    path: Path,
+    text: str,
+    *,
+    encoding: str = "utf-8",
+    utf8_bom: bool = False,
+) -> Path:
     path = ensure_parent(path)
-    path.write_text(text, encoding="utf-8")
+    effective_encoding = "utf-8-sig" if utf8_bom and encoding.lower() == "utf-8" else encoding
+    path.write_text(text, encoding=effective_encoding)
     return path
 
 
