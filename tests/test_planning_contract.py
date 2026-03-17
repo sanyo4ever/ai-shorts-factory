@@ -5,6 +5,7 @@ from filmstudio.services.planning_contract import (
     build_planner_request_prompt,
     build_planner_system_prompt,
     coerce_planning_english,
+    strip_duplicate_planning_label,
 )
 
 
@@ -58,3 +59,11 @@ def test_build_planner_request_prompt_uses_instruction_style_not_raw_payload_ech
     assert "<<<SCREENPLAY" in prompt
     assert "Return schema:" in prompt
     assert "\"required_schema\"" not in prompt
+
+
+def test_strip_duplicate_planning_label_removes_repeated_prefix_only() -> None:
+    text = "English planning beat: Hero insert: father Tato and son Syn jump toward a glowing crown."
+
+    result = strip_duplicate_planning_label(text, label="English planning beat")
+
+    assert result == "Hero insert: father Tato and son Syn jump toward a glowing crown."

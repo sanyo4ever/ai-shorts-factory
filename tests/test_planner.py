@@ -74,6 +74,28 @@ def test_planner_routes_transliterated_battle_rush_case_to_hero_insert() -> None
     assert bundle.asset_strategy["shots"][0]["execution_path"] == ["wan_video", "music", "compose"]
 
 
+def test_planner_routes_ukrainian_heroic_insert_label_to_hero_insert() -> None:
+    planner = PlannerService()
+    request = ProjectCreateRequest(
+        title="Heroic insert",
+        script=(
+            "СЦЕНА 1. Тато і син стоять на трапі перед бурею.\n"
+            "ТАТО: Сину, готовий до стрибка?\n"
+            "СИН: Так, тату, полетіли!\n\n"
+            "ГЕРОЇЧНА ВСТАВКА: Тато і син стрибають із трапа, ривком біжать до сяйливої корони "
+            "і завмирають у переможній позі."
+        ),
+        language="uk",
+        character_names=["Тато", "Син"],
+    )
+
+    bundle = planner.build_planning_bundle("proj_test", request)
+
+    hero_shots = [shot for scene in bundle.scenes for shot in scene.shots if shot.strategy == "hero_insert"]
+    assert hero_shots
+    assert hero_shots[0].composition.subtitle_lane == "top"
+
+
 def test_planner_keeps_dialogue_closeup_when_action_word_only_appears_in_speech() -> None:
     planner = PlannerService()
     request = ProjectCreateRequest(
