@@ -2,6 +2,7 @@ import json
 import sys
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -219,6 +220,62 @@ def test_selective_rerender_rebuilds_only_targeted_shot_outputs(tmp_path) -> Non
     ) == original_untouched_video_count
 
 
+def test_visual_shot_rerender_reuses_existing_dialogue_music_and_subtitles(tmp_path) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="Visual-only rerender reuse",
+            script=(
+                "SCENE 1. HERO hovoryt do kamery.\nHERO: Pershyi shot.\n\n"
+                "SCENE 2. HERO ta FRIEND robliat action beat bez dialogu."
+            ),
+            language="uk",
+        )
+    )
+    engine = LocalPipelineEngine(
+        service,
+        DeterministicMediaAdapters(artifact_store),
+        AttemptLogStore(runtime_root / "logs"),
+        gpu_lease_store=GpuLeaseStore(runtime_root / "manifests" / "gpu_leases"),
+    )
+    first_snapshot = engine.run_project(snapshot.project.project_id)
+    target_shot_id = first_snapshot.scenes[-1].shots[0].shot_id
+
+    original_counts = {
+        kind: sum(1 for artifact in first_snapshot.artifacts if artifact.kind == kind)
+        for kind in (
+            "dialogue_manifest",
+            "dialogue_bus",
+            "music_bed",
+            "music_theme",
+            "subtitle_srt",
+            "subtitle_ass",
+            "subtitle_layout_manifest",
+        )
+    }
+
+    service.prepare_selective_rerender(
+        first_snapshot.project.project_id,
+        SelectiveRerenderRequest(
+            start_stage="generate_storyboards",
+            shot_ids=[target_shot_id],
+            reason="visual_refresh_only",
+            run_immediately=False,
+        ),
+    )
+    rerendered_snapshot = engine.run_project(first_snapshot.project.project_id)
+
+    assert rerendered_snapshot.project.status == "completed"
+    for kind, count in original_counts.items():
+        assert sum(1 for artifact in rerendered_snapshot.artifacts if artifact.kind == kind) == count
+
+
 def test_review_manifest_is_packaged_in_deliverables(tmp_path) -> None:
     runtime_root = tmp_path / "runtime"
     artifact_store = ArtifactStore(runtime_root / "artifacts")
@@ -296,6 +353,48 @@ def test_prepare_selective_rerender_skips_approved_scene_shots(tmp_path) -> None
         ),
     )
     assert rerender_snapshot.project.metadata["active_rerender_scope"]["shot_ids"] == [second_shot_id]
+
+
+def test_prepare_selective_rerender_marks_prior_failed_jobs_completed_when_starting_later(tmp_path) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="Late stage rerender overrides prior failed jobs",
+            script="SCENE 1. HERO hovoryt.\nHERO: Pershyi shot.",
+            language="uk",
+        )
+    )
+    shot_id = snapshot.scenes[0].shots[0].shot_id
+    for job in snapshot.jobs:
+        if job.kind == "generate_music":
+            job.status = "failed"
+        elif job.kind == "compose_project":
+            job.status = "failed"
+        elif job.kind == "run_qc":
+            job.status = "failed"
+        else:
+            job.status = "completed"
+    service.save_snapshot(snapshot)
+
+    rerender_snapshot = service.prepare_selective_rerender(
+        snapshot.project.project_id,
+        SelectiveRerenderRequest(
+            start_stage="compose_project",
+            shot_ids=[shot_id],
+            reason="resume_from_compose",
+            run_immediately=False,
+        ),
+    )
+    job_by_kind = {job.kind: job for job in rerender_snapshot.jobs}
+    assert job_by_kind["generate_music"].status == "completed"
+    assert job_by_kind["compose_project"].status == "queued"
+    assert job_by_kind["run_qc"].status == "queued"
 
 
 def test_rerendered_shot_returns_to_pending_review_with_new_output_revision(tmp_path) -> None:
@@ -733,10 +832,47 @@ def test_wan_prompt_is_compact_for_hero_insert(tmp_path) -> None:
     assert "Dialogue context:" not in prompt
     assert "Scene beat:" in prompt
     assert "Purpose:" in prompt
-    assert "father of Syn" in prompt
-    assert "son of Tato" in prompt
+    assert "father" in prompt
+    assert "young son" in prompt or "son" in prompt
+    assert "exactly two characters" in prompt
+    assert "no squad" in prompt
     assert "Fortnite-inspired readable duo action" in prompt
     assert len(prompt) < 600
+
+
+def test_storyboard_prompts_strengthen_hero_insert_duo_contract(tmp_path) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="Tato and Syn hero insert",
+            style="fortnite_stylized_action",
+            script=(
+                "SCENE 1. TATO and SYN leap from the ramp and sprint to the glowing crown.\n"
+                "HERO INSERT: TATO and SYN rush together and lock the win."
+            ),
+            language="uk",
+            character_names=["Tato", "Syn"],
+        )
+    )
+    adapters = DeterministicMediaAdapters(artifact_store)
+    shot = snapshot.scenes[0].shots[0]
+    shot.strategy = "hero_insert"
+    shot.characters = ["Tato", "Syn"]
+
+    positive_prompt, negative_prompt = adapters._storyboard_prompts(snapshot, shot)
+
+    assert "exactly two characters only" in positive_prompt
+    assert "same duo from the dialogue closeups" in positive_prompt
+    assert "not a poster" in positive_prompt
+    assert "squad" in negative_prompt
+    assert "roster poster" in negative_prompt
+    assert "extra fighters" in negative_prompt
 
 
 def test_build_characters_retries_until_reference_quality_gate_passes(tmp_path, monkeypatch) -> None:
@@ -864,6 +1000,14 @@ def test_build_characters_retries_until_reference_quality_gate_passes(tmp_path, 
 
     adapters._comfyui_client = FakeComfyClient()  # type: ignore[assignment]
     monkeypatch.setattr("filmstudio.services.media_adapters.resolve_binary", lambda value: value)
+    def fake_run_command(command, **kwargs):
+        Path(command[-1]).write_bytes(b"reframed-png")
+        return SimpleNamespace(duration_sec=0.1)
+
+    monkeypatch.setattr(
+        "filmstudio.services.media_adapters.run_command",
+        fake_run_command,
+    )
     monkeypatch.setattr(
         "filmstudio.services.media_adapters.run_musetalk_source_probe",
         fake_run_musetalk_source_probe,
@@ -887,18 +1031,13 @@ def test_build_characters_retries_until_reference_quality_gate_passes(tmp_path, 
         )
     )
 
-    assert manifest["selected_attempt_index"] == 2
-    assert manifest["selected_prompt_variant"] == "passport_portrait"
+    assert manifest["selected_attempt_index"] == 1
+    assert manifest["selected_prompt_variant"].endswith("_reframed")
     assert manifest["quality_gate_passed"] is True
-    assert manifest["attempt_count"] == 2
-    assert manifest["attempts"][0]["quality_gate_passed"] is False
-    assert manifest["attempts"][0]["quality_gate_reason"] in {
-        "face_isolation_below_target",
-        "face_occupancy_below_target",
-        "secondary_face_detected",
-    }
-    assert manifest["attempts"][1]["quality_gate_passed"] is True
-    assert reference_path.read_bytes() == b"attempt-2"
+    assert manifest["attempt_count"] == 1
+    assert manifest["attempts"][0]["quality_gate_passed"] is True
+    assert manifest["attempts"][0]["quality_gate_reason"].startswith("reframed_")
+    assert reference_path.read_bytes() == b"reframed-png"
 
 
 def test_generate_subtitles_builds_layout_aware_ass_track(tmp_path) -> None:

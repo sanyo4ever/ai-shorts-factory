@@ -73,6 +73,44 @@ class SequencedComfyUIClient(ComfyUIClient):
         return b"\x89PNG\r\nstub"
 
 
+class CachedOutputComfyUIClient(ComfyUIClient):
+    def __init__(self, *, output_root) -> None:
+        super().__init__(
+            base_url="http://127.0.0.1:8188",
+            timeout_sec=1.0,
+            poll_interval_sec=0.0,
+            output_root=output_root,
+        )
+
+    def _request_json(self, path: str, *, payload=None):  # type: ignore[override]
+        if path == "/prompt":
+            return {"prompt_id": "prompt_cached"}
+        if path == "/history/prompt_cached":
+            return {
+                "prompt_cached": {
+                    "outputs": {},
+                    "status": {
+                        "status_str": "success",
+                        "completed": True,
+                        "messages": [
+                            [
+                                "execution_cached",
+                                {
+                                    "nodes": ["1", "2", "3", "4", "5", "6", "7"],
+                                    "prompt_id": "prompt_cached",
+                                },
+                            ],
+                            ["execution_success", {"prompt_id": "prompt_cached"}],
+                        ],
+                    },
+                }
+            }
+        raise AssertionError(path)
+
+    def _request_bytes(self, path: str) -> bytes:  # type: ignore[override]
+        raise AssertionError("cached output path should bypass /view download")
+
+
 def _error_history(*, node_type: str, exception_type: str, exception_message: str) -> dict[str, object]:
     return {
         "outputs": {},
@@ -178,6 +216,28 @@ def test_comfyui_client_surfaces_non_retryable_history_error_details() -> None:
     assert "KSampler" in message
     assert "ValueError" in message
     assert "bad latent dimensions" in message
+
+
+def test_comfyui_client_recovers_cached_saveimage_output_from_disk(tmp_path) -> None:
+    output_root = tmp_path / "output"
+    target_dir = output_root / "filmstudio" / "tests"
+    target_dir.mkdir(parents=True)
+    cached_file = target_dir / "hero_cached_00003_.png"
+    cached_file.write_bytes(b"\x89PNG\r\ncached")
+
+    client = CachedOutputComfyUIClient(output_root=output_root)
+    workflow = build_character_portrait_workflow(
+        checkpoint_name="model.safetensors",
+        positive_prompt="hero portrait",
+        negative_prompt="blurry",
+        filename_prefix="filmstudio/tests/hero_cached",
+        seed=stable_visual_seed("proj", "char", "portrait_cached"),
+    )
+    image = client.generate_image(workflow)
+    assert image.prompt_id == "prompt_cached"
+    assert image.filename == "hero_cached_00003_.png"
+    assert image.subfolder == "filmstudio/tests"
+    assert image.image_bytes == b"\x89PNG\r\ncached"
 
 
 def test_lipsync_source_workflow_uses_saveimage_contract() -> None:

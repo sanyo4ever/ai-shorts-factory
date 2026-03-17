@@ -155,7 +155,7 @@ def _normalize_script_label(text: str) -> str:
 
 def _script_dialogue_line_count(script: str) -> int:
     count = 0
-    blocked_speakers = {"hero insert", "геройська вставка"}
+    blocked_speakers = {"hero insert", "героїська вставка", "геройська вставка"}
     for raw_line in script.splitlines():
         line = _repair_utf8_mojibake(raw_line).strip()
         if not line:
