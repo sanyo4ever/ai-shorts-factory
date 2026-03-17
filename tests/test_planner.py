@@ -1,5 +1,5 @@
 from filmstudio.domain.models import ProjectCreateRequest
-from filmstudio.services.planner_service import PlannerService
+from filmstudio.services.planner_service import OllamaPlannerService, PlannerService
 
 
 def test_planner_limits_characters_and_generates_scenes() -> None:
@@ -277,3 +277,62 @@ def test_planner_parses_cyrillic_scene_and_hero_insert_labels() -> None:
     assert shots[0].dialogue[0].text == "Сину, готовий до стрибка?"
     assert shots[1].dialogue[0].text == "Так, тату, полетіли!"
     assert shots[2].composition.subtitle_lane == "top"
+
+
+def test_planner_keeps_ukrainian_dialogue_but_switches_planning_to_english() -> None:
+    planner = PlannerService()
+    request = ProjectCreateRequest(
+        title="Тато і син",
+        script=(
+            "СЦЕНА 1. Яскравий острів у стилі Fortnite. "
+            "ТАТО: Сину, готовий до стрибка? "
+            "СИН: Так, тату, полетіли! "
+            "ГЕРОЇСЬКА ВСТАВКА: Тато і син стрибають до сяйливої корони."
+        ),
+        language="uk",
+        target_duration_sec=6,
+    )
+
+    bundle = planner.build_planning_bundle("proj_test", request)
+    first_shot = bundle.scenes[0].shots[0]
+    hero_shot = bundle.scenes[0].shots[-1]
+
+    assert bundle.story_bible["language_contract"]["planning_language"] == "en"
+    assert bundle.character_bible["language_contract"]["visual_prompt_language"] == "en"
+    assert bundle.scene_plan["planning_language"] == "en"
+    assert bundle.shot_plan["planning_language"] == "en"
+    assert bundle.asset_strategy["planning_language"] == "en"
+    assert first_shot.dialogue[0].text == "Сину, готовий до стрибка?"
+    assert hero_shot.dialogue == []
+    assert "glowing crown" in hero_shot.prompt_seed
+    assert not any("\u0400" <= char <= "\u04FF" for char in hero_shot.prompt_seed)
+
+
+def test_ollama_scene_overrides_are_grouped_by_scene_and_shot_index() -> None:
+    grouped = OllamaPlannerService._extract_raw_scenes(
+        {
+            "scene_overrides": [
+                {
+                    "scene_index": 1,
+                    "title": "Scene 1",
+                    "summary": "Opening setup",
+                    "shots": [{"shot_index": 1, "title": "Shot 1", "purpose": "setup"}],
+                },
+                {
+                    "scene_index": 1,
+                    "shots": [{"shot_index": 2, "title": "Shot 2", "purpose": "reply"}],
+                },
+                {
+                    "scene_index": 2,
+                    "title": "Scene 2",
+                    "summary": "Action beat",
+                    "shots": [{"shot_index": 1, "title": "Hero insert", "purpose": "payoff"}],
+                },
+            ]
+        }
+    )
+
+    assert len(grouped) == 2
+    assert grouped[0]["title"] == "Scene 1"
+    assert [shot["title"] for shot in grouped[0]["shots"]] == ["Shot 1", "Shot 2"]
+    assert grouped[1]["summary"] == "Action beat"

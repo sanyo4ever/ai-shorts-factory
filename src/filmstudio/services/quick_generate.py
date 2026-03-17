@@ -14,6 +14,8 @@ QUICK_STACK_PROFILES: dict[str, dict[str, Any]] = {
         "hardware_hint": "RTX 4060 · 32 GB RAM · sequential managed services",
         "backend_profile": {
             "orchestrator_backend": "local",
+            "planner_backend": "ollama",
+            "planner_model": "qwen3:8b",
             "visual_backend": "comfyui",
             "video_backend": "wan",
             "tts_backend": "piper",
@@ -28,6 +30,7 @@ QUICK_STACK_PROFILES: dict[str, dict[str, Any]] = {
         "hardware_hint": "Low-friction local preview path",
         "backend_profile": {
             "orchestrator_backend": "local",
+            "planner_backend": "deterministic",
             "visual_backend": "deterministic",
             "video_backend": "deterministic",
             "tts_backend": "piper",
@@ -149,6 +152,8 @@ def build_quick_project_request(payload: QuickGenerateRequest) -> tuple[ProjectC
         music_preset=product_preset.music_preset,
         short_archetype=product_preset.short_archetype,
         orchestrator_backend=str(profile["backend_profile"]["orchestrator_backend"]),
+        planner_backend=str(profile["backend_profile"]["planner_backend"]),
+        planner_model=str(profile["backend_profile"].get("planner_model") or ""),
         visual_backend=str(profile["backend_profile"]["visual_backend"]),
         video_backend=str(profile["backend_profile"]["video_backend"]),
         tts_backend=str(profile["backend_profile"]["tts_backend"]),

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -17,6 +16,12 @@ from filmstudio.domain.models import (
     ShotPlan,
     VerticalCompositionPlan,
     new_id,
+)
+from filmstudio.services.planning_contract import (
+    bilingual_language_contract,
+    build_planner_enrichment_prompt,
+    build_planner_system_prompt,
+    coerce_planning_english,
 )
 from filmstudio.services.product_preset_catalog import (
     build_product_preset_payload,
@@ -120,6 +125,21 @@ class PlannerService:
     def estimate_duration_sec(self, script: str) -> int:
         words = max(1, len(script.split()))
         return max(15, round(words / 2.2))
+
+    @staticmethod
+    def _planning_text(
+        text: str,
+        *,
+        source_language: str,
+        limit: int,
+        label: str | None = None,
+    ) -> str:
+        return coerce_planning_english(
+            text,
+            source_language=source_language,
+            limit=limit,
+            label=label,
+        )
 
     def _render_orientation(self) -> str:
         return "portrait" if self.render_height >= self.render_width else "landscape"
@@ -282,7 +302,7 @@ class PlannerService:
                     scene_id=scene_id,
                     index=index,
                     title=f"Scene {index}",
-                    summary=summary,
+                    summary=self._planning_text(summary, source_language=request.language, limit=160),
                     duration_sec=duration_sec,
                     shots=shots,
                 )
@@ -344,11 +364,12 @@ class PlannerService:
         aspect_ratio = self._render_aspect_ratio()
         return {
             "title": request.title,
-            "logline": first_line[:180],
+            "logline": self._planning_text(first_line, source_language=request.language, limit=180),
             "synopsis": " ".join(synopsis_parts)[:500],
             "theme": "to_be_refined",
             "tone": request.style,
             "language": request.language,
+            "language_contract": bilingual_language_contract(request.language),
             "product_preset": product_preset,
             "target_duration_sec": request.target_duration_sec,
             "estimated_duration_sec": sum(scene.duration_sec for scene in scenes),
@@ -390,6 +411,7 @@ class PlannerService:
         speaker_roles = list(voice_direction.get("speaker_roles") or [])
         return {
             "language": request.language,
+            "language_contract": bilingual_language_contract(request.language),
             "voice_cast_preset": product_preset["voice_cast_preset"],
             "voice_cast_direction": voice_direction,
             "characters": [
@@ -417,6 +439,7 @@ class PlannerService:
     @staticmethod
     def _build_scene_plan(scenes: list[ScenePlan]) -> dict[str, Any]:
         return {
+            "planning_language": "en",
             "scenes": [
                 {
                     "scene_id": scene.scene_id,
@@ -434,6 +457,7 @@ class PlannerService:
     @staticmethod
     def _build_shot_plan(scenes: list[ScenePlan]) -> dict[str, Any]:
         return {
+            "planning_language": "en",
             "shots": [
                 {
                     "shot_id": shot.shot_id,
@@ -493,6 +517,7 @@ class PlannerService:
                     }
                 )
         return {
+            "planning_language": "en",
             "product_preset": {
                 "style_preset": product_preset["style_preset"],
                 "music_preset": product_preset["music_preset"],
@@ -507,6 +532,7 @@ class PlannerService:
         product_preset: dict[str, Any],
     ) -> dict[str, Any]:
         return {
+            "planning_language": "en",
             "product_preset": {
                 "voice_cast_preset": product_preset["voice_cast_preset"],
                 "short_archetype": product_preset["short_archetype"],
@@ -543,6 +569,12 @@ class PlannerService:
         request: ProjectCreateRequest,
     ) -> list[ShotPlan]:
         repaired_block = self._repair_utf8_mojibake(block)
+        english_block = self._planning_text(
+            repaired_block,
+            source_language=request.language,
+            limit=200,
+            label="English planning beat",
+        )
         dialogue, description_lines, action_lines = self._parse_scene_block(block, characters=characters)
         has_dialogue = bool(dialogue)
         description_text = self._scene_casefold("\n".join(description_lines + action_lines))
@@ -607,6 +639,7 @@ class PlannerService:
                     scene_id,
                     grouped_turns=grouped_turns[:4],
                     description_lines=description_lines,
+                    source_language=request.language,
                 )
         shot = ShotPlan(
             shot_id=new_id("shot"),
@@ -618,7 +651,7 @@ class PlannerService:
             purpose=purpose,
             characters=shot_character_names[:3],
             dialogue=dialogue,
-            prompt_seed=repaired_block[:200],
+            prompt_seed=english_block,
             composition=self._build_shot_composition(strategy),
         )
         if strategy == "portrait_lipsync" and len(block.split()) > 50:
@@ -783,6 +816,7 @@ class PlannerService:
         grouped_turns: list[list[DialogueLine]],
         description_lines: list[str],
         dialogue_budget: int | None = None,
+        source_language: str = "uk",
     ) -> list[ShotPlan]:
         durations = self._allocate_turn_durations(grouped_turns, total_budget=dialogue_budget)
         shots: list[ShotPlan] = []
@@ -802,7 +836,12 @@ class PlannerService:
                     purpose="speaker closeup" if turn_index == 1 else "reply closeup",
                     characters=[focal_character],
                     dialogue=turn_lines,
-                    prompt_seed="\n".join(turn_prompt_lines)[:200],
+                    prompt_seed=self._planning_text(
+                        "\n".join(turn_prompt_lines),
+                        source_language=source_language,
+                        limit=200,
+                        label="English planning beat",
+                    ),
                     composition=self._build_shot_composition(
                         "portrait_lipsync",
                         multi_speaker_dialogue=True,
@@ -864,6 +903,7 @@ class PlannerService:
             grouped_turns=selected_turns,
             description_lines=description_lines,
             dialogue_budget=dialogue_budget,
+            source_language=request.language,
         )
         hero_characters = list(
             dict.fromkeys(
@@ -889,7 +929,12 @@ class PlannerService:
                 purpose="hero payoff insert",
                 characters=hero_characters[:3],
                 dialogue=[],
-                prompt_seed="\n".join(hero_prompt_parts)[:200],
+                prompt_seed=self._planning_text(
+                    "\n".join(hero_prompt_parts),
+                    source_language=request.language,
+                    limit=200,
+                    label="English action beat",
+                ),
                 composition=self._build_shot_composition("hero_insert"),
             )
         )
@@ -1055,16 +1100,21 @@ class OllamaPlannerService(PlannerService):
         project_id: str,
         request: ProjectCreateRequest,
     ) -> PlanningBundle:
-        del project_id
+        anchor_planner = PlannerService(
+            render_width=self.render_width,
+            render_height=self.render_height,
+            render_fps=self.render_fps,
+        )
+        anchor_bundle = anchor_planner.build_planning_bundle(project_id, request)
         product_preset = self._build_product_preset(request)
         payload = ollama_generate_json(
             base_url=self.base_url,
             model=self.model_name,
             system_prompt=self._system_prompt(),
-            prompt=self._prompt(request),
+            prompt=self._prompt(request, structural_anchor=self._structural_anchor(anchor_bundle)),
             timeout_sec=self.timeout_sec,
         )
-        characters, scenes = self._normalize_plan(request, payload)
+        characters, scenes = self._normalize_plan(request, payload, anchor_bundle=anchor_bundle)
         return self._compose_bundle(
             request,
             characters,
@@ -1096,114 +1146,70 @@ class OllamaPlannerService(PlannerService):
             ),
         )
 
+    @staticmethod
+    def _structural_anchor(bundle: PlanningBundle) -> dict[str, Any]:
+        return {
+            "instructions": [
+                "Keep the same scene order and shot order.",
+                "Keep shot strategies locked unless the anchor is structurally impossible.",
+                "Keep named characters and spoken dialogue text unchanged.",
+                "Use English only for planning descriptions, purposes, summaries, and prompt seeds.",
+            ],
+            "characters": [
+                {
+                    "name": character.name,
+                    "role_hint": character.role_hint,
+                    "relationship_hint": character.relationship_hint,
+                    "visual_hint": character.visual_hint,
+                }
+                for character in bundle.characters
+            ],
+            "scenes": [
+                {
+                    "scene_id": scene.scene_id,
+                    "title": scene.title,
+                    "summary": scene.summary,
+                    "shots": [
+                        {
+                            "index": shot.index,
+                            "title": shot.title,
+                            "strategy": shot.strategy,
+                            "duration_sec": shot.duration_sec,
+                            "purpose": shot.purpose,
+                            "characters": shot.characters,
+                            "dialogue": [
+                                {"character_name": line.character_name, "text": line.text}
+                                for line in shot.dialogue
+                            ],
+                            "prompt_seed": shot.prompt_seed,
+                            "composition": {
+                                "framing": shot.composition.framing,
+                                "subject_anchor": shot.composition.subject_anchor,
+                                "eye_line": shot.composition.eye_line,
+                                "motion_profile": shot.composition.motion_profile,
+                                "subtitle_lane": shot.composition.subtitle_lane,
+                            },
+                        }
+                        for shot in scene.shots
+                    ],
+                }
+                for scene in bundle.scenes
+            ],
+        }
+
     def _system_prompt(self) -> str:
-        orientation = "vertical 9:16 shorts" if self.render_height >= self.render_width else "16:9 shorts"
-        return (
-            f"You are a screenplay planning service for a {orientation} animation assembly system. "
-            "Return strict JSON only. Do not include markdown. "
-            "Use no more than 3 characters, 4 scenes, and 4 shots per scene. "
-            "Each shot.strategy must be one of: parallax_comp, portrait_motion, portrait_lipsync, hero_insert. "
-            "Each shot must include a composition object that preserves subtitle-safe lanes and strong portrait framing. "
-            "Also return story_bible, character_bible, scene_plan, shot_plan, asset_strategy, continuity_bible."
+        return build_planner_system_prompt(
+            render_width=self.render_width,
+            render_height=self.render_height,
         )
 
     @staticmethod
-    def _prompt(request: ProjectCreateRequest) -> str:
-        product_preset = ProductPresetContract(
-            style_preset=request.style_preset,
-            voice_cast_preset=request.voice_cast_preset,
-            music_preset=request.music_preset,
-            short_archetype=request.short_archetype,
-        )
-        return json.dumps(
-            {
-                "task": "Turn the screenplay into structured production planning JSON.",
-                "language": request.language,
-                "style": request.style,
-                "product_preset": product_preset.model_dump(),
-                "target_duration_sec": request.target_duration_sec,
-                "character_names": request.character_names,
-                "script": request.script,
-                "required_schema": {
-                    "story_bible": {
-                        "logline": "string",
-                        "synopsis": "string",
-                        "theme": "string",
-                        "tone": "string",
-                    },
-                    "character_bible": {
-                        "characters": [
-                            {
-                                "name": "string",
-                                "role": "string",
-                                "voice_hint": "string",
-                                "visual_hint": "string",
-                                "role_hint": "string",
-                                "relationship_hint": "string",
-                                "age_hint": "string",
-                                "gender_hint": "string",
-                                "wardrobe_hint": "string",
-                                "palette_hint": "string",
-                                "negative_visual_hint": "string",
-                                "style_tags": ["string"],
-                            }
-                        ]
-                    },
-                    "characters": [
-                        {
-                            "name": "string",
-                            "voice_hint": "string",
-                            "visual_hint": "string",
-                            "role_hint": "string",
-                            "relationship_hint": "string",
-                            "age_hint": "string",
-                            "gender_hint": "string",
-                        }
-                    ],
-                    "scenes": [
-                        {
-                            "title": "string",
-                            "summary": "string",
-                            "shots": [
-                                {
-                                    "title": "string",
-                                    "strategy": "parallax_comp|portrait_motion|portrait_lipsync|hero_insert",
-                                    "duration_sec": "integer",
-                                    "purpose": "string",
-                                    "characters": ["string"],
-                                    "dialogue": [
-                                        {"character_name": "string", "text": "string"}
-                                    ],
-                                    "prompt_seed": "string",
-                                    "composition": {
-                                        "framing": "close_up|medium_portrait|wide_vertical|action_insert",
-                                        "subject_anchor": "upper_center|center|lower_center|left_third|right_third",
-                                        "eye_line": "upper_third|center|lower_third",
-                                        "motion_profile": "locked|slow_push|parallax_drift|dynamic_follow",
-                                        "subtitle_lane": "top|bottom",
-                                        "safe_zones": [
-                                            {
-                                                "zone_id": "title_safe|caption_safe|ui_safe",
-                                                "anchor": "top|bottom|center",
-                                                "inset_pct": "integer",
-                                                "height_pct": "integer",
-                                                "width_pct": "integer",
-                                            }
-                                        ],
-                                        "notes": ["string"],
-                                    },
-                                }
-                            ],
-                        }
-                    ],
-                    "scene_plan": {"scenes": "array"},
-                    "shot_plan": {"shots": "array"},
-                    "asset_strategy": {"shots": "array"},
-                    "continuity_bible": {"scene_states": "array"},
-                },
-            },
-            ensure_ascii=False,
-        )
+    def _prompt(
+        request: ProjectCreateRequest,
+        *,
+        structural_anchor: dict[str, Any] | None = None,
+    ) -> str:
+        return build_planner_enrichment_prompt(request, structural_anchor=structural_anchor or {})
 
     def _normalize_safe_zones(
         self,
@@ -1279,6 +1285,45 @@ class OllamaPlannerService(PlannerService):
         )
 
     @staticmethod
+    def _extract_raw_scenes(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        scene_overrides = payload.get("scene_overrides")
+        if not isinstance(scene_overrides, list):
+            return payload.get("scenes") or []
+        grouped: dict[int, dict[str, Any]] = {}
+        grouped_shots: dict[int, dict[int, dict[str, Any]]] = {}
+        for raw_scene in scene_overrides:
+            if not isinstance(raw_scene, dict):
+                continue
+            try:
+                scene_index = int(raw_scene.get("scene_index") or len(grouped) + 1)
+            except (TypeError, ValueError):
+                scene_index = len(grouped) + 1
+            scene_entry = grouped.setdefault(
+                scene_index,
+                {
+                    "title": raw_scene.get("title") or f"Scene {scene_index}",
+                    "summary": raw_scene.get("summary") or "",
+                    "shots": [],
+                },
+            )
+            if raw_scene.get("title"):
+                scene_entry["title"] = raw_scene["title"]
+            if raw_scene.get("summary"):
+                scene_entry["summary"] = raw_scene["summary"]
+            shot_bucket = grouped_shots.setdefault(scene_index, {})
+            for raw_shot in raw_scene.get("shots", []):
+                if not isinstance(raw_shot, dict):
+                    continue
+                try:
+                    shot_index = int(raw_shot.get("shot_index") or len(shot_bucket) + 1)
+                except (TypeError, ValueError):
+                    shot_index = len(shot_bucket) + 1
+                merged_shot = shot_bucket.setdefault(shot_index, {})
+                merged_shot.update({key: value for key, value in raw_shot.items() if value not in (None, "", [])})
+            scene_entry["shots"] = [shot_bucket[index] for index in sorted(shot_bucket)]
+        return [grouped[index] for index in sorted(grouped)]
+
+    @staticmethod
     def _clean_optional_list(values: Any, *, limit: int = 6) -> list[str]:
         if not isinstance(values, list):
             return []
@@ -1293,18 +1338,29 @@ class OllamaPlannerService(PlannerService):
         self,
         request: ProjectCreateRequest,
         payload: dict[str, Any],
+        *,
+        anchor_bundle: PlanningBundle | None = None,
     ) -> tuple[list[CharacterProfile], list[ScenePlan]]:
         raw_characters = payload.get("characters") or []
-        raw_scenes = payload.get("scenes") or []
-        if not raw_scenes:
+        raw_scenes = self._extract_raw_scenes(payload)
+        if not raw_scenes and anchor_bundle is None:
             raise RuntimeError("Ollama planner returned no scenes.")
-        characters = self._normalize_characters(request, raw_characters)
+        characters = self._normalize_characters(request, raw_characters, anchor_bundle=anchor_bundle)
+        anchor_scenes = anchor_bundle.scenes if anchor_bundle is not None else []
+        source_scenes = anchor_scenes or raw_scenes
         scenes: list[ScenePlan] = []
-        for scene_index, raw_scene in enumerate(raw_scenes[:4], start=1):
-            scene_id = f"scene_{scene_index:02d}"
+        for scene_index, source_scene in enumerate(source_scenes[:4], start=1):
+            anchor_scene = anchor_scenes[scene_index - 1] if scene_index - 1 < len(anchor_scenes) else None
+            raw_scene = raw_scenes[scene_index - 1] if scene_index - 1 < len(raw_scenes) else {}
+            scene_id = anchor_scene.scene_id if anchor_scene is not None else f"scene_{scene_index:02d}"
             shots: list[ShotPlan] = []
-            for shot_index, raw_shot in enumerate((raw_scene.get("shots") or [])[:4], start=1):
-                strategy = raw_shot.get("strategy", "parallax_comp")
+            raw_shots = (raw_scene.get("shots") or []) if isinstance(raw_scene, dict) else []
+            anchor_shots = anchor_scene.shots if anchor_scene is not None else []
+            source_shots = anchor_shots or raw_shots
+            for shot_index, source_shot in enumerate(source_shots[:4], start=1):
+                anchor_shot = anchor_shots[shot_index - 1] if shot_index - 1 < len(anchor_shots) else None
+                raw_shot = raw_shots[shot_index - 1] if shot_index - 1 < len(raw_shots) else {}
+                strategy = anchor_shot.strategy if anchor_shot is not None else raw_shot.get("strategy", "parallax_comp")
                 if strategy not in {
                     "parallax_comp",
                     "portrait_motion",
@@ -1312,30 +1368,56 @@ class OllamaPlannerService(PlannerService):
                     "hero_insert",
                 }:
                     raise RuntimeError(f"Ollama planner returned unsupported strategy: {strategy}")
-                dialogue = [
-                    DialogueLine(
-                        character_name=(entry.get("character_name") or "Narrator").strip() or "Narrator",
-                        text=(entry.get("text") or "").strip(),
-                    )
-                    for entry in raw_shot.get("dialogue", [])
-                    if (entry.get("text") or "").strip()
-                ]
+                if anchor_shot is not None:
+                    dialogue = list(anchor_shot.dialogue)
+                    character_names = list(anchor_shot.characters)
+                    duration_sec = anchor_shot.duration_sec
+                    default_title = anchor_shot.title
+                    default_purpose = anchor_shot.purpose
+                    default_prompt_seed = anchor_shot.prompt_seed
+                else:
+                    dialogue = [
+                        DialogueLine(
+                            character_name=(entry.get("character_name") or "Narrator").strip() or "Narrator",
+                            text=(entry.get("text") or "").strip(),
+                        )
+                        for entry in raw_shot.get("dialogue", [])
+                        if (entry.get("text") or "").strip()
+                    ]
+                    character_names = [
+                        str(name).strip()
+                        for name in raw_shot.get("characters", [])
+                        if str(name).strip()
+                    ][:3]
+                    duration_sec = max(2, int(raw_shot.get("duration_sec") or 4))
+                    default_title = f"{scene_id} shot {shot_index}"
+                    default_purpose = "planned shot"
+                    default_prompt_seed = str(raw_scene.get("summary") or "")
                 shots.append(
                     ShotPlan(
                         shot_id=new_id("shot"),
                         scene_id=scene_id,
                         index=shot_index,
-                        title=str(raw_shot.get("title") or f"{scene_id} shot {shot_index}")[:120],
+                        title=coerce_planning_english(
+                            str(raw_shot.get("title") or default_title),
+                            source_language=request.language,
+                            limit=120,
+                        ),
                         strategy=strategy,
-                        duration_sec=max(2, int(raw_shot.get("duration_sec") or 4)),
-                        purpose=str(raw_shot.get("purpose") or "planned shot")[:160],
-                        characters=[
-                            str(name).strip()
-                            for name in raw_shot.get("characters", [])
-                            if str(name).strip()
-                        ][:3],
+                        duration_sec=duration_sec,
+                        purpose=coerce_planning_english(
+                            str(raw_shot.get("purpose") or default_purpose),
+                            source_language=request.language,
+                            limit=160,
+                        ),
+                        characters=character_names,
                         dialogue=dialogue,
-                        prompt_seed=str(raw_shot.get("prompt_seed") or raw_scene.get("summary") or "")[:240],
+                        prompt_seed=coerce_planning_english(
+                            str(raw_shot.get("prompt_seed") or default_prompt_seed),
+                            source_language=request.language,
+                            limit=240,
+                            label="English planning beat",
+                        ),
                         composition=self._normalize_shot_composition(
                             raw_shot.get("composition"),
                             strategy=strategy,
@@ -1348,8 +1430,16 @@ class OllamaPlannerService(PlannerService):
                 ScenePlan(
                     scene_id=scene_id,
                     index=scene_index,
-                    title=str(raw_scene.get("title") or f"Scene {scene_index}")[:120],
-                    summary=str(raw_scene.get("summary") or "")[:240],
+                    title=coerce_planning_english(
+                        str(raw_scene.get("title") or (anchor_scene.title if anchor_scene is not None else f"Scene {scene_index}")),
+                        source_language=request.language,
+                        limit=120,
+                    ),
+                    summary=coerce_planning_english(
+                        str(raw_scene.get("summary") or (anchor_scene.summary if anchor_scene is not None else "")),
+                        source_language=request.language,
+                        limit=240,
+                    ),
                     duration_sec=sum(shot.duration_sec for shot in shots),
                     shots=shots,
                 )
@@ -1360,50 +1450,109 @@ class OllamaPlannerService(PlannerService):
         self,
         request: ProjectCreateRequest,
         raw_characters: list[dict[str, Any]],
+        *,
+        anchor_bundle: PlanningBundle | None = None,
     ) -> list[CharacterProfile]:
-        if not raw_characters:
+        if not raw_characters and anchor_bundle is None:
             return self.extract_characters(request)
+        if anchor_bundle is not None:
+            base_profiles = {profile.name.casefold(): profile for profile in anchor_bundle.characters}
+            source_characters = anchor_bundle.characters
+        else:
+            base_profiles = {
+                profile.name.casefold(): profile for profile in self.extract_characters(request)
+            }
+            source_characters = list(base_profiles.values())
         base_profiles = {
-            profile.name.casefold(): profile for profile in self.extract_characters(request)
+            profile.name.casefold(): profile for profile in source_characters
         }
         characters: list[CharacterProfile] = []
-        for raw_character in raw_characters[:3]:
-            name = str(raw_character.get("name") or "").strip()
+        if anchor_bundle is not None:
+            indexed_raw_characters = {
+                str(raw_character.get("name") or "").strip().casefold(): raw_character
+                for raw_character in raw_characters[:3]
+                if isinstance(raw_character, dict)
+            }
+            iterator: list[tuple[str, dict[str, Any], CharacterProfile | None]] = []
+            for profile in source_characters[:3]:
+                iterator.append((profile.name, indexed_raw_characters.get(profile.name.casefold(), {}), profile))
+        else:
+            iterator = []
+            for raw_character in raw_characters[:3]:
+                if not isinstance(raw_character, dict):
+                    continue
+                name = str(raw_character.get("name") or "").strip()
+                iterator.append((name, raw_character, base_profiles.get(name.casefold())))
+        for name, raw_character, base_profile in iterator:
             if not name:
                 continue
-            base_profile = base_profiles.get(name.casefold())
             characters.append(
                 CharacterProfile(
                     character_id=new_id("char"),
                     name=name[:60],
                     voice_hint=str(raw_character.get("voice_hint") or name.lower().replace(" ", "_"))[:80],
-                    visual_hint=str(
-                        raw_character.get("visual_hint")
-                        or (base_profile.visual_hint if base_profile is not None else f"stylized short-form character portrait for {name}")
-                    )[:240],
-                    role_hint=str(raw_character.get("role_hint") or (base_profile.role_hint if base_profile is not None else ""))[:80],
-                    relationship_hint=str(
-                        raw_character.get("relationship_hint")
-                        or (base_profile.relationship_hint if base_profile is not None else "")
-                    )[:120],
-                    age_hint=str(raw_character.get("age_hint") or (base_profile.age_hint if base_profile is not None else ""))[:80],
-                    gender_hint=str(
-                        raw_character.get("gender_hint") or (base_profile.gender_hint if base_profile is not None else "")
-                    )[:40],
-                    wardrobe_hint=str(
-                        raw_character.get("wardrobe_hint")
-                        or (base_profile.wardrobe_hint if base_profile is not None else "")
-                    )[:160],
-                    palette_hint=str(
-                        raw_character.get("palette_hint")
-                        or (base_profile.palette_hint if base_profile is not None else "")
-                    )[:120],
-                    negative_visual_hint=str(
-                        raw_character.get("negative_visual_hint")
-                        or (base_profile.negative_visual_hint if base_profile is not None else "")
-                    )[:200],
+                    visual_hint=coerce_planning_english(
+                        str(
+                            raw_character.get("visual_hint")
+                            or (
+                                base_profile.visual_hint
+                                if base_profile is not None
+                                else f"stylized short-form character portrait for {name}"
+                            )
+                        ),
+                        source_language=request.language,
+                        limit=240,
+                    ),
+                    role_hint=coerce_planning_english(
+                        str(raw_character.get("role_hint") or (base_profile.role_hint if base_profile is not None else "")),
+                        source_language=request.language,
+                        limit=80,
+                    ),
+                    relationship_hint=coerce_planning_english(
+                        str(
+                            raw_character.get("relationship_hint")
+                            or (base_profile.relationship_hint if base_profile is not None else "")
+                        ),
+                        source_language=request.language,
+                        limit=120,
+                    ),
+                    age_hint=coerce_planning_english(
+                        str(raw_character.get("age_hint") or (base_profile.age_hint if base_profile is not None else "")),
+                        source_language=request.language,
+                        limit=80,
+                    ),
+                    gender_hint=coerce_planning_english(
+                        str(raw_character.get("gender_hint") or (base_profile.gender_hint if base_profile is not None else "")),
+                        source_language=request.language,
+                        limit=40,
+                    ),
+                    wardrobe_hint=coerce_planning_english(
+                        str(
+                            raw_character.get("wardrobe_hint")
+                            or (base_profile.wardrobe_hint if base_profile is not None else "")
+                        ),
+                        source_language=request.language,
+                        limit=160,
+                    ),
+                    palette_hint=coerce_planning_english(
+                        str(raw_character.get("palette_hint") or (base_profile.palette_hint if base_profile is not None else "")),
+                        source_language=request.language,
+                        limit=120,
+                    ),
+                    negative_visual_hint=coerce_planning_english(
+                        str(
+                            raw_character.get("negative_visual_hint")
+                            or (base_profile.negative_visual_hint if base_profile is not None else "")
+                        ),
+                        source_language=request.language,
+                        limit=200,
+                    ),
                     style_tags=[
-                        str(tag).strip()
+                        coerce_planning_english(
+                            str(tag).strip(),
+                            source_language=request.language,
+                            limit=40,
+                        )
                         for tag in raw_character.get("style_tags", (base_profile.style_tags if base_profile is not None else []))
                         if str(tag).strip()
                     ][:6],
@@ -1422,10 +1571,22 @@ class OllamaPlannerService(PlannerService):
         if not isinstance(payload, dict):
             return base
         base.update({key: value for key, value in payload.items() if value not in (None, "", [])})
+        base["logline"] = coerce_planning_english(
+            str(base.get("logline") or ""),
+            source_language=request.language,
+            limit=180,
+        )
+        base["synopsis"] = coerce_planning_english(
+            str(base.get("synopsis") or ""),
+            source_language=request.language,
+            limit=500,
+            label="English planning synopsis",
+        )
         base["product_preset"] = product_preset
         base["style_direction"] = product_preset["style_direction"]
         base["music_direction"] = product_preset["music_direction"]
         base["archetype_direction"] = product_preset["archetype_direction"]
+        base["language_contract"] = bilingual_language_contract(request.language)
         return base
 
     def _normalize_character_bible(
@@ -1461,6 +1622,7 @@ class OllamaPlannerService(PlannerService):
                 base["characters"] = merged_characters
         base["voice_cast_preset"] = product_preset["voice_cast_preset"]
         base["voice_cast_direction"] = product_preset["voice_cast_direction"]
+        base["language_contract"] = bilingual_language_contract(request.language)
         return base
 
     def _normalize_scene_plan(
@@ -1481,8 +1643,16 @@ class OllamaPlannerService(PlannerService):
                 merged_scenes.append(
                     {
                         **base_scene,
-                        "title": str(raw_scene.get("title") or base_scene["title"])[:120],
-                        "summary": str(raw_scene.get("summary") or base_scene["summary"])[:240],
+                        "title": coerce_planning_english(
+                            str(raw_scene.get("title") or base_scene["title"]),
+                            source_language="uk",
+                            limit=120,
+                        ),
+                        "summary": coerce_planning_english(
+                            str(raw_scene.get("summary") or base_scene["summary"]),
+                            source_language="uk",
+                            limit=240,
+                        ),
                         "duration_sec": max(1, int(raw_scene.get("duration_sec") or base_scene["duration_sec"])),
                         "characters": [
                             str(name).strip()
@@ -1517,15 +1687,29 @@ class OllamaPlannerService(PlannerService):
                 merged_shots.append(
                     {
                         **base_shot,
-                        "title": str(raw_shot.get("title") or base_shot["title"])[:120],
+                        "title": coerce_planning_english(
+                            str(raw_shot.get("title") or base_shot["title"]),
+                            source_language="uk",
+                            limit=120,
+                        ),
                         "duration_sec": max(1, int(raw_shot.get("duration_sec") or base_shot["duration_sec"])),
-                        "purpose": str(raw_shot.get("purpose") or base_shot["purpose"])[:160],
+                        "purpose": coerce_planning_english(
+                            str(raw_shot.get("purpose") or base_shot["purpose"]),
+                            source_language="uk",
+                            limit=160,
+                        ),
                         "characters": [
                             str(name).strip()
                             for name in raw_shot.get("characters", base_shot["characters"])
                             if str(name).strip()
                         ][:3]
                         or base_shot["characters"],
+                        "prompt_seed": coerce_planning_english(
+                            str(raw_shot.get("prompt_seed") or base_shot["prompt_seed"]),
+                            source_language="uk",
+                            limit=240,
+                            label="English planning beat",
+                        ),
                         "composition": composition,
                         "subtitle_lane": composition["subtitle_lane"],
                     }
@@ -1600,7 +1784,11 @@ class OllamaPlannerService(PlannerService):
                 merged_states.append(
                     {
                         **base_state,
-                        "summary": str(raw_state.get("summary") or base_state["summary"])[:240],
+                        "summary": coerce_planning_english(
+                            str(raw_state.get("summary") or base_state["summary"]),
+                            source_language="uk",
+                            limit=240,
+                        ),
                         "transition_in": str(raw_state.get("transition_in") or base_state["transition_in"])[:80],
                         "transition_out": str(raw_state.get("transition_out") or base_state["transition_out"])[:80],
                         "notes": self._clean_optional_list(raw_state.get("notes")),
