@@ -106,6 +106,16 @@ _PLANNING_TEXT_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bgotovy[iy]\b", re.IGNORECASE), "ready"),
 )
 
+_PLANNING_PHRASE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\byaskravyi ostriv u styli fortnite\b", re.IGNORECASE), "bright Fortnite-style island"),
+    (re.compile(r"\bstoiat na derev['’]?ianomu trapi\b", re.IGNORECASE), "stand on a wooden ramp"),
+    (re.compile(r"\biz trapa\b", re.IGNORECASE), "from the ramp"),
+    (re.compile(r"\bbuduiut\b", re.IGNORECASE), "build"),
+    (re.compile(r"\bzavmyraiut\b", re.IGNORECASE), "freeze"),
+    (re.compile(r"\bu victory pozi\b", re.IGNORECASE), "in a victory pose"),
+    (re.compile(r"\bhotov\w*\s+do\s+jump\b", re.IGNORECASE), "ready to jump"),
+)
+
 _ACTUAL_CYRILLIC_LABEL_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     ("ГЕРОЇСЬКА ВСТАВКА", "HERO INSERT"),
     ("ГЕРОЇЧНА ВСТАВКА", "HERO INSERT"),
@@ -207,11 +217,25 @@ _ACTUAL_CYRILLIC_PLANNING_TEXT_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], 
     (re.compile(r"\bготов\w*\b", re.IGNORECASE), "ready"),
 )
 
+_EMBEDDED_PLANNING_LABEL_RE = re.compile(
+    r"(?i)\b(?:English planning beat|English action beat|English planning context)\s*:\s*"
+)
+_ADJACENT_DUPLICATE_WORD_RE = re.compile(r"\b([A-Za-z][A-Za-z'’-]*)\b(?:\s+\1\b)+", re.IGNORECASE)
+_ROLE_NAME_DUPLICATION_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bfather(?:\s+father)+\s+([A-Z][A-Za-z'’-]*)\b"), r"father \1"),
+    (re.compile(r"\bson(?:\s+son)+\s+([A-Z][A-Za-z'’-]*)\b"), r"son \1"),
+    (re.compile(r"\bmother(?:\s+mother)+\s+([A-Z][A-Za-z'’-]*)\b"), r"mother \1"),
+    (re.compile(r"\bdaughter(?:\s+daughter)+\s+([A-Z][A-Za-z'’-]*)\b"), r"daughter \1"),
+    (re.compile(r"\bnarrator(?:\s+narrator)+\b", re.IGNORECASE), "narrator"),
+)
+
 
 def strip_duplicate_planning_label(text: str, *, label: str | None = None) -> str:
     cleaned = collapse_text(text)
-    if not cleaned or not label:
+    if not cleaned:
         return cleaned
+    if not label:
+        return collapse_text(_EMBEDDED_PLANNING_LABEL_RE.sub("", cleaned))
     pattern = re.compile(rf"^\s*{re.escape(label)}\s*:\s*", re.IGNORECASE)
     return pattern.sub("", cleaned, count=1).strip()
 
@@ -237,6 +261,24 @@ def normalize_screenplay_labels(text: str) -> str:
     return normalized
 
 
+def _strip_embedded_planning_labels(text: str) -> str:
+    return collapse_text(_EMBEDDED_PLANNING_LABEL_RE.sub("", text))
+
+
+def _clean_planning_english(text: str) -> str:
+    cleaned = collapse_text(text)
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"\bi\b", "and", cleaned, flags=re.IGNORECASE)
+    for pattern, replacement in _PLANNING_PHRASE_REPLACEMENTS:
+        cleaned = pattern.sub(replacement, cleaned)
+    for pattern, replacement in _ROLE_NAME_DUPLICATION_REPLACEMENTS:
+        cleaned = pattern.sub(replacement, cleaned)
+    cleaned = _ADJACENT_DUPLICATE_WORD_RE.sub(r"\1", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip(" ,.;:-")
+
+
 def coerce_planning_english(
     text: str,
     *,
@@ -247,7 +289,9 @@ def coerce_planning_english(
     cleaned = collapse_text(text)
     if not cleaned:
         return ""
-    normalized = normalize_screenplay_labels(strip_duplicate_planning_label(cleaned, label=label))
+    normalized = _strip_embedded_planning_labels(
+        normalize_screenplay_labels(strip_duplicate_planning_label(cleaned, label=label))
+    )
     english_candidate = normalized
     if source_language.lower().startswith("uk") or contains_cyrillic(normalized):
         english_candidate = romanize_ukrainian_ascii(normalized)
@@ -255,9 +299,11 @@ def coerce_planning_english(
             english_candidate = pattern.sub(replacement, english_candidate)
         for pattern, replacement in _PLANNING_TEXT_REPLACEMENTS:
             english_candidate = pattern.sub(replacement, english_candidate)
-        english_candidate = re.sub(r"\s+", " ", english_candidate).strip(" ,.;:-")
+        english_candidate = _clean_planning_english(english_candidate)
         if label:
             english_candidate = f"{label}: {english_candidate}"
+    else:
+        english_candidate = _clean_planning_english(english_candidate)
     english_candidate = english_candidate.replace("SCENE", "Scene")
     english_candidate = english_candidate.replace("HERO INSERT", "Hero insert")
     english_candidate = english_candidate.replace("NARRATOR", "Narrator")

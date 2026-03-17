@@ -138,6 +138,36 @@ class ReviewState(BaseModel):
     last_review_id: str | None = None
 
 
+class RetakeWindowPlan(BaseModel):
+    window_id: str
+    label: str
+    start_pct: int = Field(default=0, ge=0, le=100)
+    end_pct: int = Field(default=100, ge=0, le=100)
+    reason: str = ""
+
+
+class ShotConditioningPlan(BaseModel):
+    input_mode: Literal["text_only", "storyboard_first_frame", "character_reference"] = "text_only"
+    keyframe_strategy: Literal[
+        "none",
+        "first_frame_anchor",
+        "lead_tail_storyboard",
+        "character_reference_anchor",
+    ] = "none"
+    identity_lock: Literal["none", "low", "medium", "high"] = "medium"
+    generation_prompt_en: str = ""
+    negative_prompt_en: str = ""
+    camera_intent_en: str = ""
+    motion_intent_en: str = ""
+    continuity_anchor_en: str = ""
+    retake_windows: list[RetakeWindowPlan] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+def default_shot_conditioning() -> ShotConditioningPlan:
+    return ShotConditioningPlan()
+
+
 class ShotPlan(BaseModel):
     shot_id: str
     scene_id: str
@@ -150,6 +180,7 @@ class ShotPlan(BaseModel):
     dialogue: list[DialogueLine] = Field(default_factory=list)
     prompt_seed: str
     composition: VerticalCompositionPlan = Field(default_factory=default_vertical_composition)
+    conditioning: ShotConditioningPlan = Field(default_factory=default_shot_conditioning)
     review: ReviewState = Field(default_factory=ReviewState)
 
 

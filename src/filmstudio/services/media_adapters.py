@@ -66,6 +66,10 @@ from filmstudio.services.runtime_support import (
 )
 from filmstudio.services.review_manifest import build_review_manifest, build_review_summary
 from filmstudio.storage.artifact_store import ArtifactStore
+from filmstudio.services.video_backend_contract import (
+    build_runtime_shot_conditioning_manifest,
+    build_shot_conditioning_plan,
+)
 
 
 @dataclass
@@ -916,6 +920,103 @@ class DeterministicMediaAdapters:
             character.get("relationship_hint") if isinstance(character, dict) else character.relationship_hint
         ).strip().lower()
         return role_hint in {"father", "mother", "parent"} or "father of" in relationship_hint or "mother of" in relationship_hint
+
+    @staticmethod
+    def _voice_role_preferences(character: CharacterProfile | dict[str, Any]) -> list[str]:
+        role_hint = str(character.get("role_hint") if isinstance(character, dict) else character.role_hint).strip().lower()
+        age_hint = str(character.get("age_hint") if isinstance(character, dict) else character.age_hint).strip().lower()
+        gender_hint = str(character.get("gender_hint") if isinstance(character, dict) else character.gender_hint).strip().lower()
+        voice_hint = str(character.get("voice_hint") if isinstance(character, dict) else character.voice_hint).strip().lower()
+
+        if role_hint == "father" or (gender_hint == "male" and "adult" in age_hint):
+            return ["mykyta", "lada", "tetiana"]
+        if role_hint == "son" or any(token in age_hint for token in ("preteen", "child", "boy", "kid")):
+            return ["lada", "mykyta", "tetiana"]
+        if role_hint == "mother" or (gender_hint == "female" and "adult" in age_hint):
+            return ["tetiana", "lada", "mykyta"]
+        if role_hint == "daughter" or (gender_hint == "female" and any(token in age_hint for token in ("preteen", "child", "girl", "kid"))):
+            return ["lada", "tetiana", "mykyta"]
+        if any(token in voice_hint for token in ("authoritative", "grounded", "calm", "determined")):
+            return ["mykyta", "tetiana", "lada"]
+        if any(token in voice_hint for token in ("youthful", "energetic", "bright", "playful")):
+            return ["lada", "tetiana", "mykyta"]
+        if gender_hint == "female":
+            return ["tetiana", "lada", "mykyta"]
+        if gender_hint == "male":
+            return ["mykyta", "lada", "tetiana"]
+        return ["mykyta", "lada", "tetiana"]
+
+    @classmethod
+    def _assign_piper_speakers(
+        cls,
+        characters: list[CharacterProfile],
+        speaker_cycle: list[tuple[str, int]],
+    ) -> tuple[dict[str, int], dict[str, str]]:
+        if not speaker_cycle:
+            return {}, {}
+        available_by_label = {label.casefold(): (label, speaker_id) for label, speaker_id in speaker_cycle}
+        ordered_fallback = list(speaker_cycle)
+        used_labels: set[str] = set()
+        speaker_ids_by_character: dict[str, int] = {}
+        speaker_labels_by_character: dict[str, str] = {}
+
+        for character in characters:
+            for preferred_label in cls._voice_role_preferences(character):
+                matched = available_by_label.get(preferred_label.casefold())
+                if matched is None or matched[0].casefold() in used_labels:
+                    continue
+                speaker_labels_by_character[character.name] = matched[0]
+                speaker_ids_by_character[character.name] = matched[1]
+                used_labels.add(matched[0].casefold())
+                break
+
+        for character in characters:
+            if character.name in speaker_ids_by_character:
+                continue
+            for label, speaker_id in ordered_fallback:
+                if label.casefold() in used_labels:
+                    continue
+                speaker_labels_by_character[character.name] = label
+                speaker_ids_by_character[character.name] = speaker_id
+                used_labels.add(label.casefold())
+                break
+
+        if not speaker_ids_by_character:
+            label, speaker_id = ordered_fallback[0]
+            for character in characters:
+                speaker_labels_by_character[character.name] = label
+                speaker_ids_by_character[character.name] = speaker_id
+
+        return speaker_ids_by_character, speaker_labels_by_character
+
+    @staticmethod
+    def _music_prompt_suffix(snapshot: ProjectSnapshot, *, scene_id: str | None = None) -> str:
+        product_preset = snapshot.project.metadata.get("product_preset") or {}
+        music_direction = product_preset.get("music_direction") or {}
+        cue_direction = str(music_direction.get("cue_direction") or "").strip()
+        instrumentation = ", ".join(
+            str(item).strip() for item in (music_direction.get("instrumentation") or []) if str(item).strip()
+        )
+        bpm_hint = music_direction.get("bpm_hint")
+        style_notes: list[str] = []
+        if cue_direction:
+            style_notes.append(cue_direction)
+        if instrumentation:
+            style_notes.append(f"instrumentation: {instrumentation}")
+        if bpm_hint:
+            style_notes.append(f"around {bpm_hint} bpm")
+        if scene_id is not None:
+            scene = next((candidate for candidate in snapshot.scenes if candidate.scene_id == scene_id), None)
+            if scene is not None:
+                shot_strategies = {shot.strategy for shot in scene.shots}
+                if "hero_insert" in shot_strategies:
+                    style_notes.append("cinematic action pulse, western game-trailer energy, bold payoff accent")
+                elif "portrait_lipsync" in shot_strategies:
+                    style_notes.append("supportive dialogue bed, restrained pulse, keep speech clear")
+        style_notes.append("instrumental only, no vocals, no singing, no choir, no vocal chops")
+        style_notes.append("avoid anime, j-pop, japanese idol, kawaii, or vocal soundtrack feel")
+        return ", ".join(note for note in style_notes if note)
+
     def _can_probe_character_reference_faces(self) -> bool:
         return bool(
             self.musetalk_repo_path is not None
@@ -4880,6 +4981,7 @@ class DeterministicMediaAdapters:
 
     def _ace_step_music_cues(self, snapshot: ProjectSnapshot) -> list[dict[str, Any]]:
         project_dir = self.artifact_store.project_dir(snapshot.project.project_id)
+        shared_suffix = self._music_prompt_suffix(snapshot)
         total_duration_sec = max(
             float(snapshot.project.estimated_duration_sec),
             sum(
@@ -4895,7 +4997,7 @@ class DeterministicMediaAdapters:
                 "title": "Main Theme",
                 "prompt": (
                     f"{snapshot.project.style} instrumental opening theme for animated short "
-                    f"'{snapshot.project.title}', memorable melody, clean mix, no vocals"
+                    f"'{snapshot.project.title}', memorable melody, clean mix, {shared_suffix}"
                 ),
                 "target_duration_sec": max(10.0, min(30.0, round(total_duration_sec / 5.0, 1))),
                 "output_path": project_dir / "audio/music/main_theme.wav",
@@ -4908,7 +5010,7 @@ class DeterministicMediaAdapters:
                 "title": "Final Bed",
                 "prompt": (
                     f"{snapshot.project.style} instrumental underscore for animated short, "
-                    f"consistent background score, gentle motion, cinematic clarity, no vocals"
+                    f"consistent background score, gentle motion, cinematic clarity, {shared_suffix}"
                 ),
                 "target_duration_sec": max(10.0, round(total_duration_sec, 1)),
                 "output_path": project_dir / "audio/music/final_bed.wav",
@@ -4925,7 +5027,7 @@ class DeterministicMediaAdapters:
                     "scene_id": scene.scene_id,
                     "prompt": (
                         f"{snapshot.project.style} instrumental scene underscore for '{scene.title}', "
-                        f"{scene.summary}, no vocals"
+                        f"{scene.summary}, {self._music_prompt_suffix(snapshot, scene_id=scene.scene_id)}"
                     ),
                     "target_duration_sec": max(10.0, float(scene.duration_sec)),
                     "output_path": project_dir / f"audio/music/{scene.scene_id}.wav",
@@ -4952,6 +5054,73 @@ class DeterministicMediaAdapters:
             result.logs.extend(shot_result.logs)
         return result
 
+    def _write_shot_conditioning_manifest(
+        self,
+        snapshot: ProjectSnapshot,
+        shot: ShotPlan,
+        *,
+        backend: str,
+        resolved_prompt_en: str,
+        prompt_source: str,
+        storyboard_artifact: ArtifactRecord | None,
+        actual_input_mode: str,
+    ) -> Path:
+        conditioning = self._resolve_runtime_shot_conditioning(snapshot, shot)
+        storyboard_path = Path(storyboard_artifact.path) if storyboard_artifact is not None else None
+        reference_artifacts: list[dict[str, str]] = []
+        if storyboard_artifact is not None:
+            reference_artifacts.append(
+                {
+                    "kind": storyboard_artifact.kind,
+                    "path": storyboard_artifact.path,
+                }
+            )
+        return self.artifact_store.write_json(
+            snapshot.project.project_id,
+            f"shots/{shot.shot_id}/video_conditioning_manifest.json",
+            build_runtime_shot_conditioning_manifest(
+                shot.model_copy(update={"conditioning": conditioning}),
+                backend=backend,
+                resolved_prompt_en=resolved_prompt_en,
+                prompt_source=prompt_source,
+                storyboard_path=storyboard_path,
+                actual_input_mode=actual_input_mode,
+                reference_artifacts=reference_artifacts,
+            ),
+        )
+
+    def _resolve_runtime_shot_conditioning(
+        self,
+        snapshot: ProjectSnapshot,
+        shot: ShotPlan,
+    ) -> Any:
+        conditioning = shot.conditioning
+        retake_labels = [window.label for window in conditioning.retake_windows]
+        needs_refresh = (
+            not conditioning.generation_prompt_en
+            or (
+                shot.strategy == "hero_insert"
+                and (
+                    conditioning.keyframe_strategy != "lead_tail_storyboard"
+                    or conditioning.input_mode != "storyboard_first_frame"
+                    or retake_labels[:2] != ["setup", "payoff"]
+                )
+            )
+            or (shot.strategy == "portrait_lipsync" and conditioning.input_mode != "character_reference")
+        )
+        if not needs_refresh:
+            return conditioning
+        rebuilt = build_shot_conditioning_plan(
+            shot,
+            characters=snapshot.project.characters,
+            scenario_context_en=self._planning_seed(snapshot, shot),
+            continuity_anchor_en="",
+            action_choreography_en=self._planning_purpose(snapshot, shot),
+            product_preset=snapshot.project.metadata.get("product_preset") or {},
+        )
+        shot.conditioning = rebuilt
+        return rebuilt
+
     def _render_shot_ffmpeg(
         self,
         snapshot: ProjectSnapshot,
@@ -4961,6 +5130,24 @@ class DeterministicMediaAdapters:
     ) -> StageExecutionResult:
         result = StageExecutionResult()
         project_dir = self.artifact_store.project_dir(snapshot.project.project_id)
+        storyboard_artifact = self._find_shot_artifact(snapshot, "storyboard", shot.shot_id)
+        conditioning_manifest_path = self._write_shot_conditioning_manifest(
+            snapshot,
+            shot,
+            backend="deterministic",
+            resolved_prompt_en=shot.conditioning.generation_prompt_en or shot.prompt_seed,
+            prompt_source=(
+                "shot.conditioning.generation_prompt_en"
+                if shot.conditioning.generation_prompt_en
+                else "shot.prompt_seed"
+            ),
+            storyboard_artifact=storyboard_artifact,
+            actual_input_mode=(
+                "storyboard_first_frame"
+                if storyboard_artifact is not None
+                else shot.conditioning.input_mode
+            ),
+        )
         frame_path = write_ppm_image(
             project_dir / f"shots/{shot.shot_id}/render_frame.ppm",
             self.render_width,
@@ -5005,22 +5192,31 @@ class DeterministicMediaAdapters:
                 "strategy": shot.strategy,
                 "duration_sec": duration_sec,
                 "prompt_seed": shot.prompt_seed,
-                "composition": shot.composition.model_dump(),
-                "backend": self.render_backend,
-                "target_resolution": self._render_resolution(),
-                "target_orientation": self._render_orientation(),
-                "target_fps": self.render_fps,
+                  "composition": shot.composition.model_dump(),
+                  "conditioning": shot.conditioning.model_dump(),
+                  "conditioning_manifest_path": str(conditioning_manifest_path),
+                  "backend": self.render_backend,
+                  "target_resolution": self._render_resolution(),
+                  "target_orientation": self._render_orientation(),
+                  "target_fps": self.render_fps,
                 "command": command,
                 "probe": clip_summary,
             },
         )
         result.artifacts.extend(
             [
-                ArtifactRecord(
-                    artifact_id=new_id("artifact"),
-                    kind="shot_render_frame",
-                    path=str(frame_path),
-                    stage="render_shots",
+                  ArtifactRecord(
+                      artifact_id=new_id("artifact"),
+                      kind="shot_video_conditioning_manifest",
+                      path=str(conditioning_manifest_path),
+                      stage="render_shots",
+                      metadata={"shot_id": shot.shot_id, "backend": "deterministic"},
+                  ),
+                  ArtifactRecord(
+                      artifact_id=new_id("artifact"),
+                      kind="shot_render_frame",
+                      path=str(frame_path),
+                      stage="render_shots",
                     metadata={"shot_id": shot.shot_id},
                 ),
                 ArtifactRecord(
@@ -5069,9 +5265,22 @@ class DeterministicMediaAdapters:
         )
         if self._wan_uses_image_input() and input_image_path is None:
             raise RuntimeError(
-                f"Wan task {self.wan_task} requires a storyboard image for hero shot {shot.shot_id}."
+              f"Wan task {self.wan_task} requires a storyboard image for hero shot {shot.shot_id}."
             )
         prompt = self._wan_prompt(snapshot, shot)
+        conditioning_manifest_path = self._write_shot_conditioning_manifest(
+            snapshot,
+            shot,
+            backend="wan",
+            resolved_prompt_en=prompt,
+            prompt_source=(
+                "shot.conditioning.generation_prompt_en"
+                if shot.conditioning.generation_prompt_en
+                else "_wan_prompt"
+            ),
+            storyboard_artifact=storyboard_artifact,
+            actual_input_mode="image_to_video" if input_image_path is not None else "text_to_video",
+        )
         wan_run = run_wan_inference(
             WanRunConfig(
                 python_binary=self.wan_python_binary,
@@ -5302,9 +5511,11 @@ class DeterministicMediaAdapters:
                 "scene_id": shot.scene_id,
                 "strategy": shot.strategy,
                 "duration_sec": duration_sec,
-                "composition": shot.composition.model_dump(),
-                "backend": "wan",
-                "video_backend": self.video_backend,
+                  "composition": shot.composition.model_dump(),
+                  "conditioning": shot.conditioning.model_dump(),
+                  "conditioning_manifest_path": str(conditioning_manifest_path),
+                  "backend": "wan",
+                  "video_backend": self.video_backend,
                 "task": self.wan_task,
                 "size": self.wan_size,
                 "frame_num": self.wan_frame_num,
@@ -5342,10 +5553,17 @@ class DeterministicMediaAdapters:
         result = StageExecutionResult()
         result.artifacts.extend(
             [
-                ArtifactRecord(
-                    artifact_id=new_id("artifact"),
-                    kind="shot_video_backend_raw",
-                    path=str(raw_output_path),
+                  ArtifactRecord(
+                      artifact_id=new_id("artifact"),
+                      kind="shot_video_conditioning_manifest",
+                      path=str(conditioning_manifest_path),
+                      stage="render_shots",
+                      metadata={"shot_id": shot.shot_id, "backend": "wan"},
+                  ),
+                  ArtifactRecord(
+                      artifact_id=new_id("artifact"),
+                      kind="shot_video_backend_raw",
+                      path=str(raw_output_path),
                     stage="render_shots",
                     metadata={"shot_id": shot.shot_id, "backend": "wan", **raw_summary},
                 ),
@@ -9185,14 +9403,10 @@ class DeterministicMediaAdapters:
     ) -> list[dict[str, Any]]:
         synthesizer = self._require_piper()
         speaker_cycle = synthesizer.default_speaker_cycle()
-        speaker_ids_by_character = {
-            character.name: speaker_cycle[index % len(speaker_cycle)][1]
-            for index, character in enumerate(snapshot.project.characters)
-        }
-        speaker_labels_by_character = {
-            character.name: speaker_cycle[index % len(speaker_cycle)][0]
-            for index, character in enumerate(snapshot.project.characters)
-        }
+        speaker_ids_by_character, speaker_labels_by_character = self._assign_piper_speakers(
+            snapshot.project.characters,
+            speaker_cycle,
+        )
         timeline: list[dict[str, Any]] = []
         clock = 0.0
         for entry in planned_entries:
@@ -9742,31 +9956,42 @@ class DeterministicMediaAdapters:
         ]
         return DeterministicMediaAdapters._compact_prompt_text(
             ", ".join(str(part).strip() for part in parts if str(part).strip()),
-            limit=120,
+            limit=72,
         )
 
     def _wan_prompt(self, snapshot: ProjectSnapshot, shot: ShotPlan) -> str:
+        conditioning = self._resolve_runtime_shot_conditioning(snapshot, shot)
+        planning_seed = self._planning_seed(snapshot, shot)
         character_names = DeterministicMediaAdapters._compact_prompt_text(
             self._shot_character_prompt_fragment(snapshot, shot, compact=True),
-            limit=96,
+            limit=88,
         )
-        composition = shot.composition
         prompt_seed_hint = DeterministicMediaAdapters._compact_prompt_text(
-            self._planning_seed(snapshot, shot),
-            limit=120,
+            strip_duplicate_planning_label(planning_seed or conditioning.generation_prompt_en),
+            limit=72,
+        )
+        motion_hint = DeterministicMediaAdapters._compact_prompt_text(
+            strip_duplicate_planning_label(conditioning.motion_intent_en or "clean payoff motion"),
+            limit=56,
+        )
+        camera_hint = DeterministicMediaAdapters._compact_prompt_text(
+            strip_duplicate_planning_label(conditioning.camera_intent_en or "vertical action framing"),
+            limit=60,
+        )
+        continuity_hint = DeterministicMediaAdapters._compact_prompt_text(
+            strip_duplicate_planning_label(conditioning.continuity_anchor_en),
+            limit=24,
         )
         style_fragment = self._wan_style_fragment(snapshot)
         duo_focus = "one clear action subject, no crowd, no poster"
         if len(shot.characters) == 2:
-            duo_focus = (
-                "exactly two characters only, father-son duo, both clearly visible, no squad, no crowd, no poster"
-            )
+            duo_focus = "exactly two characters only, father-son duo, no squad, no third figure"
         return (
             f"{style_fragment}, animated hero insert. "
-            f"Action beat: {prompt_seed_hint}. Characters: {character_names}. "
-            f"{duo_focus}. "
-            f"{composition.orientation} {composition.aspect_ratio}, centered duo action, clean {composition.subtitle_lane} subtitle lane, "
-            "clean silhouettes, full bodies readable, one clear payoff motion, no third figure."
+            f"Action beat: {prompt_seed_hint}. Motion intent: {motion_hint}. "
+            f"Camera intent: {camera_hint}. Characters: {character_names}. "
+            f"{duo_focus}. clean silhouettes, readable full bodies."
+            + (f" Continuity: {continuity_hint}." if continuity_hint else "")
         )
 
     @staticmethod

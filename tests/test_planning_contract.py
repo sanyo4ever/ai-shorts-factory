@@ -71,3 +71,18 @@ def test_strip_duplicate_planning_label_removes_repeated_prefix_only() -> None:
     result = strip_duplicate_planning_label(text, label="English planning beat")
 
     assert result == "Hero insert: father Tato and son Syn jump toward a glowing crown."
+
+
+def test_coerce_planning_english_cleans_duplicate_roles_and_common_translit_phrases() -> None:
+    text = (
+        "English planning beat: Yaskravyi ostriv u styli Fortnite. "
+        "father father father Tato i son son son Syn stoiat na derev'ianomu trapi."
+    )
+
+    result = coerce_planning_english(text, source_language="uk", limit=240, label="English planning beat")
+
+    assert result.startswith("English planning beat:")
+    assert "bright Fortnite-style island" in result
+    assert "father father" not in result
+    assert "son son" not in result
+    assert "stand on a wooden ramp" in result
