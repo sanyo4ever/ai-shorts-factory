@@ -106,6 +106,107 @@ _PLANNING_TEXT_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bgotovy[iy]\b", re.IGNORECASE), "ready"),
 )
 
+_ACTUAL_CYRILLIC_LABEL_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    ("ГЕРОЇСЬКА ВСТАВКА", "HERO INSERT"),
+    ("ГЕРОЇЧНА ВСТАВКА", "HERO INSERT"),
+    ("ГЕРОЙСЬКА ВСТАВКА", "HERO INSERT"),
+    ("ОПОВІДАЧ", "NARRATOR"),
+    ("СЦЕНА", "SCENE"),
+)
+
+_ACTUAL_CYRILLIC_ROMANIZATION_TABLE = str.maketrans(
+    {
+        "а": "a",
+        "б": "b",
+        "в": "v",
+        "г": "h",
+        "ґ": "g",
+        "д": "d",
+        "е": "e",
+        "є": "ie",
+        "ж": "zh",
+        "з": "z",
+        "и": "y",
+        "і": "i",
+        "ї": "i",
+        "й": "i",
+        "к": "k",
+        "л": "l",
+        "м": "m",
+        "н": "n",
+        "о": "o",
+        "п": "p",
+        "р": "r",
+        "с": "s",
+        "т": "t",
+        "у": "u",
+        "ф": "f",
+        "х": "kh",
+        "ц": "ts",
+        "ч": "ch",
+        "ш": "sh",
+        "щ": "shch",
+        "ь": "",
+        "ю": "iu",
+        "я": "ia",
+        "А": "A",
+        "Б": "B",
+        "В": "V",
+        "Г": "H",
+        "Ґ": "G",
+        "Д": "D",
+        "Е": "E",
+        "Є": "Ye",
+        "Ж": "Zh",
+        "З": "Z",
+        "И": "Y",
+        "І": "I",
+        "Ї": "Yi",
+        "Й": "Y",
+        "К": "K",
+        "Л": "L",
+        "М": "M",
+        "Н": "N",
+        "О": "O",
+        "П": "P",
+        "Р": "R",
+        "С": "S",
+        "Т": "T",
+        "У": "U",
+        "Ф": "F",
+        "Х": "Kh",
+        "Ц": "Ts",
+        "Ч": "Ch",
+        "Ш": "Sh",
+        "Щ": "Shch",
+        "Ь": "",
+        "Ю": "Yu",
+        "Я": "Ya",
+    }
+)
+
+_ACTUAL_CYRILLIC_PLANNING_TEXT_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bсцена\b", re.IGNORECASE), "scene"),
+    (re.compile(r"\bгеро(ї|й)с(ь|к)\w*\s+вставк\w*\b", re.IGNORECASE), "hero insert"),
+    (re.compile(r"\bгероїчна\s+вставк\w*\b", re.IGNORECASE), "hero insert"),
+    (re.compile(r"\bоповідач\b", re.IGNORECASE), "narrator"),
+    (re.compile(r"\bведуч\w*\b", re.IGNORECASE), "host"),
+    (re.compile(r"\bексперт\b", re.IGNORECASE), "expert"),
+    (re.compile(r"\bтато\b", re.IGNORECASE), "father Tato"),
+    (re.compile(r"\bсину\b", re.IGNORECASE), "son Syn"),
+    (re.compile(r"\bсин\b", re.IGNORECASE), "son Syn"),
+    (re.compile(r"\bстриб\w*\b", re.IGNORECASE), "jump"),
+    (re.compile(r"\bбитв\w*\b", re.IGNORECASE), "battle"),
+    (re.compile(r"\bбій\w*\b", re.IGNORECASE), "battle"),
+    (re.compile(r"\bрив\w*\b", re.IGNORECASE), "burst"),
+    (re.compile(r"\bбіж\w*\b", re.IGNORECASE), "run"),
+    (re.compile(r"\bполетіл\w*\b", re.IGNORECASE), "launch forward"),
+    (re.compile(r"\bперемож\w*\b", re.IGNORECASE), "victory"),
+    (re.compile(r"\bсяйлив\w*\s+корон\w*\b", re.IGNORECASE), "glowing crown"),
+    (re.compile(r"\bстін\w*\b", re.IGNORECASE), "wall"),
+    (re.compile(r"\bготов\w*\b", re.IGNORECASE), "ready"),
+)
+
 
 def strip_duplicate_planning_label(text: str, *, label: str | None = None) -> str:
     cleaned = collapse_text(text)
@@ -124,11 +225,13 @@ def contains_cyrillic(text: str) -> bool:
 
 
 def romanize_ukrainian_ascii(text: str) -> str:
-    return text.translate(_ROMANIZATION_TABLE)
+    return text.translate(_ACTUAL_CYRILLIC_ROMANIZATION_TABLE).translate(_ROMANIZATION_TABLE)
 
 
 def normalize_screenplay_labels(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", text)
+    for source, target in _ACTUAL_CYRILLIC_LABEL_REPLACEMENTS:
+        normalized = re.sub(re.escape(source), target, normalized, flags=re.IGNORECASE)
     for source, target in _SCREENPLAY_LABEL_REPLACEMENTS:
         normalized = re.sub(re.escape(source), target, normalized, flags=re.IGNORECASE)
     return normalized
@@ -148,6 +251,8 @@ def coerce_planning_english(
     english_candidate = normalized
     if source_language.lower().startswith("uk") or contains_cyrillic(normalized):
         english_candidate = romanize_ukrainian_ascii(normalized)
+        for pattern, replacement in _ACTUAL_CYRILLIC_PLANNING_TEXT_REPLACEMENTS:
+            english_candidate = pattern.sub(replacement, english_candidate)
         for pattern, replacement in _PLANNING_TEXT_REPLACEMENTS:
             english_candidate = pattern.sub(replacement, english_candidate)
         english_candidate = re.sub(r"\s+", " ", english_candidate).strip(" ,.;:-")
@@ -186,7 +291,8 @@ def build_planner_system_prompt(*, render_width: int, render_height: int) -> str
         "Use no more than 3 characters, 4 scenes, and 4 shots per scene. "
         "Each shot.strategy must be one of: parallax_comp, portrait_motion, portrait_lipsync, hero_insert. "
         "Each shot must include a composition object that preserves subtitle-safe lanes and strong portrait framing. "
-        "Also return story_bible, character_bible, scene_plan, shot_plan, asset_strategy, continuity_bible."
+        "Also return scenario_expansion, story_bible, character_bible, scene_plan, shot_plan, asset_strategy, continuity_bible. "
+        "scenario_expansion must stay English for planning context while dialogue_contract preserves the original dialogue text."
     )
 
 
@@ -211,6 +317,67 @@ def build_planner_request_payload(
         "script": request.script,
         "structural_anchor": structural_anchor or {},
         "required_schema": {
+            "scenario_expansion": {
+                "story_premise_en": "english string",
+                "visual_world_en": "english string",
+                "narrative_goal_en": "english string",
+                "character_grounding": [
+                    {
+                        "name": "string",
+                        "role_en": "english string",
+                        "relationship_en": "english string",
+                        "visual_hook_en": "english string",
+                        "dialogue_voice_hint": "string",
+                    }
+                ],
+                "scene_expansions": [
+                    {
+                        "scene_id": "string",
+                        "title_en": "english string",
+                        "dramatic_beat_en": "english string",
+                        "visual_context_en": "english string",
+                        "action_choreography_en": "english string",
+                        "dialogue_goal_en": "english string",
+                        "dialogue_lines": [
+                            {
+                                "shot_id": "string",
+                                "character_name": "string",
+                                "text": "original-language string",
+                            }
+                        ],
+                        "shot_contexts": [
+                            {
+                                "shot_id": "string",
+                                "title_en": "english string",
+                                "strategy": "parallax_comp|portrait_motion|portrait_lipsync|hero_insert",
+                                "intent_en": "english string",
+                                "visual_prompt_en": "english string",
+                                "continuity_anchor_en": "english string",
+                                "action_choreography_en": "english string",
+                                "dialogue_lines": [
+                                    {
+                                        "character_name": "string",
+                                        "text": "original-language string",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+                "dialogue_contract": {
+                    "language": "source-language code",
+                    "preserve_original_dialogue": "boolean",
+                    "speaker_count": "integer",
+                    "line_count": "integer",
+                    "lines": [
+                        {
+                            "shot_id": "string",
+                            "character_name": "string",
+                            "text": "original-language string",
+                        }
+                    ],
+                },
+            },
             "story_bible": {
                 "logline": "english string",
                 "synopsis": "english string",
@@ -305,6 +472,7 @@ def build_planner_request_prompt(
         "- Do not echo this request.\n"
         "- Do not repeat the schema in the answer.\n"
         "- Return one JSON object only.\n"
+        "- Return scenario_expansion before or alongside the planning bundle fields.\n"
         "- All non-dialogue planning fields must be English.\n"
         "- Keep dialogue text in the original screenplay language.\n\n"
         f"Language contract:\n{language_contract}\n\n"
@@ -339,6 +507,67 @@ def build_planner_enrichment_prompt(
     anchor_json = json.dumps(structural_anchor, ensure_ascii=False, indent=2)
     schema = json.dumps(
         {
+            "scenario_expansion": {
+                "story_premise_en": "english string",
+                "visual_world_en": "english string",
+                "narrative_goal_en": "english string",
+                "character_grounding": [
+                    {
+                        "name": "existing character name from the anchor",
+                        "role_en": "english string",
+                        "relationship_en": "english string",
+                        "visual_hook_en": "english string",
+                        "dialogue_voice_hint": "string",
+                    }
+                ],
+                "scene_expansions": [
+                    {
+                        "scene_id": "existing scene_id from the anchor",
+                        "title_en": "english string",
+                        "dramatic_beat_en": "english string",
+                        "visual_context_en": "english string",
+                        "action_choreography_en": "english string",
+                        "dialogue_goal_en": "english string",
+                        "dialogue_lines": [
+                            {
+                                "shot_id": "existing shot_id from the anchor",
+                                "character_name": "string",
+                                "text": "original-language string",
+                            }
+                        ],
+                        "shot_contexts": [
+                            {
+                                "shot_id": "existing shot_id from the anchor",
+                                "title_en": "english string",
+                                "strategy": "parallax_comp|portrait_motion|portrait_lipsync|hero_insert",
+                                "intent_en": "english string",
+                                "visual_prompt_en": "english string",
+                                "continuity_anchor_en": "english string",
+                                "action_choreography_en": "english string",
+                                "dialogue_lines": [
+                                    {
+                                        "character_name": "string",
+                                        "text": "original-language string",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+                "dialogue_contract": {
+                    "language": "source-language code",
+                    "preserve_original_dialogue": "boolean",
+                    "speaker_count": "integer",
+                    "line_count": "integer",
+                    "lines": [
+                        {
+                            "shot_id": "existing shot_id from the anchor",
+                            "character_name": "string",
+                            "text": "original-language string",
+                        }
+                    ],
+                },
+            },
             "story_bible": {
                 "logline": "english string",
                 "synopsis": "english string",
@@ -402,6 +631,7 @@ def build_planner_enrichment_prompt(
         "- Do not change scene count or shot count.\n"
         "- Do not change shot strategies, dialogue text, or named speakers.\n"
         "- Keep dialogue text in the original screenplay language.\n"
+        "- Return scenario_expansion as a richer English scenario layer that keeps dialogue_contract untouched.\n"
         "- Use English only for story summaries, shot titles, purposes, prompt seeds, and character visual descriptions.\n"
         "- Return one JSON object only.\n\n"
         f"Language contract:\n{language_contract}\n\n"

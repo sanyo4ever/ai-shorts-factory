@@ -26,6 +26,8 @@ def test_planner_builds_rich_planning_bundle() -> None:
     )
     bundle = planner.build_planning_bundle("proj_test", request)
     assert bundle.story_bible["title"] == "Bundle test"
+    assert bundle.scenario_expansion["story_premise_en"]
+    assert bundle.scenario_expansion["dialogue_contract"]["preserve_original_dialogue"] is True
     assert bundle.character_bible["characters"]
     assert bundle.scene_plan["scenes"]
     assert bundle.shot_plan["shots"]
@@ -35,9 +37,14 @@ def test_planner_builds_rich_planning_bundle() -> None:
     assert bundle.story_bible["product_preset"]["short_archetype"] == "creator_hook"
     assert bundle.character_bible["voice_cast_preset"] == "solo_host"
     assert bundle.story_bible["composition_language"]["caption_policy"]["default_subtitle_lane"] == "bottom"
+    assert bundle.story_bible["scenario_expansion"]["story_premise_en"] == bundle.scenario_expansion["story_premise_en"]
+    assert bundle.scene_plan["scenes"][0]["dramatic_beat_en"]
     assert bundle.shot_plan["shots"][0]["composition"]["subtitle_lane"] == "bottom"
+    assert bundle.shot_plan["shots"][0]["scenario_context_en"]
     assert bundle.asset_strategy["shots"][0]["layout_contract"]["safe_zones"]
+    assert bundle.asset_strategy["shots"][0]["scenario_context_en"]
     assert bundle.continuity_bible["scene_states"][0]["shot_layouts"][0]["subtitle_lane"] == "bottom"
+    assert bundle.continuity_bible["scene_states"][0]["dramatic_beat_en"]
 
 
 def test_planner_uses_top_subtitle_lane_for_hero_insert() -> None:
@@ -321,6 +328,8 @@ def test_planner_keeps_ukrainian_dialogue_but_switches_planning_to_english() -> 
 
     assert bundle.story_bible["language_contract"]["planning_language"] == "en"
     assert bundle.character_bible["language_contract"]["visual_prompt_language"] == "en"
+    assert bundle.scenario_expansion["planning_language"] == "en"
+    assert bundle.scenario_expansion["dialogue_language"] == "uk"
     assert bundle.scene_plan["planning_language"] == "en"
     assert bundle.shot_plan["planning_language"] == "en"
     assert bundle.asset_strategy["planning_language"] == "en"
@@ -328,6 +337,8 @@ def test_planner_keeps_ukrainian_dialogue_but_switches_planning_to_english() -> 
     assert hero_shot.dialogue == []
     assert "glowing crown" in hero_shot.prompt_seed
     assert not any("\u0400" <= char <= "\u04FF" for char in hero_shot.prompt_seed)
+    assert not any("\u0400" <= char <= "\u04FF" for char in bundle.scenario_expansion["story_premise_en"])
+    assert bundle.scenario_expansion["dialogue_contract"]["lines"][0]["text"] == "Сину, готовий до стрибка?"
 
 
 def test_ollama_scene_overrides_are_grouped_by_scene_and_shot_index() -> None:

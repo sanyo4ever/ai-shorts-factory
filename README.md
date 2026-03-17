@@ -32,6 +32,7 @@ The current codebase restores:
 - deterministic planner, workflow engine, and media adapter contracts
 - optional `Ollama` planner wiring through an explicit backend setting
 - a bilingual planning contract for Ukrainian-first production: user input and spoken dialogue can stay Ukrainian, while planning, storyboard, and video-prompt fields are normalized into English for downstream visual backends
+- a first-class `scenario_expansion` planning artifact that expands short creator prompts into richer English story, world, scene, and shot context before downstream planning artifacts are persisted
 - formal planning artifacts for `story_bible`, `character_bible`, `scene_plan`, `shot_plan`, `asset_strategy`, and `continuity_bible`
 - a typed product preset contract for `style_preset`, `voice_cast_preset`, `music_preset`, and `short_archetype`, persisted into project metadata and planning artifacts
 - a typed vertical composition contract per shot, including `framing`, `subject_anchor`, `eye_line`, `subtitle_lane`, and explicit `safe_zones` that now flow from planning into prompts and runtime manifests
@@ -130,6 +131,7 @@ set FILMSTUDIO_LLM_MODEL=qwen3:8b
 The canonical Ukrainian production contract is now:
 
 - user screenplay or idea input may stay in Ukrainian
+- the planner first expands short prompts into an English `scenario_expansion` layer for story, world, beat, and shot context
 - spoken dialogue, TTS, and subtitle text stay in the original spoken language
 - planning summaries, shot prompts, storyboard prompts, and video prompts are normalized into English before they reach visual backends
 
