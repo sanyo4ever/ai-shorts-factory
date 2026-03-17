@@ -24,6 +24,8 @@ def test_build_quick_project_request_uses_example_defaults() -> None:
     assert request.title == "Тато і син: Fortnite-стрибок"
     assert request.visual_backend == "comfyui"
     assert request.video_backend == "wan"
+    assert request.planner_backend == "ollama"
+    assert request.planner_model == "qwen3:8b"
     assert request.tts_backend == "piper"
     assert request.music_backend == "ace_step"
     assert request.lipsync_backend == "musetalk"
@@ -62,6 +64,7 @@ def test_build_quick_project_request_generates_dialogue_action_script_from_idea(
 
     assert request.visual_backend == "deterministic"
     assert request.video_backend == "deterministic"
+    assert request.planner_backend == "deterministic"
     assert request.music_backend == "deterministic"
     assert "ТАТО:" in request.script
     assert "СИН:" in request.script

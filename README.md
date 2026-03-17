@@ -31,6 +31,7 @@ The current codebase restores:
 - local `SQLite`-backed runtime persistence
 - deterministic planner, workflow engine, and media adapter contracts
 - optional `Ollama` planner wiring through an explicit backend setting
+- a bilingual planning contract for Ukrainian-first production: user input and spoken dialogue can stay Ukrainian, while planning, storyboard, and video-prompt fields are normalized into English for downstream visual backends
 - formal planning artifacts for `story_bible`, `character_bible`, `scene_plan`, `shot_plan`, `asset_strategy`, and `continuity_bible`
 - a typed product preset contract for `style_preset`, `voice_cast_preset`, `music_preset`, and `short_archetype`, persisted into project metadata and planning artifacts
 - a typed vertical composition contract per shot, including `framing`, `subject_anchor`, `eye_line`, `subtitle_lane`, and explicit `safe_zones` that now flow from planning into prompts and runtime manifests
@@ -125,6 +126,12 @@ Default mode keeps planning deterministic, uses local `Piper` for dialogue, uses
 set FILMSTUDIO_PLANNER_BACKEND=ollama
 set FILMSTUDIO_LLM_MODEL=qwen3:8b
 ```
+
+The canonical Ukrainian production contract is now:
+
+- user screenplay or idea input may stay in Ukrainian
+- spoken dialogue, TTS, and subtitle text stay in the original spoken language
+- planning summaries, shot prompts, storyboard prompts, and video prompts are normalized into English before they reach visual backends
 
 You can override planner, orchestrator, and media backend choice per project request by sending `planner_backend`, `planner_model`, `orchestrator_backend`, `visual_backend`, `video_backend`, `tts_backend`, `music_backend`, `lipsync_backend`, and `subtitle_backend` in the create-project payload.
 You can also send `style_preset`, `voice_cast_preset`, `music_preset`, and `short_archetype` to pin the product contract for a run instead of relying only on raw script heuristics.

@@ -1,6 +1,7 @@
 import json
 import re
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -135,18 +136,83 @@ def test_quick_generate_endpoints_create_project_with_profile_defaults() -> None
     assert catalog_payload["profiles"]["production_vertical"]["label"] == "My PC (RTX 4060) Verified"
     assert any(example["slug"] == "fortnite_family_jump" for example in catalog_payload["examples"])
 
-    response = client.post(
-        "/api/v1/projects/quick-generate",
-        json={
-            "example_slug": "fortnite_family_jump",
-            "run_immediately": False,
+    planner_payload = {
+        "characters": [
+            {
+                "name": "Тато",
+                "voice_hint": "tato",
+                "visual_hint": "Fortnite-style father portrait",
+                "role_hint": "father",
+                "relationship_hint": "father of Syn",
+                "age_hint": "adult in his 30s",
+                "gender_hint": "male",
+            },
+            {
+                "name": "Син",
+                "voice_hint": "syn",
+                "visual_hint": "Fortnite-style son portrait",
+                "role_hint": "son",
+                "relationship_hint": "son of Tato",
+                "age_hint": "preteen boy",
+                "gender_hint": "male",
+            },
+        ],
+        "scenes": [
+            {
+                "title": "Fortnite father-son setup",
+                "summary": "Father Tato and son Syn stand on a ramp before a jump.",
+                "shots": [
+                    {
+                        "title": "Dialogue closeup",
+                        "strategy": "portrait_lipsync",
+                        "duration_sec": 2,
+                        "purpose": "speaker closeup",
+                        "characters": ["Тато"],
+                        "dialogue": [{"character_name": "Тато", "text": "Сину, готовий до стрибка?"}],
+                        "prompt_seed": "English planning beat: father Tato prepares son Syn for the jump.",
+                        "composition": {"subtitle_lane": "bottom"},
+                    },
+                    {
+                        "title": "Hero insert",
+                        "strategy": "hero_insert",
+                        "duration_sec": 2,
+                        "purpose": "hero payoff insert",
+                        "characters": ["Тато", "Син"],
+                        "dialogue": [],
+                        "prompt_seed": "English action beat: father Tato and son Syn jump toward a glowing crown.",
+                        "composition": {"subtitle_lane": "top"},
+                    },
+                ],
+            }
+        ],
+        "story_bible": {
+            "logline": "Father Tato and son Syn sprint into a Fortnite-style victory beat.",
+            "synopsis": "A father and son prep for a jump and land a quick action payoff.",
         },
-    )
+        "character_bible": {"characters": []},
+        "scene_plan": {"scenes": []},
+        "shot_plan": {"shots": []},
+        "asset_strategy": {"shots": []},
+        "continuity_bible": {"scene_states": []},
+    }
+    with (
+        patch("filmstudio.services.planner_service.list_ollama_models", return_value=["qwen3:8b"]),
+        patch("filmstudio.services.planner_service.ollama_generate_json", return_value=planner_payload),
+    ):
+        response = client.post(
+            "/api/v1/projects/quick-generate",
+            json={
+                "example_slug": "fortnite_family_jump",
+                "run_immediately": False,
+            },
+        )
     assert response.status_code == 200
     snapshot = response.json()
     metadata = snapshot["project"]["metadata"]
     assert metadata["quick_generate"]["mode"] == "quick_generate"
     assert metadata["quick_generate"]["example_slug"] == "fortnite_family_jump"
+    assert metadata["planner_backend"] == "ollama"
+    assert metadata["planner_model"] == "qwen3:8b"
     assert metadata["visual_backend"] == "comfyui"
     assert metadata["video_backend"] == "wan"
     assert metadata["tts_backend"] == "piper"

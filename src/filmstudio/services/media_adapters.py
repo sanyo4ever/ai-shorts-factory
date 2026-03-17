@@ -36,6 +36,7 @@ from filmstudio.services.comfyui_client import (
     stable_visual_seed,
     write_image_bytes,
 )
+from filmstudio.services.planning_contract import coerce_planning_english
 from filmstudio.services.ace_step_client import AceStepClient, AceStepClientConfig
 from filmstudio.services.chatterbox_client import (
     ChatterboxClient,
@@ -1184,6 +1185,8 @@ class DeterministicMediaAdapters:
         snapshot: ProjectSnapshot,
         shot: ShotPlan,
     ) -> tuple[str, str]:
+        purpose_hint = self._planning_purpose(snapshot, shot)
+        prompt_seed_hint = self._planning_seed(snapshot, shot)
         primary_character = self._resolve_primary_character(snapshot, shot)
         primary_visual_name = self._visual_prompt_identity_label_ascii(primary_character)
         primary_descriptor = self._character_visual_fragment_ascii(primary_character)
@@ -1231,7 +1234,7 @@ class DeterministicMediaAdapters:
                     "single speaker only, face filling most of frame, no action pose, no crowd, "
                     f"{primary_descriptor}, "
                     f"{composition_hint}, {lane_hint}, "
-                    f"{shot.purpose}, seed hint: {shot.prompt_seed}"
+                    f"{purpose_hint}, seed hint: {prompt_seed_hint}"
                 ),
                 (
                     "multiple people, crowd, collage, extra faces, duplicate person, split face, "
@@ -1255,12 +1258,12 @@ class DeterministicMediaAdapters:
                 )
             return (
                 (
-                    f"{snapshot.project.style}, storyboard frame, {shot.title}, {shot.purpose}, "
+                    f"{snapshot.project.style}, storyboard frame, {shot.title}, {purpose_hint}, "
                     f"hero action insert, {duo_focus}"
                     f"characters: {group_descriptor}, one shared payoff beat, readable vertical action, "
                     "freeze-frame readability, not a poster, not a roster card, "
                     f"{composition_hint}, {lane_hint}, "
-                    f"seed hint: {shot.prompt_seed}"
+                    f"seed hint: {prompt_seed_hint}"
                 ),
                 (
                     "crowd, squad, team lineup, roster poster, splash art, ensemble poster, collage, "
@@ -1271,9 +1274,9 @@ class DeterministicMediaAdapters:
             )
         return (
             (
-                f"{snapshot.project.style}, storyboard frame, {shot.title}, {shot.purpose}, "
+                f"{snapshot.project.style}, storyboard frame, {shot.title}, {purpose_hint}, "
                 f"characters: {group_descriptor}, {composition_hint}, {lane_hint}, "
-                f"seed hint: {shot.prompt_seed}"
+                f"seed hint: {prompt_seed_hint}"
             ),
             "blurry, bad anatomy, duplicate body parts, watermark, text, logo",
         )
@@ -1932,6 +1935,30 @@ class DeterministicMediaAdapters:
             "style_tags": [],
         }
 
+    @staticmethod
+    def _planning_text_for_media(text: str, *, source_language: str, limit: int, label: str | None = None) -> str:
+        return coerce_planning_english(
+            text,
+            source_language=source_language,
+            limit=limit,
+            label=label,
+        )
+
+    def _planning_purpose(self, snapshot: ProjectSnapshot, shot: ShotPlan) -> str:
+        return self._planning_text_for_media(
+            shot.purpose,
+            source_language=snapshot.project.language,
+            limit=160,
+        )
+
+    def _planning_seed(self, snapshot: ProjectSnapshot, shot: ShotPlan) -> str:
+        return self._planning_text_for_media(
+            shot.prompt_seed,
+            source_language=snapshot.project.language,
+            limit=240,
+            label="English planning beat",
+        )
+
     def _musetalk_source_prompt_variants(
         self,
         snapshot: ProjectSnapshot,
@@ -1942,6 +1969,7 @@ class DeterministicMediaAdapters:
         style_preset = str(product_preset.get("style_preset") or "")
         short_archetype = str(product_preset.get("short_archetype") or "")
         visual_hint = primary_character["visual_hint"]
+        purpose_hint = self._planning_purpose(snapshot, shot)
         name = self._visual_prompt_identity_label_ascii(primary_character)
         identity_fragment = self._character_visual_fragment_ascii(primary_character)
         negative_identity = self._character_negative_fragment(primary_character)
@@ -1988,7 +2016,7 @@ class DeterministicMediaAdapters:
                     f"front-facing head and shoulders, large centered face filling the frame, both eyes visible, "
                     f"direct gaze into camera, symmetrical face, mouth closed, face dominant in frame, "
                     f"minimal headroom, shoulders near lower frame edge, clear jawline, neutral background, "
-                    f"realistic illustration, {lane_hint}, shot purpose: {shot.purpose}, {identity_fragment or visual_hint}"
+                    f"realistic illustration, {lane_hint}, shot purpose: {purpose_hint}, {identity_fragment or visual_hint}"
                 ),
                 "negative_prompt": (
                     f"multiple people, crowd, collage, extra faces, duplicate person, split face, "
@@ -9529,11 +9557,11 @@ class DeterministicMediaAdapters:
         )
         composition = shot.composition
         prompt_seed_hint = DeterministicMediaAdapters._compact_prompt_text(
-            shot.prompt_seed,
+            self._planning_seed(snapshot, shot),
             limit=52,
         )
         purpose_hint = DeterministicMediaAdapters._compact_prompt_text(
-            shot.purpose,
+            self._planning_purpose(snapshot, shot),
             limit=28,
         )
         style_fragment = self._wan_style_fragment(snapshot)
