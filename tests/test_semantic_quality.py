@@ -447,7 +447,7 @@ def test_build_semantic_quality_summary_ignores_ukrainian_hero_insert_label_for_
             script=(
                 "СЦЕНА 1. Ведучий дивиться в камеру.\n"
                 "ВЕДУЧИЙ: За кілька секунд поясню головну думку.\n\n"
-                "ГЕРОЙСЬКА ВСТАВКА: Швидкий proof beat з рухом і reveal."
+                "ГЕРОЇСЬКА ВСТАВКА: Швидкий proof beat з рухом і reveal."
             ),
             language="uk",
             style="studio_illustrated",

@@ -1511,7 +1511,11 @@ class ProjectService:
         )
         stage_index = PIPELINE_STAGE_ORDER.index(payload.start_stage)
         for job in snapshot.jobs:
-            if PIPELINE_STAGE_ORDER.index(job.kind) < stage_index:
+            job_stage_index = PIPELINE_STAGE_ORDER.index(job.kind)
+            if job_stage_index < stage_index:
+                if job.status != "completed":
+                    job.status = "completed"
+                    job.updated_at = utc_now()
                 continue
             job.status = "queued"
             job.latest_attempt_id = None

@@ -40,12 +40,14 @@ class ComfyUIClient:
         poll_interval_sec: float = 2.0,
         max_image_attempts: int = 2,
         retry_delay_sec: float = 1.0,
+        output_root: Path | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_sec = timeout_sec
         self.poll_interval_sec = poll_interval_sec
         self.max_image_attempts = max(1, max_image_attempts)
         self.retry_delay_sec = max(0.0, retry_delay_sec)
+        self.output_root = output_root.resolve() if output_root is not None else None
 
     def generate_image(
         self,
@@ -61,28 +63,42 @@ class ComfyUIClient:
             history_error = self._extract_history_error(history, prompt_id)
             try:
                 image_ref = self._extract_image_ref(history, prompt_id, output_node_id)
-            except ComfyUIExecutionError as exc:
-                if history_error is None:
-                    raise
-                last_error = ComfyUIExecutionError(
-                    self._format_history_error_message(
-                        prompt_id=prompt_id,
-                        history_error=history_error,
-                    )
+                image_bytes = self._download_image(
+                    filename=image_ref["filename"],
+                    subfolder=image_ref.get("subfolder", ""),
+                    output_type=image_ref.get("type", "output"),
                 )
-                if (
-                    attempt_index < self.max_image_attempts
-                    and self._is_retryable_history_error(history_error)
-                ):
-                    if self.retry_delay_sec > 0:
-                        time.sleep(self.retry_delay_sec)
-                    continue
-                raise last_error from exc
-            image_bytes = self._download_image(
-                filename=image_ref["filename"],
-                subfolder=image_ref.get("subfolder", ""),
-                output_type=image_ref.get("type", "output"),
-            )
+            except ComfyUIExecutionError as exc:
+                cached_image_ref = self._extract_cached_image_ref(
+                    history=history,
+                    prompt_id=prompt_id,
+                    workflow=workflow,
+                    output_node_id=output_node_id,
+                )
+                if cached_image_ref is not None:
+                    image_ref = {
+                        "filename": cached_image_ref["filename"],
+                        "subfolder": cached_image_ref.get("subfolder", ""),
+                        "type": cached_image_ref.get("type", "output"),
+                    }
+                    image_bytes = cached_image_ref["image_bytes"]
+                else:
+                    if history_error is None:
+                        raise
+                    last_error = ComfyUIExecutionError(
+                        self._format_history_error_message(
+                            prompt_id=prompt_id,
+                            history_error=history_error,
+                        )
+                    )
+                    if (
+                        attempt_index < self.max_image_attempts
+                        and self._is_retryable_history_error(history_error)
+                    ):
+                        if self.retry_delay_sec > 0:
+                            time.sleep(self.retry_delay_sec)
+                        continue
+                    raise last_error from exc
             return ComfyUIImageResult(
                 prompt_id=prompt_id,
                 filename=image_ref["filename"],
@@ -166,6 +182,66 @@ class ComfyUIClient:
             if images:
                 return images[0]
         raise ComfyUIExecutionError(f"ComfyUI prompt {prompt_id} produced no images.")
+
+    def _extract_cached_image_ref(
+        self,
+        *,
+        history: dict[str, Any],
+        prompt_id: str,
+        workflow: dict[str, Any],
+        output_node_id: str,
+    ) -> dict[str, Any] | None:
+        if self.output_root is None:
+            return None
+        prompt_history = history.get(prompt_id) or {}
+        status = prompt_history.get("status") or {}
+        messages = status.get("messages") or []
+        cached_node_ids: set[str] = set()
+        for entry in messages:
+            if not isinstance(entry, list | tuple) or len(entry) < 2:
+                continue
+            event_name = str(entry[0])
+            payload = entry[1]
+            if event_name != "execution_cached" or not isinstance(payload, dict):
+                continue
+            cached_node_ids.update(str(node_id) for node_id in (payload.get("nodes") or []))
+        if output_node_id not in cached_node_ids:
+            return None
+        output_node = workflow.get(output_node_id) or {}
+        if str(output_node.get("class_type") or "") != "SaveImage":
+            return None
+        output_inputs = output_node.get("inputs") or {}
+        filename_prefix = str(output_inputs.get("filename_prefix") or "").strip()
+        if not filename_prefix:
+            return None
+        prefix_path = Path(filename_prefix.replace("\\", "/"))
+        target_dir = (self.output_root / prefix_path.parent).resolve()
+        if not target_dir.exists():
+            return None
+        file_candidates = sorted(
+            (
+                path
+                for path in target_dir.iterdir()
+                if path.is_file()
+                and path.name.startswith(f"{prefix_path.name}_")
+                and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+            ),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if not file_candidates:
+            return None
+        image_path = file_candidates[0]
+        try:
+            subfolder = str(image_path.parent.relative_to(self.output_root)).replace("\\", "/")
+        except ValueError:
+            subfolder = ""
+        return {
+            "filename": image_path.name,
+            "subfolder": subfolder,
+            "type": "output",
+            "image_bytes": image_path.read_bytes(),
+        }
 
     @staticmethod
     def _extract_history_error(history: dict[str, Any], prompt_id: str) -> dict[str, Any] | None:

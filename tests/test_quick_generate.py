@@ -30,7 +30,7 @@ def test_build_quick_project_request_uses_example_defaults() -> None:
     assert request.subtitle_backend == "whisperx"
     assert request.character_names == ["Тато", "Син"]
     assert request.script.startswith("СЦЕНА 1.")
-    assert "ГЕРОЙСЬКА ВСТАВКА:" in request.script
+    assert "ГЕРОЇСЬКА ВСТАВКА:" in request.script
     assert metadata["example_slug"] == "fortnite_family_jump"
 
 
@@ -65,7 +65,7 @@ def test_build_quick_project_request_generates_dialogue_action_script_from_idea(
     assert request.music_backend == "deterministic"
     assert "ТАТО:" in request.script
     assert "СИН:" in request.script
-    assert "ГЕРОЙСЬКА ВСТАВКА:" in request.script
+    assert "ГЕРОЇСЬКА ВСТАВКА:" in request.script
     assert metadata["profile"]["backend_profile"]["visual_backend"] == "deterministic"
 
 

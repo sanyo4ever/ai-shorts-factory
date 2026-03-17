@@ -1994,7 +1994,7 @@ def test_hydrate_seeded_quick_generate_acceptance_runs_reuses_saved_project_snap
         project=ProjectRecord(
             project_id="proj_quick_seeded",
             title="Seeded quick case",
-            script="СЦЕНА 1. ВЕДУЧИЙ говорить.\n\nГЕРОЙСЬКА ВСТАВКА: reveal.",
+            script="СЦЕНА 1. ВЕДУЧИЙ говорить.\n\nГЕРОЇСЬКА ВСТАВКА: reveal.",
             language="uk",
             style="stylized_short",
             target_duration_sec=10,
