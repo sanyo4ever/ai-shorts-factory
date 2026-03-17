@@ -767,6 +767,19 @@ def test_render_shots_uses_wan_for_hero_insert(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("filmstudio.services.media_adapters.run_wan_inference", fake_run_wan_inference)
     monkeypatch.setattr("filmstudio.services.media_adapters.run_command", fake_run_command)
     monkeypatch.setattr("filmstudio.services.media_adapters.ffprobe_media", fake_ffprobe_media)
+    monkeypatch.setattr(adapters, "_require_wan_repo", lambda: runtime_root / "wan-repo")
+    monkeypatch.setattr(adapters, "_require_wan_ckpt_dir", lambda: runtime_root / "wan-ckpt")
+    monkeypatch.setattr(
+        adapters,
+        "_probe_wan_raw_quality",
+        lambda path: {
+            "available": True,
+            "usable": True,
+            "status": "good",
+            "reasons": [],
+            "metrics": {"yavg_mean": 120.0, "satavg_mean": 64.0},
+        },
+    )
 
     result = adapters.render_shots(snapshot)
     artifact_kinds = {artifact.kind for artifact in result.artifacts}
@@ -784,12 +797,153 @@ def test_render_shots_uses_wan_for_hero_insert(tmp_path, monkeypatch) -> None:
     assert manifest["normalize_hold_duration_sec"] == 0.0
     assert manifest["normalize_target_duration_sec"] == pytest.approx(manifest["duration_sec"])
     assert manifest["hybrid_plan"]["target_duration_sec"] == pytest.approx(manifest["duration_sec"])
+    assert manifest["wan_raw_quality"]["status"] == "good"
+    assert manifest["wan_center_selected"] is True
     assert len(manifest["hybrid_segments"]) == 3
     assert manifest["hybrid_segments"][0]["label"] == "storyboard_lead"
     assert manifest["hybrid_segments"][1]["label"] == "wan_center"
     assert manifest["hybrid_segments"][2]["label"] == "storyboard_tail"
     assert set(manifest["normalize_commands"]) == {"hybrid_lead", "hybrid_center", "hybrid_tail", "hybrid_concat"}
     assert any("concat" in command for call in command_calls for command in call)
+
+
+def test_render_shots_wan_rejects_washed_out_raw_center(tmp_path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="Wan hero fallback",
+            style="fortnite_stylized_action",
+            script="SCENE 1. TATO and SYN sprint toward the glowing crown.\nHERO INSERT: explosive duo payoff.",
+            language="uk",
+            video_backend="wan",
+            character_names=["Tato", "Syn"],
+        )
+    )
+    adapters = DeterministicMediaAdapters(artifact_store, video_backend="wan", wan_task="i2v-14B")
+
+    project_dir = artifact_store.project_dir(snapshot.project.project_id)
+    storyboard_path = project_dir / f"shots/{snapshot.scenes[0].shots[0].shot_id}/storyboard.png"
+    storyboard_path.parent.mkdir(parents=True, exist_ok=True)
+    storyboard_path.write_bytes(b"fake-storyboard")
+    snapshot.artifacts.append(
+        ArtifactRecord(
+            artifact_id="artifact_storyboard",
+            kind="storyboard",
+            path=str(storyboard_path),
+            stage="generate_storyboards",
+            metadata={"shot_id": snapshot.scenes[0].shots[0].shot_id},
+        )
+    )
+    snapshot.scenes[0].shots[0].strategy = "hero_insert"
+    command_calls: list[list[str]] = []
+
+    def fake_run_wan_inference(config, *, prompt, output_path, result_root, input_image_path, seed):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-raw-video")
+        stdout_path = result_root / "wan_stdout.log"
+        stderr_path = result_root / "wan_stderr.log"
+        prompt_path = result_root / "wan_prompt.txt"
+        profile_path = result_root / "wan_profile.jsonl"
+        profile_summary_path = result_root / "wan_profile_summary.json"
+        stdout_path.write_text("wan ok", encoding="utf-8")
+        stderr_path.write_text("", encoding="utf-8")
+        prompt_path.write_text(prompt, encoding="utf-8")
+        profile_path.write_text("", encoding="utf-8")
+        profile_summary_path.write_text(json.dumps({"status": "completed"}, indent=2), encoding="utf-8")
+        return WanRunResult(
+            output_video_path=output_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            profile_path=profile_path,
+            profile_summary_path=profile_summary_path,
+            profile_summary={"status": "completed"},
+            command=["python", "generate.py", "--task", config.task],
+            duration_sec=12.5,
+            prompt_path=prompt_path,
+        )
+
+    def fake_run_command(args, *, timeout_sec=300.0, cwd=None, env=None):
+        command_calls.append(list(args))
+        output_path = Path(args[-1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-normalized-video")
+        return CommandResult(
+            args=args,
+            returncode=0,
+            stdout="ok",
+            stderr="",
+            duration_sec=1.0,
+        )
+
+    def fake_ffprobe_media(ffprobe_binary, media_path, *, timeout_sec=30.0):
+        path = Path(media_path)
+        if path.name == "wan_raw.mp4":
+            return {
+                "format": {"duration": "0.500", "size": "1024", "bit_rate": "5000000"},
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "codec_name": "h264",
+                        "width": 1280,
+                        "height": 720,
+                        "r_frame_rate": "24/1",
+                    }
+                ],
+            }
+        return {
+            "format": {"duration": "2.000", "size": "2048", "bit_rate": "6000000"},
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "width": 1280,
+                    "height": 720,
+                    "r_frame_rate": "24/1",
+                }
+            ],
+        }
+
+    monkeypatch.setattr("filmstudio.services.media_adapters.resolve_binary", lambda value: value)
+    monkeypatch.setattr("filmstudio.services.media_adapters.run_wan_inference", fake_run_wan_inference)
+    monkeypatch.setattr("filmstudio.services.media_adapters.run_command", fake_run_command)
+    monkeypatch.setattr("filmstudio.services.media_adapters.ffprobe_media", fake_ffprobe_media)
+    wan_repo_path = runtime_root / "wan-repo"
+    wan_ckpt_dir = runtime_root / "wan-ckpt"
+    wan_repo_path.mkdir(parents=True, exist_ok=True)
+    wan_ckpt_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(adapters, "wan_repo_path", wan_repo_path)
+    monkeypatch.setattr(adapters, "wan_ckpt_dir", wan_ckpt_dir)
+    monkeypatch.setattr(adapters, "wan_python_binary", "python")
+    monkeypatch.setattr(
+        adapters,
+        "_probe_wan_raw_quality",
+        lambda path: {
+            "available": True,
+            "usable": False,
+            "status": "reject",
+            "reasons": ["washed_out_high_luma_low_saturation"],
+            "metrics": {"yavg_mean": 210.0, "satavg_mean": 12.0},
+        },
+    )
+
+    result = adapters.render_shots(snapshot)
+    manifest_path = Path(
+        next(artifact.path for artifact in result.artifacts if artifact.kind == "shot_render_manifest")
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["normalize_duration_policy"] == "hybrid_storyboard_only_raw_rejected"
+    assert manifest["wan_raw_quality"]["status"] == "reject"
+    assert manifest["wan_center_selected"] is False
+    assert len(manifest["hybrid_segments"]) == 1
+    assert manifest["hybrid_segments"][0]["label"] == "storyboard_full"
+    assert set(manifest["normalize_commands"]) == {"hybrid_storyboard_full", "hybrid_concat"}
+    assert all("hybrid_center.mp4" not in " ".join(call) for call in command_calls)
 
 
 def test_wan_prompt_is_compact_for_hero_insert(tmp_path) -> None:
@@ -830,13 +984,14 @@ def test_wan_prompt_is_compact_for_hero_insert(tmp_path) -> None:
     prompt = adapters._wan_prompt(snapshot, shot)
 
     assert "Dialogue context:" not in prompt
-    assert "Scene beat:" in prompt
-    assert "Purpose:" in prompt
-    assert "father" in prompt
-    assert "young son" in prompt or "son" in prompt
+    assert "Action beat:" in prompt
+    assert "English planning beat:" not in prompt
+    assert "adult father Tato" in prompt
+    assert "young boy son Syn" in prompt
     assert "exactly two characters" in prompt
     assert "no squad" in prompt
-    assert "Fortnite-inspired readable duo action" in prompt
+    assert "no third figure" in prompt
+    assert "clean silhouettes" in prompt
     assert len(prompt) < 600
 
 
@@ -1332,7 +1487,7 @@ def test_whisperx_stage_emits_manifest_and_raw_json(tmp_path, monkeypatch) -> No
                         {
                             "start": 0.0,
                             "end": 1.0,
-                            "text": " Pryvit!",
+                            "text": " Wrong collapsed transcript!",
                             "words": [{"word": "Pryvit!", "start": 0.0, "end": 1.0, "score": 0.9}],
                         }
                     ],
@@ -1373,6 +1528,8 @@ def test_whisperx_stage_emits_manifest_and_raw_json(tmp_path, monkeypatch) -> No
     assert manifest["backend"] == "whisperx"
     assert manifest["segment_count"] == 1
     assert manifest["word_count"] == 1
+    assert manifest["subtitle_source_kind"] == "dialogue_timeline_whisperx_words"
+    assert manifest["subtitle_cue_count"] == 2
 
     word_timestamps_path = Path(
         next(
@@ -1393,7 +1550,19 @@ def test_whisperx_stage_emits_manifest_and_raw_json(tmp_path, monkeypatch) -> No
     )
     layout_manifest = json.loads(layout_manifest_path.read_text(encoding="utf-8"))
     assert layout_manifest["backend"] == "whisperx"
+    assert layout_manifest["source_kind"] == "dialogue_timeline_whisperx_words"
+    assert [cue["text"] for cue in layout_manifest["cues"]] == [
+        "Hero: Pryvit!",
+        "Friend: Vitayu!",
+    ]
     assert layout_manifest["cues"][0]["fits_safe_zone"] is True
+
+
+def test_compact_prompt_text_uses_ascii_ellipsis() -> None:
+    compacted = DeterministicMediaAdapters._compact_prompt_text("word " * 30, limit=20)
+
+    assert compacted.endswith("...")
+    assert "…" not in compacted
 
 
 class _RecordingManagedServiceRecord:

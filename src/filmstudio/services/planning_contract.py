@@ -107,6 +107,14 @@ _PLANNING_TEXT_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+def strip_duplicate_planning_label(text: str, *, label: str | None = None) -> str:
+    cleaned = collapse_text(text)
+    if not cleaned or not label:
+        return cleaned
+    pattern = re.compile(rf"^\s*{re.escape(label)}\s*:\s*", re.IGNORECASE)
+    return pattern.sub("", cleaned, count=1).strip()
+
+
 def collapse_text(text: str) -> str:
     return " ".join(text.replace("\r\n", "\n").replace("\r", "\n").split()).strip()
 
@@ -136,7 +144,7 @@ def coerce_planning_english(
     cleaned = collapse_text(text)
     if not cleaned:
         return ""
-    normalized = normalize_screenplay_labels(cleaned)
+    normalized = normalize_screenplay_labels(strip_duplicate_planning_label(cleaned, label=label))
     english_candidate = normalized
     if source_language.lower().startswith("uk") or contains_cyrillic(normalized):
         english_candidate = romanize_ukrainian_ascii(normalized)

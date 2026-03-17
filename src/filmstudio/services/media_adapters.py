@@ -36,7 +36,10 @@ from filmstudio.services.comfyui_client import (
     stable_visual_seed,
     write_image_bytes,
 )
-from filmstudio.services.planning_contract import coerce_planning_english
+from filmstudio.services.planning_contract import (
+    coerce_planning_english,
+    strip_duplicate_planning_label,
+)
 from filmstudio.services.ace_step_client import AceStepClient, AceStepClientConfig
 from filmstudio.services.chatterbox_client import (
     ChatterboxClient,
@@ -1192,6 +1195,7 @@ class DeterministicMediaAdapters:
         primary_descriptor = self._character_visual_fragment_ascii(primary_character)
         primary_negative = self._character_negative_fragment(primary_character)
         group_descriptor = self._shot_character_prompt_fragment(snapshot, shot)
+        compact_group_descriptor = self._shot_character_prompt_fragment(snapshot, shot, compact=True)
         shot_character_profiles = [
             character
             for name in shot.characters
@@ -1247,27 +1251,38 @@ class DeterministicMediaAdapters:
             )
         if shot.strategy == "hero_insert":
             duo_focus = "one clear action subject, no extra crowd, "
+            hero_character_hint = f"characters: {compact_group_descriptor}, one shared payoff beat, readable vertical action, "
             if len(shot_character_profiles) == 2:
                 duo_labels = [
-                    self._visual_prompt_identity_label_ascii(character)
+                    self._character_action_fragment(character)
                     for character in shot_character_profiles
                 ]
                 duo_focus = (
                     f"exactly two characters only, {duo_labels[0]} and {duo_labels[1]} only, "
                     "same duo from the dialogue closeups, no extra fighters, no squad, no crowd, "
                 )
+                hero_character_hint = (
+                    f"{duo_labels[0]} and {duo_labels[1]}, one shared payoff beat, "
+                    "medium full shot, both characters large in frame, no background characters, "
+                    "readable vertical action, "
+                )
+            hero_composition_hint = (
+                f"{shot.composition.orientation} {shot.composition.aspect_ratio}, centered duo action, "
+                "full bodies readable, leave a clean upper subtitle-safe band"
+            )
             return (
                 (
-                    f"{snapshot.project.style}, storyboard frame, {shot.title}, {purpose_hint}, "
+                    f"{snapshot.project.style}, storyboard frame, hero insert, "
                     f"hero action insert, {duo_focus}"
-                    f"characters: {group_descriptor}, one shared payoff beat, readable vertical action, "
-                    "freeze-frame readability, not a poster, not a roster card, "
-                    f"{composition_hint}, {lane_hint}, "
-                    f"seed hint: {prompt_seed_hint}"
+                    f"{hero_character_hint}"
+                    "freeze-frame readability, not a poster, not a roster card, clean silhouettes, "
+                    "one adult father and one young boy son only, both clearly visible, "
+                    f"{hero_composition_hint}, action beat: {prompt_seed_hint}"
                 ),
                 (
                     "crowd, squad, team lineup, roster poster, splash art, ensemble poster, collage, "
-                    "extra fighters, third person, fourth person, distant background people, duplicate heroes, "
+                    "extra fighters, third person, fourth person, trio, three people, overhead jumper, "
+                    "distant background people, duplicate heroes, "
                     "busy key art, title card, logo, watermark, text, blurry, bad anatomy, duplicate body parts"
                     f"{', ' + shot_negative_hint if shot_negative_hint else ''}"
                 ),
@@ -1854,35 +1869,40 @@ class DeterministicMediaAdapters:
 
     @staticmethod
     def _character_action_fragment(character: CharacterProfile | dict[str, Any]) -> str:
-        name = DeterministicMediaAdapters._visual_prompt_identity_label_ascii(character)
+        raw_name = str(character.get("name") if isinstance(character, dict) else character.name).strip()
+        romanized_name = DeterministicMediaAdapters._romanize_ukrainian_text_ascii(raw_name)
         relationship = str(
             character.get("relationship_hint") if isinstance(character, dict) else character.relationship_hint
         ).strip()
+        role_hint = str(
+            character.get("role_hint") if isinstance(character, dict) else character.role_hint
+        ).strip()
+        normalized_role = role_hint.casefold()
+        relationship_source = relationship.casefold()
+        if normalized_role == "father":
+            name = f"adult father {romanized_name or 'hero'}"
+        elif normalized_role == "son":
+            name = f"young boy son {romanized_name or 'hero'}"
+        elif "father" in relationship_source:
+            name = f"adult father {romanized_name or 'hero'}"
+        elif "son" in relationship_source or "child" in relationship_source or "boy" in relationship_source:
+            name = f"young boy son {romanized_name or 'hero'}"
+        else:
+            name = romanized_name or DeterministicMediaAdapters._visual_prompt_identity_label_ascii(character)
         wardrobe = str(
             character.get("wardrobe_hint") if isinstance(character, dict) else character.wardrobe_hint
         ).strip()
-        raw_style_tags = (
-            character.get("style_tags") if isinstance(character, dict) else character.style_tags
-        ) or []
-        style_tags = [
-            str(tag).strip()
-            for tag in raw_style_tags
-            if str(tag).strip()
-        ]
-        selected_tags = [
-            tag
-            for tag in style_tags
-            if "fortnite" in tag.casefold() or "battle royale" in tag.casefold()
-        ][:1]
+        wardrobe_core = wardrobe.split(",", 1)[0].strip()
+        wardrobe_core = wardrobe_core.removeprefix("Fortnite-inspired ").strip()
+        wardrobe_core = wardrobe_core.removeprefix("fortnite-inspired ").strip()
+        wardrobe_core = wardrobe_core.removeprefix("battle-royale ").strip()
         parts = [
             name,
-            relationship,
-            wardrobe,
-            ", ".join(selected_tags),
+            f"in {wardrobe_core.lower()}" if wardrobe_core else "",
         ]
         return DeterministicMediaAdapters._compact_prompt_text(
             ", ".join(part for part in parts if part),
-            limit=80,
+            limit=52,
         )
 
     def _shot_character_prompt_fragment(
@@ -1952,11 +1972,11 @@ class DeterministicMediaAdapters:
         )
 
     def _planning_seed(self, snapshot: ProjectSnapshot, shot: ShotPlan) -> str:
+        seed = strip_duplicate_planning_label(str(shot.prompt_seed or ""), label="English planning beat")
         return self._planning_text_for_media(
-            shot.prompt_seed,
+            seed,
             source_language=snapshot.project.language,
-            limit=240,
-            label="English planning beat",
+            limit=180,
         )
 
     def _musetalk_source_prompt_variants(
@@ -5080,6 +5100,7 @@ class DeterministicMediaAdapters:
         )
         raw_probe = ffprobe_media(self.ffprobe_binary, raw_output_path)
         raw_summary = summarize_probe(raw_probe)
+        raw_quality = self._probe_wan_raw_quality(raw_output_path)
         raw_duration_sec = float(raw_summary.get("duration_sec") or 0.0)
         requested_duration_sec = max(raw_duration_sec, float(duration_sec or 0.0))
         requested_hold_duration_sec = max(0.0, requested_duration_sec - raw_duration_sec)
@@ -5098,84 +5119,108 @@ class DeterministicMediaAdapters:
             shot=shot,
         )
         hybrid_segments: list[dict[str, Any]] = []
+        center_quality_rejected = False
         if hybrid_plan is not None:
             target_duration_sec = requested_duration_sec
-            lead_path = result_root / "hybrid_lead.mp4"
-            lead_command = self._render_looped_image_clip_command(
-                image_path=Path(hybrid_plan["storyboard_path"]),
-                output_path=lead_path,
-                duration_sec=float(hybrid_plan["lead_duration_sec"]),
-                filter_chain=self._wan_storyboard_motion_filter(phase="lead"),
-            )
-            lead_run = run_command(lead_command, timeout_sec=self.command_timeout_sec)
-            lead_summary = summarize_probe(ffprobe_media(self.ffprobe_binary, lead_path))
-            normalize_commands["hybrid_lead"] = lead_command
-            hybrid_segments.append(
-                {
-                    "label": "storyboard_lead",
-                    "path": str(lead_path),
-                    "duration_sec": float(lead_summary.get("duration_sec") or hybrid_plan["lead_duration_sec"]),
-                    "probe": lead_summary,
-                }
-            )
-
-            center_path = result_root / "hybrid_center.mp4"
-            center_command = [
-                resolve_binary(self.ffmpeg_binary) or self.ffmpeg_binary,
-                "-y",
-                "-i",
-                str(raw_output_path),
-                "-vf",
-                self._wan_center_motion_filter(),
-                "-an",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "medium",
-                "-crf",
-                "18",
-                "-pix_fmt",
-                "yuv420p",
-                "-movflags",
-                "+faststart",
-                "-t",
-                f"{raw_duration_sec:.3f}",
-                str(center_path),
-            ]
-            center_run = run_command(center_command, timeout_sec=self.command_timeout_sec)
-            center_summary = summarize_probe(ffprobe_media(self.ffprobe_binary, center_path))
-            normalize_commands["hybrid_center"] = center_command
-            hybrid_segments.append(
-                {
-                    "label": "wan_center",
-                    "path": str(center_path),
-                    "duration_sec": float(center_summary.get("duration_sec") or raw_duration_sec),
-                    "probe": center_summary,
-                }
-            )
-
-            tail_duration_sec = float(hybrid_plan["tail_duration_sec"])
-            if tail_duration_sec > 0.05:
-                tail_path = result_root / "hybrid_tail.mp4"
-                tail_command = self._render_looped_image_clip_command(
-                    image_path=Path(hybrid_plan["storyboard_path"]),
-                    output_path=tail_path,
-                    duration_sec=tail_duration_sec,
-                    filter_chain=self._wan_storyboard_motion_filter(phase="tail"),
+            storyboard_path = Path(hybrid_plan["storyboard_path"])
+            if raw_quality.get("usable", True):
+                lead_path = result_root / "hybrid_lead.mp4"
+                lead_command = self._render_looped_image_clip_command(
+                    image_path=storyboard_path,
+                    output_path=lead_path,
+                    duration_sec=float(hybrid_plan["lead_duration_sec"]),
+                    filter_chain=self._wan_storyboard_motion_filter(phase="lead"),
                 )
-                tail_run = run_command(tail_command, timeout_sec=self.command_timeout_sec)
-                tail_summary = summarize_probe(ffprobe_media(self.ffprobe_binary, tail_path))
-                normalize_commands["hybrid_tail"] = tail_command
+                run_command(lead_command, timeout_sec=self.command_timeout_sec)
+                lead_summary = summarize_probe(ffprobe_media(self.ffprobe_binary, lead_path))
+                normalize_commands["hybrid_lead"] = lead_command
                 hybrid_segments.append(
                     {
-                        "label": "storyboard_tail",
-                        "path": str(tail_path),
-                        "duration_sec": float(tail_summary.get("duration_sec") or tail_duration_sec),
-                        "probe": tail_summary,
+                        "label": "storyboard_lead",
+                        "path": str(lead_path),
+                        "duration_sec": float(lead_summary.get("duration_sec") or hybrid_plan["lead_duration_sec"]),
+                        "probe": lead_summary,
                     }
                 )
+
+                center_path = result_root / "hybrid_center.mp4"
+                center_command = [
+                    resolve_binary(self.ffmpeg_binary) or self.ffmpeg_binary,
+                    "-y",
+                    "-i",
+                    str(raw_output_path),
+                    "-vf",
+                    self._wan_center_motion_filter(),
+                    "-an",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "medium",
+                    "-crf",
+                    "18",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-movflags",
+                    "+faststart",
+                    "-t",
+                    f"{raw_duration_sec:.3f}",
+                    str(center_path),
+                ]
+                run_command(center_command, timeout_sec=self.command_timeout_sec)
+                center_summary = summarize_probe(ffprobe_media(self.ffprobe_binary, center_path))
+                normalize_commands["hybrid_center"] = center_command
+                hybrid_segments.append(
+                    {
+                        "label": "wan_center",
+                        "path": str(center_path),
+                        "duration_sec": float(center_summary.get("duration_sec") or raw_duration_sec),
+                        "probe": center_summary,
+                    }
+                )
+
+                tail_duration_sec = float(hybrid_plan["tail_duration_sec"])
+                if tail_duration_sec > 0.05:
+                    tail_path = result_root / "hybrid_tail.mp4"
+                    tail_command = self._render_looped_image_clip_command(
+                        image_path=storyboard_path,
+                        output_path=tail_path,
+                        duration_sec=tail_duration_sec,
+                        filter_chain=self._wan_storyboard_motion_filter(phase="tail"),
+                    )
+                    run_command(tail_command, timeout_sec=self.command_timeout_sec)
+                    tail_summary = summarize_probe(ffprobe_media(self.ffprobe_binary, tail_path))
+                    normalize_commands["hybrid_tail"] = tail_command
+                    hybrid_segments.append(
+                        {
+                            "label": "storyboard_tail",
+                            "path": str(tail_path),
+                            "duration_sec": float(tail_summary.get("duration_sec") or tail_duration_sec),
+                            "probe": tail_summary,
+                        }
+                    )
             else:
-                tail_run = None
+                center_quality_rejected = True
+                storyboard_full_path = result_root / "hybrid_storyboard_full.mp4"
+                storyboard_full_command = self._render_looped_image_clip_command(
+                    image_path=storyboard_path,
+                    output_path=storyboard_full_path,
+                    duration_sec=target_duration_sec,
+                    filter_chain=self._wan_storyboard_motion_filter(phase="full"),
+                )
+                run_command(storyboard_full_command, timeout_sec=self.command_timeout_sec)
+                storyboard_full_summary = summarize_probe(
+                    ffprobe_media(self.ffprobe_binary, storyboard_full_path)
+                )
+                normalize_commands["hybrid_storyboard_full"] = storyboard_full_command
+                hybrid_segments.append(
+                    {
+                        "label": "storyboard_full",
+                        "path": str(storyboard_full_path),
+                        "duration_sec": float(storyboard_full_summary.get("duration_sec") or target_duration_sec),
+                        "probe": storyboard_full_summary,
+                        "replaces_raw_center": True,
+                    }
+                )
 
             concat_list_path = result_root / "hybrid_concat.txt"
             write_text(
@@ -5208,7 +5253,11 @@ class DeterministicMediaAdapters:
             ]
             normalize_run = run_command(normalize_command, timeout_sec=self.command_timeout_sec)
             normalize_commands["hybrid_concat"] = normalize_command
-            normalize_policy = "hybrid_storyboard_motion"
+            normalize_policy = (
+                "hybrid_storyboard_only_raw_rejected"
+                if center_quality_rejected
+                else "hybrid_storyboard_motion"
+            )
             hold_duration_sec = 0.0
         else:
             normalize_filter = f"{self._scale_crop_filter()},fps={self.render_fps}"
@@ -5274,11 +5323,14 @@ class DeterministicMediaAdapters:
                 "wan_duration_sec": wan_run.duration_sec,
                 "raw_output_path": str(raw_output_path),
                 "raw_probe": raw_summary,
+                "wan_raw_quality": raw_quality,
                 "requested_target_duration_sec": requested_duration_sec,
                 "normalize_target_duration_sec": target_duration_sec,
                 "normalize_hold_duration_sec": hold_duration_sec,
                 "normalize_hold_duration_cap_sec": hold_duration_cap_sec,
                 "normalize_duration_policy": normalize_policy,
+                "wan_center_selected": not center_quality_rejected,
+                "wan_center_rejected": center_quality_rejected,
                 "normalize_command": normalize_command,
                 "normalize_commands": normalize_commands,
                 "hybrid_segments": hybrid_segments,
@@ -5341,6 +5393,8 @@ class DeterministicMediaAdapters:
                 "normalize_hold_duration_sec": hold_duration_sec,
                 "normalize_hold_duration_cap_sec": hold_duration_cap_sec,
                 "normalize_duration_policy": normalize_policy,
+                "wan_raw_quality_status": raw_quality.get("status"),
+                "wan_center_selected": not center_quality_rejected,
                 "input_mode": "image_to_video" if input_image_path is not None else "text_to_video",
             }
         )
@@ -6609,23 +6663,7 @@ class DeterministicMediaAdapters:
     def _generate_subtitles_deterministic(self, snapshot: ProjectSnapshot) -> StageExecutionResult:
         result = StageExecutionResult()
         timeline = self._dialogue_timeline(snapshot)
-        shot_by_id = self._shot_by_id(snapshot)
-        cues = [
-            {
-                "line_id": entry.get("line_id"),
-                "shot_id": entry.get("shot_id"),
-                "scene_id": entry.get("scene_id"),
-                "start_sec": float(entry.get("start_sec", 0.0) or 0.0),
-                "end_sec": float(entry.get("end_sec", 0.0) or 0.0),
-                "character_name": str(entry.get("character_name") or ""),
-                "text": self._subtitle_display_text(
-                    shot_by_id.get(str(entry.get("shot_id") or "")),
-                    character_name=str(entry.get("character_name") or ""),
-                    text=str(entry.get("text") or ""),
-                ),
-            }
-            for entry in timeline
-        ]
+        cues = self._canonical_subtitle_cues(snapshot)
         srt_path, vtt_path, layout_manifest_path, ass_path, layout_payload = self._build_subtitle_artifacts(
             snapshot,
             backend="deterministic",
@@ -6724,25 +6762,29 @@ class DeterministicMediaAdapters:
             raise RuntimeError("WhisperX did not produce the expected subtitle artifacts.")
         whisperx_payload = json.loads(json_source.read_text(encoding="utf-8", errors="replace"))
         word_entries = self._whisperx_word_entries(whisperx_payload)
-        cues: list[dict[str, Any]] = []
-        for segment in whisperx_payload.get("segments", []):
-            if not isinstance(segment, dict):
-                continue
-            text = str(segment.get("text") or "").strip()
-            if not text:
-                continue
-            cues.append(
-                {
-                    "start_sec": float(segment.get("start", 0.0) or 0.0),
-                    "end_sec": float(segment.get("end", 0.0) or 0.0),
-                    "text": text,
-                    "character_name": "",
-                }
-            )
+        cues = self._canonical_subtitle_cues(snapshot)
+        source_kind = "dialogue_timeline_whisperx_words"
+        if not cues:
+            cues = []
+            for segment in whisperx_payload.get("segments", []):
+                if not isinstance(segment, dict):
+                    continue
+                text = str(segment.get("text") or "").strip()
+                if not text:
+                    continue
+                cues.append(
+                    {
+                        "start_sec": float(segment.get("start", 0.0) or 0.0),
+                        "end_sec": float(segment.get("end", 0.0) or 0.0),
+                        "text": text,
+                        "character_name": "",
+                    }
+                )
+            source_kind = "whisperx_segments"
         srt_path, vtt_path, layout_manifest_path, ass_path, layout_payload = self._build_subtitle_artifacts(
             snapshot,
             backend="whisperx",
-            source_kind="whisperx_segments",
+            source_kind=source_kind,
             cues=cues,
         )
         words_path = self.artifact_store.write_json(
@@ -6781,6 +6823,8 @@ class DeterministicMediaAdapters:
                 "subtitle_layout_manifest_path": str(layout_manifest_path),
                 "segment_count": len(whisperx_payload.get("segments", [])),
                 "word_count": len(word_entries),
+                "subtitle_source_kind": source_kind,
+                "subtitle_cue_count": len(cues),
             },
         )
         return StageExecutionResult(
@@ -6843,6 +6887,8 @@ class DeterministicMediaAdapters:
                     "duration_sec": run.duration_sec,
                     "segment_count": len(whisperx_payload.get("segments", [])),
                     "word_count": len(word_entries),
+                    "subtitle_source_kind": source_kind,
+                    "subtitle_cue_count": len(cues),
                     "raw_json_path": str(json_source),
                     "manifest_path": str(manifest_path),
                     "subtitle_lane_set": sorted(
@@ -8452,6 +8498,27 @@ class DeterministicMediaAdapters:
                     return lines
         return self._planned_dialogue_entries(snapshot)
 
+    def _canonical_subtitle_cues(self, snapshot: ProjectSnapshot) -> list[dict[str, Any]]:
+        timeline = self._dialogue_timeline(snapshot)
+        shot_by_id = self._shot_by_id(snapshot)
+        return [
+            {
+                "line_id": entry.get("line_id"),
+                "shot_id": entry.get("shot_id"),
+                "scene_id": entry.get("scene_id"),
+                "start_sec": float(entry.get("start_sec", 0.0) or 0.0),
+                "end_sec": float(entry.get("end_sec", 0.0) or 0.0),
+                "character_name": str(entry.get("character_name") or ""),
+                "text": self._subtitle_display_text(
+                    shot_by_id.get(str(entry.get("shot_id") or "")),
+                    character_name=str(entry.get("character_name") or ""),
+                    text=str(entry.get("text") or ""),
+                ),
+            }
+            for entry in timeline
+            if str(entry.get("text") or "").strip()
+        ]
+
     def _dialogue_duration_for_shot(self, snapshot: ProjectSnapshot, shot_id: str) -> float:
         return sum(
             float(entry.get("duration_sec", 0.0) or 0.0)
@@ -8886,6 +8953,29 @@ class DeterministicMediaAdapters:
             except ValueError:
                 continue
         return metrics
+
+    @staticmethod
+    def _parse_signalstats_frames_output(text: str) -> list[dict[str, float]]:
+        frames: list[dict[str, float]] = []
+        current: dict[str, float] = {}
+        for line in text.splitlines():
+            line = line.strip()
+            if "frame:" in line and "pts:" in line:
+                if current:
+                    frames.append(current)
+                    current = {}
+                continue
+            if "lavfi.signalstats." not in line or "=" not in line:
+                continue
+            _, metric = line.split("lavfi.signalstats.", 1)
+            key, value = metric.split("=", 1)
+            try:
+                current[key.strip().lower()] = float(value.strip())
+            except ValueError:
+                continue
+        if current:
+            frames.append(current)
+        return frames
 
     @staticmethod
     def _subtitle_visibility_sample_cues(cues: list[dict[str, Any]], *, limit: int = 6) -> list[dict[str, Any]]:
@@ -9427,6 +9517,101 @@ class DeterministicMediaAdapters:
             return min(max(raw_duration_sec, 0.5), 1.0)
         return None
 
+    def _probe_wan_raw_quality(self, raw_video_path: Path) -> dict[str, Any]:
+        ffmpeg_binary = resolve_binary(self.ffmpeg_binary) or self.ffmpeg_binary
+        command = [
+            ffmpeg_binary,
+            "-v",
+            "info",
+            "-i",
+            str(raw_video_path),
+            "-vf",
+            "signalstats,metadata=print",
+            "-f",
+            "null",
+            "-",
+        ]
+        try:
+            run = run_command(
+                command,
+                timeout_sec=max(30.0, min(float(self.command_timeout_sec), 180.0)),
+            )
+        except RuntimeError as error:
+            return {
+                "available": False,
+                "usable": True,
+                "status": "unknown",
+                "reasons": [f"probe_failed:{error}"],
+                "command": command,
+            }
+        frames = self._parse_signalstats_frames_output(f"{run.stdout}\n{run.stderr}")
+        if not frames:
+            return {
+                "available": False,
+                "usable": True,
+                "status": "unknown",
+                "reasons": ["signalstats_frames_missing"],
+                "command": command,
+                "duration_sec": run.duration_sec,
+            }
+
+        def _mean(metric_name: str) -> float:
+            values = [float(frame.get(metric_name, 0.0)) for frame in frames if metric_name in frame]
+            if not values:
+                return 0.0
+            return sum(values) / len(values)
+
+        yavg_mean = _mean("yavg")
+        yhigh_mean = _mean("yhigh")
+        ymax_mean = _mean("ymax")
+        satavg_mean = _mean("satavg")
+        sathigh_mean = _mean("sathigh")
+
+        severe_washout = yavg_mean >= 188.0 and satavg_mean <= 35.0 and yhigh_mean >= 190.0
+        low_saturation_blowout = yavg_mean >= 175.0 and satavg_mean <= 28.0 and ymax_mean >= 225.0
+        warning_washout = yavg_mean >= 168.0 and satavg_mean <= 32.0
+
+        reasons: list[str] = []
+        status = "good"
+        usable = True
+        if severe_washout:
+            reasons.append("washed_out_high_luma_low_saturation")
+        if low_saturation_blowout:
+            reasons.append("highlight_blowout_low_saturation")
+        if reasons:
+            status = "reject"
+            usable = False
+        elif warning_washout:
+            status = "marginal"
+            reasons.append("bright_low_saturation")
+
+        return {
+            "available": True,
+            "usable": usable,
+            "status": status,
+            "reasons": reasons,
+            "frame_count": len(frames),
+            "command": command,
+            "duration_sec": run.duration_sec,
+            "metrics": {
+                "yavg_mean": round(yavg_mean, 4),
+                "yhigh_mean": round(yhigh_mean, 4),
+                "ymax_mean": round(ymax_mean, 4),
+                "satavg_mean": round(satavg_mean, 4),
+                "sathigh_mean": round(sathigh_mean, 4),
+            },
+            "thresholds": {
+                "severe_washout_yavg_min": 188.0,
+                "severe_washout_satavg_max": 35.0,
+                "severe_washout_yhigh_min": 190.0,
+                "blowout_yavg_min": 175.0,
+                "blowout_satavg_max": 28.0,
+                "blowout_ymax_min": 225.0,
+                "warning_yavg_min": 168.0,
+                "warning_satavg_max": 32.0,
+            },
+        }
+
     def _wan_hybrid_segment_plan(
         self,
         *,
@@ -9459,6 +9644,13 @@ class DeterministicMediaAdapters:
         }
 
     def _wan_storyboard_motion_filter(self, *, phase: str) -> str:
+        if phase == "full":
+            return (
+                f"{self._scale_crop_filter()},"
+                f"zoompan=z='if(eq(on,0),1.01,min(zoom+0.0018,1.13))':"
+                f"x='iw*0.014':y='ih*0.009':d=1:s={self._render_size()},"
+                f"fps={self.render_fps},format=yuv420p"
+            )
         if phase == "tail":
             return (
                 f"{self._scale_crop_filter()},"
@@ -9525,7 +9717,10 @@ class DeterministicMediaAdapters:
         compact = " ".join(text.split())
         if len(compact) <= limit:
             return compact
-        return compact[: limit - 1].rstrip() + "…"
+        if limit <= 3:
+            return "." * max(0, limit)
+        shortened = textwrap.shorten(compact, width=limit, placeholder="...")
+        return shortened if shortened else compact[: max(0, limit - 3)].rstrip() + "..."
 
     @staticmethod
     def _wan_style_fragment(snapshot: ProjectSnapshot) -> str:
@@ -9553,29 +9748,25 @@ class DeterministicMediaAdapters:
     def _wan_prompt(self, snapshot: ProjectSnapshot, shot: ShotPlan) -> str:
         character_names = DeterministicMediaAdapters._compact_prompt_text(
             self._shot_character_prompt_fragment(snapshot, shot, compact=True),
-            limit=110,
+            limit=96,
         )
         composition = shot.composition
         prompt_seed_hint = DeterministicMediaAdapters._compact_prompt_text(
             self._planning_seed(snapshot, shot),
-            limit=52,
-        )
-        purpose_hint = DeterministicMediaAdapters._compact_prompt_text(
-            self._planning_purpose(snapshot, shot),
-            limit=28,
+            limit=120,
         )
         style_fragment = self._wan_style_fragment(snapshot)
         duo_focus = "one clear action subject, no crowd, no poster"
         if len(shot.characters) == 2:
-            duo_focus = "exactly two characters, father-son duo, no squad, no crowd, no poster"
+            duo_focus = (
+                "exactly two characters only, father-son duo, both clearly visible, no squad, no crowd, no poster"
+            )
         return (
             f"{style_fragment}, animated hero insert. "
-            f"Purpose: {purpose_hint}. "
-            f"Scene beat: {prompt_seed_hint}. Characters: {character_names}. "
+            f"Action beat: {prompt_seed_hint}. Characters: {character_names}. "
             f"{duo_focus}. "
-            f"{composition.orientation} {composition.aspect_ratio}, centered readable action, "
-            f"clean {composition.subtitle_lane} subtitle lane. "
-            "Fortnite-inspired readable duo action, clean silhouettes, one clear payoff motion, stable motion, no extra fighters."
+            f"{composition.orientation} {composition.aspect_ratio}, centered duo action, clean {composition.subtitle_lane} subtitle lane, "
+            "clean silhouettes, full bodies readable, one clear payoff motion, no third figure."
         )
 
     @staticmethod
