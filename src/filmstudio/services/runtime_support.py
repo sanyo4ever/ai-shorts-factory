@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -225,15 +226,43 @@ def ollama_generate_json(
     try:
         with request.urlopen(http_request, timeout=timeout_sec) as response:
             raw = json.loads(response.read().decode("utf-8"))
+    except (TimeoutError, socket.timeout) as exc:
+        raise RuntimeError(f"Ollama request timed out: {exc}") from exc
     except error.URLError as exc:
         raise RuntimeError(f"Ollama request failed: {exc}") from exc
     content = raw.get("response", "")
     if not content:
         raise RuntimeError("Ollama returned an empty response.")
     try:
-        return json.loads(content)
+        return _parse_json_object_response(content)
     except json.JSONDecodeError as exc:
-        raise RuntimeError("Ollama response was not valid JSON.") from exc
+        snippet = content.strip().replace("\n", " ")[:240]
+        raise RuntimeError(f"Ollama response was not valid JSON. Snippet: {snippet}") from exc
+
+
+def _parse_json_object_response(content: str) -> dict[str, Any]:
+    stripped = content.strip()
+    candidates: list[str] = []
+    if stripped:
+        candidates.append(stripped)
+    fence_matches = re.findall(r"```(?:json)?\s*(.*?)```", stripped, flags=re.IGNORECASE | re.DOTALL)
+    candidates.extend(match.strip() for match in fence_matches if match.strip())
+    first_brace = stripped.find("{")
+    last_brace = stripped.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        candidates.append(stripped[first_brace : last_brace + 1])
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    raise json.JSONDecodeError("Could not extract JSON object.", stripped, 0)
 
 
 def ffprobe_media(ffprobe_binary: str, media_path: Path, *, timeout_sec: float = 30.0) -> dict[str, Any]:
