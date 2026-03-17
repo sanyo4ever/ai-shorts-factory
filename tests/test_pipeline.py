@@ -9,6 +9,7 @@ import pytest
 from filmstudio.services.comfyui_client import ComfyUIImageResult
 from filmstudio.domain.models import (
     ArtifactRecord,
+    CharacterProfile,
     DialogueLine,
     ProjectCreateRequest,
     SelectiveRerenderRequest,
@@ -786,6 +787,7 @@ def test_render_shots_uses_wan_for_hero_insert(tmp_path, monkeypatch) -> None:
     assert "shot_video_backend_raw" in artifact_kinds
     assert "shot_video" in artifact_kinds
     assert "shot_render_manifest" in artifact_kinds
+    assert "shot_video_conditioning_manifest" in artifact_kinds
 
     manifest_path = Path(
         next(artifact.path for artifact in result.artifacts if artifact.kind == "shot_render_manifest")
@@ -799,12 +801,22 @@ def test_render_shots_uses_wan_for_hero_insert(tmp_path, monkeypatch) -> None:
     assert manifest["hybrid_plan"]["target_duration_sec"] == pytest.approx(manifest["duration_sec"])
     assert manifest["wan_raw_quality"]["status"] == "good"
     assert manifest["wan_center_selected"] is True
+    assert manifest["conditioning"]["keyframe_strategy"] == "lead_tail_storyboard"
     assert len(manifest["hybrid_segments"]) == 3
     assert manifest["hybrid_segments"][0]["label"] == "storyboard_lead"
     assert manifest["hybrid_segments"][1]["label"] == "wan_center"
     assert manifest["hybrid_segments"][2]["label"] == "storyboard_tail"
     assert set(manifest["normalize_commands"]) == {"hybrid_lead", "hybrid_center", "hybrid_tail", "hybrid_concat"}
     assert any("concat" in command for call in command_calls for command in call)
+
+    conditioning_manifest_path = Path(
+        next(artifact.path for artifact in result.artifacts if artifact.kind == "shot_video_conditioning_manifest")
+    )
+    conditioning_manifest = json.loads(conditioning_manifest_path.read_text(encoding="utf-8"))
+    assert conditioning_manifest["backend"] == "wan"
+    assert conditioning_manifest["actual_input_mode"] == "image_to_video"
+    assert conditioning_manifest["conditioning"]["keyframe_strategy"] == "lead_tail_storyboard"
+    assert conditioning_manifest["reference_artifacts"][0]["kind"] == "storyboard"
 
 
 def test_render_shots_wan_rejects_washed_out_raw_center(tmp_path, monkeypatch) -> None:
@@ -940,6 +952,7 @@ def test_render_shots_wan_rejects_washed_out_raw_center(tmp_path, monkeypatch) -
     assert manifest["normalize_duration_policy"] == "hybrid_storyboard_only_raw_rejected"
     assert manifest["wan_raw_quality"]["status"] == "reject"
     assert manifest["wan_center_selected"] is False
+    assert manifest["conditioning"]["retake_windows"][0]["label"] == "setup"
     assert len(manifest["hybrid_segments"]) == 1
     assert manifest["hybrid_segments"][0]["label"] == "storyboard_full"
     assert set(manifest["normalize_commands"]) == {"hybrid_storyboard_full", "hybrid_concat"}
@@ -985,6 +998,8 @@ def test_wan_prompt_is_compact_for_hero_insert(tmp_path) -> None:
 
     assert "Dialogue context:" not in prompt
     assert "Action beat:" in prompt
+    assert "Motion intent:" in prompt
+    assert "Camera intent:" in prompt
     assert "English planning beat:" not in prompt
     assert "adult father Tato" in prompt
     assert "young boy son Syn" in prompt
@@ -993,6 +1008,78 @@ def test_wan_prompt_is_compact_for_hero_insert(tmp_path) -> None:
     assert "no third figure" in prompt
     assert "clean silhouettes" in prompt
     assert len(prompt) < 600
+
+
+def test_piper_voice_assignment_prefers_parent_child_semantic_mapping(tmp_path) -> None:
+    adapters = DeterministicMediaAdapters(ArtifactStore(tmp_path / "artifacts"))
+    characters = [
+        CharacterProfile(
+            character_id="char_father",
+            name="Тато",
+            voice_hint="Determined, authoritative tone with warmth",
+            visual_hint="stylized father portrait",
+            role_hint="father",
+            relationship_hint="father of Син",
+            age_hint="adult in his 30s",
+            gender_hint="male",
+        ),
+        CharacterProfile(
+            character_id="char_son",
+            name="Син",
+            voice_hint="Energetic, enthusiastic tone with youthful exuberance",
+            visual_hint="stylized son portrait",
+            role_hint="son",
+            relationship_hint="son of Тато",
+            age_hint="preteen boy around 10 to 13",
+            gender_hint="male",
+        ),
+    ]
+
+    speaker_ids, speaker_labels = adapters._assign_piper_speakers(
+        characters,
+        [("lada", 0), ("mykyta", 1), ("tetiana", 2)],
+    )
+
+    assert speaker_labels["Тато"] == "mykyta"
+    assert speaker_ids["Тато"] == 1
+    assert speaker_labels["Син"] == "lada"
+    assert speaker_ids["Син"] == 0
+
+
+def test_ace_step_music_cues_enforce_cinematic_instrumental_guardrails(tmp_path) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="Father and son action",
+            style="fortnite_stylized_action",
+            script=(
+                "СЦЕНА 1. Яскравий острів у стилі Fortnite. ТАТО: Сину, готовий до стрибка? "
+                "СИН: Так, тату, полетіли! "
+                "ГЕРОЇСЬКА ВСТАВКА: Тато і син стрибають із трапа до сяйливої корони."
+            ),
+            language="uk",
+            target_duration_sec=10,
+            music_backend="ace_step",
+            character_names=["Тато", "Син"],
+            music_preset="heroic_surge",
+        )
+    )
+    adapters = DeterministicMediaAdapters(artifact_store, music_backend="ace_step")
+
+    cues = adapters._ace_step_music_cues(snapshot)
+    scene_prompt = next(cue["prompt"] for cue in cues if cue.get("scene_id") == "scene_01")
+
+    assert "instrumental only" in scene_prompt
+    assert "no singing" in scene_prompt
+    assert "no choir" in scene_prompt
+    assert "avoid anime, j-pop, japanese idol" in scene_prompt
+    assert "hybrid drums" in scene_prompt
 
 
 def test_storyboard_prompts_strengthen_hero_insert_duo_contract(tmp_path) -> None:

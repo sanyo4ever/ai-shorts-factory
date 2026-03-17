@@ -40,8 +40,10 @@ def test_planner_builds_rich_planning_bundle() -> None:
     assert bundle.story_bible["scenario_expansion"]["story_premise_en"] == bundle.scenario_expansion["story_premise_en"]
     assert bundle.scene_plan["scenes"][0]["dramatic_beat_en"]
     assert bundle.shot_plan["shots"][0]["composition"]["subtitle_lane"] == "bottom"
+    assert bundle.shot_plan["shots"][0]["conditioning"]["generation_prompt_en"]
     assert bundle.shot_plan["shots"][0]["scenario_context_en"]
     assert bundle.asset_strategy["shots"][0]["layout_contract"]["safe_zones"]
+    assert bundle.asset_strategy["shots"][0]["conditioning_contract"]["camera_intent_en"]
     assert bundle.asset_strategy["shots"][0]["scenario_context_en"]
     assert bundle.continuity_bible["scene_states"][0]["shot_layouts"][0]["subtitle_lane"] == "bottom"
     assert bundle.continuity_bible["scene_states"][0]["dramatic_beat_en"]
@@ -237,6 +239,33 @@ def test_planner_splits_inline_dialogue_plus_action_into_closeups_and_hero_inser
     assert shots[2].composition.subtitle_lane == "top"
 
 
+def test_planner_builds_typed_conditioning_for_hero_insert() -> None:
+    planner = PlannerService()
+    request = ProjectCreateRequest(
+        title="Hero conditioning",
+        style="fortnite_stylized_action",
+        script=(
+            "SCENE 1. TATO and SYN sprint toward the glowing crown.\n"
+            "HERO INSERT: TATO and SYN jump from the ramp, rush forward, and freeze in a victory pose."
+        ),
+        language="uk",
+        target_duration_sec=10,
+        character_names=["Tato", "Syn"],
+    )
+
+    bundle = planner.build_planning_bundle("proj_test", request)
+    shot = bundle.scenes[0].shots[0]
+
+    assert shot.strategy == "hero_insert"
+    assert shot.conditioning.input_mode == "storyboard_first_frame"
+    assert shot.conditioning.keyframe_strategy == "lead_tail_storyboard"
+    assert shot.conditioning.identity_lock == "high"
+    assert "vertical" in shot.conditioning.camera_intent_en
+    assert "payoff" in shot.conditioning.motion_intent_en
+    assert len(shot.conditioning.retake_windows) == 2
+    assert bundle.shot_plan["shots"][0]["conditioning"]["retake_windows"][0]["label"] == "setup"
+
+
 def test_planner_routes_creator_hook_hero_insert_scene_to_hero_insert() -> None:
     planner = PlannerService()
     request = ProjectCreateRequest(
@@ -339,6 +368,37 @@ def test_planner_keeps_ukrainian_dialogue_but_switches_planning_to_english() -> 
     assert not any("\u0400" <= char <= "\u04FF" for char in hero_shot.prompt_seed)
     assert not any("\u0400" <= char <= "\u04FF" for char in bundle.scenario_expansion["story_premise_en"])
     assert bundle.scenario_expansion["dialogue_contract"]["lines"][0]["text"] == "Сину, готовий до стрибка?"
+
+
+def test_planner_adds_closing_payoff_shot_for_long_mixed_dialogue_action_short() -> None:
+    planner = PlannerService()
+    request = ProjectCreateRequest(
+        title="Тато і син 10s",
+        script=(
+            "СЦЕНА 1. Яскравий острів у стилі Fortnite. Тато і син стоять на дерев'яному трапі перед бурею. "
+            "ТАТО: Сину, готовий до стрибка? "
+            "СИН: Так, тату, полетіли! "
+            "ГЕРОЇСЬКА ВСТАВКА: Тато і син стрибають із трапа, ривком біжать до сяйливої корони й завмирають у переможній позі."
+        ),
+        language="uk",
+        target_duration_sec=10,
+        character_names=["Тато", "Син"],
+    )
+
+    bundle = planner.build_planning_bundle("proj_test", request)
+    shots = bundle.scenes[0].shots
+
+    assert [shot.strategy for shot in shots] == [
+        "portrait_lipsync",
+        "portrait_lipsync",
+        "hero_insert",
+        "portrait_motion",
+    ]
+    assert sum(shot.duration_sec for shot in shots) == 10
+    assert shots[-1].purpose == "duo victory close"
+    assert shots[-1].characters == ["Тато", "Син"]
+    assert "father father" not in shots[0].prompt_seed
+    assert "son son" not in shots[1].prompt_seed
 
 
 def test_ollama_scene_overrides_are_grouped_by_scene_and_shot_index() -> None:

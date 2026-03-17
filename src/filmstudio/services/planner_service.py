@@ -22,6 +22,7 @@ from filmstudio.services.planning_contract import (
     build_planner_enrichment_prompt,
     build_planner_system_prompt,
     coerce_planning_english,
+    romanize_ukrainian_ascii,
 )
 from filmstudio.services.product_preset_catalog import (
     build_product_preset_payload,
@@ -33,6 +34,7 @@ from filmstudio.services.scenario_expander import (
     build_scenario_expansion,
     merge_expansion_fragments,
 )
+from filmstudio.services.video_backend_contract import build_shot_conditioning_plan
 
 
 @dataclass
@@ -356,6 +358,12 @@ class PlannerService:
             scenes=scenes,
             product_preset=resolved_product_preset,
         )
+        self._apply_shot_conditioning_contract(
+            scenes,
+            characters=characters,
+            product_preset=resolved_product_preset,
+            scenario_expansion=resolved_scenario_expansion,
+        )
         return PlanningBundle(
             characters=characters,
             scenes=scenes,
@@ -377,6 +385,28 @@ class PlannerService:
             continuity_bible=continuity_bible
             or self._build_continuity_bible(scenes, resolved_product_preset, resolved_scenario_expansion),
         )
+
+    @classmethod
+    def _apply_shot_conditioning_contract(
+        cls,
+        scenes: list[ScenePlan],
+        *,
+        characters: list[CharacterProfile],
+        product_preset: dict[str, Any],
+        scenario_expansion: dict[str, Any] | None,
+    ) -> None:
+        shot_map = cls._scenario_shot_map(scenario_expansion)
+        for scene in scenes:
+            for shot in scene.shots:
+                shot_context = shot_map.get(shot.shot_id, {})
+                shot.conditioning = build_shot_conditioning_plan(
+                    shot,
+                    characters=characters,
+                    scenario_context_en=str(shot_context.get("visual_prompt_en") or shot.prompt_seed),
+                    continuity_anchor_en=str(shot_context.get("continuity_anchor_en") or ""),
+                    action_choreography_en=str(shot_context.get("action_choreography_en") or ""),
+                    product_preset=product_preset,
+                )
 
     @staticmethod
     def build_product_preset_catalog() -> dict[str, Any]:
@@ -568,6 +598,7 @@ class PlannerService:
                     "lipsync_required": shot.strategy == "portrait_lipsync",
                     "prompt_seed": shot.prompt_seed,
                     "composition": shot.composition.model_dump(),
+                    "conditioning": shot.conditioning.model_dump(),
                     "subtitle_lane": shot.composition.subtitle_lane,
                     "scenario_context_en": str(shot_map.get(shot.shot_id, {}).get("visual_prompt_en") or shot.prompt_seed),
                     "continuity_anchor_en": str(shot_map.get(shot.shot_id, {}).get("continuity_anchor_en") or ""),
@@ -614,6 +645,7 @@ class PlannerService:
                         },
                         "caption_safe_required": True,
                         "vertical_safe_zone_lock": True,
+                        "conditioning_contract": shot.conditioning.model_dump(),
                         "scenario_context_en": str(shot_map.get(shot.shot_id, {}).get("visual_prompt_en") or shot.prompt_seed),
                         "continuity_anchor_en": str(shot_map.get(shot.shot_id, {}).get("continuity_anchor_en") or ""),
                         "product_preset": {
@@ -750,6 +782,7 @@ class PlannerService:
                     scene_id,
                     grouped_turns=grouped_turns[:4],
                     description_lines=description_lines,
+                    characters=characters,
                     source_language=request.language,
                 )
         shot = ShotPlan(
@@ -920,22 +953,88 @@ class PlannerService:
         normalized = unicodedata.normalize("NFKC", repaired)
         return " ".join(normalized.replace("_", " ").split()).strip().casefold()
 
+    @staticmethod
+    def _join_planning_parts(*parts: str, limit: int) -> str:
+        return " ".join(part.strip() for part in parts if part and part.strip())[:limit].strip()
+
+    @staticmethod
+    def _character_lookup(characters: list[CharacterProfile]) -> dict[str, CharacterProfile]:
+        return {character.name.casefold(): character for character in characters}
+
+    def _planning_character_descriptor(
+        self,
+        character_name: str,
+        *,
+        characters_by_name: dict[str, CharacterProfile],
+    ) -> str:
+        profile = characters_by_name.get(character_name.casefold())
+        romanized_name = " ".join(romanize_ukrainian_ascii(character_name).split()) or character_name
+        if profile is None:
+            return romanized_name
+        role_hint = profile.role_hint.strip().casefold()
+        if role_hint == "father":
+            return f"adult father {romanized_name}"
+        if role_hint == "son":
+            return f"young son {romanized_name}"
+        if role_hint == "mother":
+            return f"adult mother {romanized_name}"
+        if role_hint == "daughter":
+            return f"young daughter {romanized_name}"
+        return romanized_name
+
+    def _dialogue_turn_prompt_seed(
+        self,
+        *,
+        focal_character: str,
+        turn_lines: list[DialogueLine],
+        description_lines: list[str],
+        characters_by_name: dict[str, CharacterProfile],
+        source_language: str,
+    ) -> str:
+        context_en = self._planning_text(
+            "\n".join(description_lines),
+            source_language=source_language,
+            limit=120,
+            label="English planning beat",
+        )
+        descriptor = self._planning_character_descriptor(
+            focal_character,
+            characters_by_name=characters_by_name,
+        )
+        text = " ".join(line.text.strip() for line in turn_lines if line.text.strip())
+        asks_question = any("?" in line.text for line in turn_lines)
+        if asks_question:
+            beat_en = f"{descriptor} in a clean speaking closeup, asking a focused question before the action"
+        else:
+            beat_en = f"{descriptor} in a clean speaking closeup, answering with confident energy before the action"
+        speech_hint = self._planning_text(
+            text,
+            source_language=source_language,
+            limit=96,
+        )
+        return self._join_planning_parts(
+            context_en,
+            beat_en,
+            f"Dialogue beat: {speech_hint}" if speech_hint else "",
+            "single readable face, mouth clearly visible, no crowd",
+            limit=200,
+        )
+
     def _build_dialogue_turn_shots(
         self,
         scene_id: str,
         *,
         grouped_turns: list[list[DialogueLine]],
         description_lines: list[str],
+        characters: list[CharacterProfile],
         dialogue_budget: int | None = None,
         source_language: str = "uk",
     ) -> list[ShotPlan]:
         durations = self._allocate_turn_durations(grouped_turns, total_budget=dialogue_budget)
+        characters_by_name = self._character_lookup(characters)
         shots: list[ShotPlan] = []
         for turn_index, (turn_lines, turn_duration_sec) in enumerate(zip(grouped_turns, durations), start=1):
             focal_character = turn_lines[0].character_name
-            turn_prompt_lines = list(description_lines)
-            for turn_line in turn_lines:
-                turn_prompt_lines.append(f"{turn_line.character_name}: {turn_line.text}")
             shots.append(
                 ShotPlan(
                     shot_id=new_id("shot"),
@@ -947,11 +1046,12 @@ class PlannerService:
                     purpose="speaker closeup" if turn_index == 1 else "reply closeup",
                     characters=[focal_character],
                     dialogue=turn_lines,
-                    prompt_seed=self._planning_text(
-                        "\n".join(turn_prompt_lines),
+                    prompt_seed=self._dialogue_turn_prompt_seed(
+                        focal_character=focal_character,
+                        turn_lines=turn_lines,
+                        description_lines=description_lines,
+                        characters_by_name=characters_by_name,
                         source_language=source_language,
-                        limit=200,
-                        label="English planning beat",
                     ),
                     composition=self._build_shot_composition(
                         "portrait_lipsync",
@@ -1003,16 +1103,18 @@ class PlannerService:
         block: str,
     ) -> list[ShotPlan]:
         grouped_turns = self._group_dialogue_turns(dialogue)
-        selected_turns = grouped_turns[:2] if request.target_duration_sec <= 8 else grouped_turns[:3]
+        selected_turns = grouped_turns[:2] if request.target_duration_sec <= 10 else grouped_turns[:3]
         if not selected_turns:
             selected_turns = grouped_turns[:1]
-        hero_duration_sec = 2 if request.target_duration_sec <= 8 else 3
-        target_scene_duration = max(hero_duration_sec + len(selected_turns), request.target_duration_sec)
-        dialogue_budget = max(len(selected_turns), target_scene_duration - hero_duration_sec)
+        hero_duration_sec = 2 if request.target_duration_sec <= 8 else 4
+        closing_duration_sec = 2 if request.target_duration_sec >= 9 else 0
+        target_scene_duration = max(hero_duration_sec + len(selected_turns) + closing_duration_sec, request.target_duration_sec)
+        dialogue_budget = max(len(selected_turns), target_scene_duration - hero_duration_sec - closing_duration_sec)
         shots = self._build_dialogue_turn_shots(
             scene_id,
             grouped_turns=selected_turns,
             description_lines=description_lines,
+            characters=characters,
             dialogue_budget=dialogue_budget,
             source_language=request.language,
         )
@@ -1040,15 +1142,46 @@ class PlannerService:
                 purpose="hero payoff insert",
                 characters=hero_characters[:3],
                 dialogue=[],
-                prompt_seed=self._planning_text(
-                    "\n".join(hero_prompt_parts),
-                    source_language=request.language,
+                prompt_seed=self._join_planning_parts(
+                    self._planning_text(
+                        "\n".join(hero_prompt_parts),
+                        source_language=request.language,
+                        limit=160,
+                        label="English action beat",
+                    ),
+                    "exactly two characters only, clean duo action, readable full-body motion, no crowd, no poster",
                     limit=200,
-                    label="English action beat",
                 ),
                 composition=self._build_shot_composition("hero_insert"),
             )
         )
+        if closing_duration_sec > 0:
+            closing_characters = hero_characters[:2] if len(hero_characters) >= 2 else hero_characters[:1]
+            closing_prompt = self._join_planning_parts(
+                self._planning_text(
+                    "\n".join(description_lines + action_lines) or block,
+                    source_language=request.language,
+                    limit=140,
+                    label="English planning beat",
+                ),
+                "duo victory close after the action, readable faces, celebratory release, clean final pose",
+                limit=200,
+            )
+            shots.append(
+                ShotPlan(
+                    shot_id=new_id("shot"),
+                    scene_id=scene_id,
+                    index=len(shots) + 1,
+                    title=f"{scene_id} shot {len(shots) + 1}",
+                    strategy="portrait_motion",
+                    duration_sec=closing_duration_sec,
+                    purpose="duo victory close",
+                    characters=closing_characters,
+                    dialogue=[],
+                    prompt_seed=closing_prompt,
+                    composition=self._build_shot_composition("portrait_motion"),
+                )
+            )
         return shots
 
     @staticmethod
