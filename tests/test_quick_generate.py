@@ -79,3 +79,29 @@ def test_build_quick_project_request_rejects_unknown_example() -> None:
         assert "Unknown quick-generate example" in str(exc)
     else:
         raise AssertionError("Expected unknown example to raise RuntimeError")
+
+
+def test_build_quick_project_request_infers_duo_contract_from_natural_language_prompt() -> None:
+    request, metadata = build_quick_project_request(
+        QuickGenerateRequest(
+            prompt=(
+                "Яскравий Fortnite-стиль short про тата і сина. "
+                "Тато каже: «Сину, готовий до стрибка?», син відповідає: «Так, тату, полетіли!». "
+                "Потім йде героїчна вставка: тато і син стрибають з трапа до сяйливої корони. "
+                "В кінці вони сміються і тато каже: «Ось так виглядає наша перемога.»"
+            ),
+            language="uk",
+            stack_profile="production_vertical",
+            run_immediately=False,
+        )
+    )
+
+    assert request.character_names == ["Тато", "Син"]
+    assert request.voice_cast_preset == "duo_contrast"
+    assert request.short_archetype == "dialogue_pivot"
+    assert request.style_preset == "kinetic_graphic"
+    assert "ТАТО:" in request.script
+    assert "СИН:" in request.script
+    assert "ГЕРОЇСЬКА ВСТАВКА:" in request.script
+    assert "СЦЕНА 2." in request.script
+    assert metadata["generated_script"].startswith("СЦЕНА 1.")

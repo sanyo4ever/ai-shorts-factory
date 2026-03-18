@@ -145,6 +145,10 @@ def normalize_text_for_piper(text: str, *, language: str) -> PiperTextNormalizat
         if transliterated_text != normalized_text:
             normalized_text = transliterated_text
             normalization_steps.append("uk_latn_to_cyrl")
+        dequoted_text = normalized_text.replace("«", "").replace("»", "").replace("“", "").replace("”", "")
+        if dequoted_text != normalized_text:
+            normalized_text = dequoted_text
+            normalization_steps.append("strip_quotes")
         lowercased_text = normalized_text.lower()
         if lowercased_text != normalized_text:
             normalized_text = lowercased_text

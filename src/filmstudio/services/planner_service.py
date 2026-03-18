@@ -19,6 +19,8 @@ from filmstudio.domain.models import (
 )
 from filmstudio.services.planning_contract import (
     bilingual_language_contract,
+    build_scenario_expansion_prompt,
+    build_scenario_expansion_system_prompt,
     build_planner_enrichment_prompt,
     build_planner_system_prompt,
     coerce_planning_english,
@@ -33,6 +35,7 @@ from filmstudio.services.runtime_support import list_ollama_models, ollama_gener
 from filmstudio.services.scenario_expander import (
     apply_scenario_expansion_to_scenes,
     build_scenario_expansion,
+    canonicalize_scenario_expansion,
     merge_expansion_fragments,
 )
 from filmstudio.services.video_backend_contract import build_shot_conditioning_plan
@@ -263,10 +266,29 @@ class PlannerService:
         *,
         product_preset: dict[str, Any] | None = None,
     ) -> list[CharacterProfile]:
-        names = list(dict.fromkeys(request.character_names))
+        names: list[str] = []
+        name_keys: set[str] = set()
+        for candidate in request.character_names:
+            canonical_candidate = self._canonical_character_name_candidate(candidate)
+            candidate_key = self._character_identity_key(canonical_candidate)
+            if not canonical_candidate or candidate_key in name_keys:
+                continue
+            names.append(canonical_candidate)
+            name_keys.add(candidate_key)
         for candidate in self._extract_inline_speaker_candidates(request.script):
-            if candidate not in names:
-                names.append(candidate)
+            canonical_candidate = self._canonical_character_name_candidate(candidate)
+            candidate_key = self._character_identity_key(canonical_candidate)
+            if canonical_candidate and candidate_key not in name_keys:
+                names.append(canonical_candidate)
+                name_keys.add(candidate_key)
+            if len(names) >= 3:
+                break
+        for candidate in self._infer_prompt_character_candidates(request.script):
+            canonical_candidate = self._canonical_character_name_candidate(candidate)
+            candidate_key = self._character_identity_key(canonical_candidate)
+            if canonical_candidate and candidate_key not in name_keys:
+                names.append(canonical_candidate)
+                name_keys.add(candidate_key)
             if len(names) >= 3:
                 break
         if not names:
@@ -281,6 +303,29 @@ class PlannerService:
             )
             for name in names[:3]
         ]
+
+    def _canonical_character_name_candidate(self, candidate: str) -> str:
+        repaired = self._repair_utf8_mojibake(candidate).strip()
+        if not repaired:
+            return ""
+        normalized = self._scene_casefold(repaired)
+        if any(alias == normalized for alias in self.FATHER_ALIASES):
+            return "Тато" if any("\u0400" <= char <= "\u04FF" for char in repaired) else "Tato"
+        if any(alias == normalized for alias in self.SON_ALIASES):
+            return "Син" if any("\u0400" <= char <= "\u04FF" for char in repaired) else "Syn"
+        if normalized in self.NARRATOR_ALIASES:
+            return "Narrator"
+        return repaired
+
+    def _character_identity_key(self, candidate: str) -> str:
+        normalized = self._scene_casefold(candidate)
+        if any(alias == normalized for alias in self.FATHER_ALIASES):
+            return "role:father"
+        if any(alias == normalized for alias in self.SON_ALIASES):
+            return "role:son"
+        if normalized in self.NARRATOR_ALIASES:
+            return "role:narrator"
+        return normalized
 
     def plan(
         self,
@@ -836,18 +881,49 @@ class PlannerService:
                 candidates.append(canonical)
         return candidates
 
+    def _infer_prompt_character_candidates(self, text: str) -> list[str]:
+        lowered = self._repair_utf8_mojibake(text).casefold()
+        inferred: list[str] = []
+        for aliases, canonical in (
+            (("тато", "тата", "татові", "father", "dad", "tato"), "Тато"),
+            (("син", "сина", "сину", "son", "syn"), "Син"),
+            (("ведучий", "host"), "Ведучий"),
+            (("експерт", "expert"), "Експерт"),
+        ):
+            if any(alias in lowered for alias in aliases) and canonical not in inferred:
+                inferred.append(canonical)
+        return inferred
+
     def _normalize_scene_label(self, label: str) -> str:
         collapsed = " ".join(self._repair_utf8_mojibake(label).replace("_", " ").split()).strip(" -")
         if not collapsed:
             return ""
+        parts = collapsed.split()
+        if len(parts) >= 2 and parts[-1].casefold() in {
+            "каже",
+            "говорить",
+            "питає",
+            "додає",
+            "відповідає",
+            "вигукує",
+            "says",
+            "asks",
+            "adds",
+            "answers",
+            "replies",
+            "shouts",
+        }:
+            collapsed = " ".join(parts[:-1]).strip()
+            if not collapsed:
+                return ""
         if collapsed.isupper():
             return " ".join(part.capitalize() for part in collapsed.split())
         return " ".join(part[:1].upper() + part[1:] for part in collapsed.split())
 
     def _label_is_action(self, label: str) -> bool:
-        return self._scene_casefold(label) in {
-            self._scene_casefold(entry) for entry in self.ACTION_SEGMENT_LABELS
-        }
+        normalized = self._scene_casefold(label)
+        action_labels = {self._scene_casefold(entry) for entry in self.ACTION_SEGMENT_LABELS}
+        return normalized in action_labels or any(entry in normalized for entry in action_labels)
 
     def _scene_label_aliases(self, characters: list[CharacterProfile]) -> dict[str, str]:
         aliases: dict[str, str] = {}
@@ -1136,6 +1212,77 @@ class PlannerService:
             limit=200,
         )
 
+    def _hero_action_prompt_seed(
+        self,
+        *,
+        description_lines: list[str],
+        action_lines: list[str],
+        characters: list[CharacterProfile],
+        hero_character_names: list[str],
+        source_language: str,
+        fallback_block: str,
+    ) -> str:
+        characters_by_name = self._character_lookup(characters)
+        setup_en = self._planning_text(
+            "\n".join(description_lines),
+            source_language=source_language,
+            limit=120,
+        )
+        action_en = self._planning_text(
+            "\n".join(action_lines) or fallback_block,
+            source_language=source_language,
+            limit=140,
+            label="English action beat",
+        )
+        hero_descriptors = [
+            self._planning_character_descriptor(name, characters_by_name=characters_by_name)
+            for name in hero_character_names[:2]
+        ]
+        duo_focus = "exactly two characters only" if len(hero_descriptors) >= 2 else "single clear action subject"
+        return self._join_planning_parts(
+            setup_en,
+            action_en,
+            f"characters: {', '.join(hero_descriptors)}" if hero_descriptors else "",
+            "one shared payoff beat, readable full-body motion, clean silhouettes",
+            duo_focus,
+            "not a poster, not split-screen, no crowd, no extra faces",
+            limit=220,
+        )
+
+    def _closing_motion_prompt_seed(
+        self,
+        *,
+        description_lines: list[str],
+        action_lines: list[str],
+        characters: list[CharacterProfile],
+        closing_character_names: list[str],
+        source_language: str,
+        fallback_block: str,
+    ) -> str:
+        characters_by_name = self._character_lookup(characters)
+        setup_en = self._planning_text(
+            "\n".join(description_lines),
+            source_language=source_language,
+            limit=120,
+        )
+        payoff_en = self._planning_text(
+            "\n".join(action_lines) or fallback_block,
+            source_language=source_language,
+            limit=120,
+            label="English planning beat",
+        )
+        character_focus = ", ".join(
+            self._planning_character_descriptor(name, characters_by_name=characters_by_name)
+            for name in closing_character_names[:2]
+        )
+        return self._join_planning_parts(
+            setup_en,
+            payoff_en,
+            f"characters: {character_focus}" if character_focus else "",
+            "duo victory close after the action, readable faces, celebratory release, clean final pose",
+            limit=220,
+        )
+
     def _build_dialogue_turn_shots(
         self,
         scene_id: str,
@@ -1244,9 +1391,6 @@ class PlannerService:
         )
         if not hero_characters:
             hero_characters = [character.name for character in characters[:3]]
-        hero_prompt_parts = [part for part in [*description_lines, *action_lines] if part]
-        if not hero_prompt_parts:
-            hero_prompt_parts = [block]
         shots.append(
             ShotPlan(
                 shot_id=new_id("shot"),
@@ -1258,30 +1402,26 @@ class PlannerService:
                 purpose="hero payoff insert",
                 characters=hero_characters[:3],
                 dialogue=[],
-                prompt_seed=self._join_planning_parts(
-                    self._planning_text(
-                        "\n".join(hero_prompt_parts),
-                        source_language=request.language,
-                        limit=160,
-                        label="English action beat",
-                    ),
-                    "exactly two characters only, clean duo action, readable full-body motion, no crowd, no poster",
-                    limit=200,
+                prompt_seed=self._hero_action_prompt_seed(
+                    description_lines=description_lines,
+                    action_lines=action_lines,
+                    characters=characters,
+                    hero_character_names=hero_characters[:3],
+                    source_language=request.language,
+                    fallback_block=block,
                 ),
                 composition=self._build_shot_composition("hero_insert"),
             )
         )
         if closing_duration_sec > 0:
             closing_characters = hero_characters[:2] if len(hero_characters) >= 2 else hero_characters[:1]
-            closing_prompt = self._join_planning_parts(
-                self._planning_text(
-                    "\n".join(description_lines + action_lines) or block,
-                    source_language=request.language,
-                    limit=140,
-                    label="English planning beat",
-                ),
-                "duo victory close after the action, readable faces, celebratory release, clean final pose",
-                limit=200,
+            closing_prompt = self._closing_motion_prompt_seed(
+                description_lines=description_lines,
+                action_lines=action_lines,
+                characters=characters,
+                closing_character_names=closing_characters,
+                source_language=request.language,
+                fallback_block=block,
             )
             shots.append(
                 ShotPlan(
@@ -1467,6 +1607,11 @@ class OllamaPlannerService(PlannerService):
         )
         anchor_bundle = anchor_planner.build_planning_bundle(project_id, request)
         product_preset = self._build_product_preset(request)
+        anchor_bundle = self._enrich_anchor_scenario_bundle(
+            request,
+            anchor_bundle=anchor_bundle,
+            product_preset=product_preset,
+        )
         try:
             payload = ollama_generate_json(
                 base_url=self.base_url,
@@ -1520,6 +1665,45 @@ class OllamaPlannerService(PlannerService):
                 scenario_expansion,
                 payload.get("continuity_bible"),
             ),
+        )
+
+    def _enrich_anchor_scenario_bundle(
+        self,
+        request: ProjectCreateRequest,
+        *,
+        anchor_bundle: PlanningBundle,
+        product_preset: dict[str, Any],
+    ) -> PlanningBundle:
+        try:
+            payload = ollama_generate_json(
+                base_url=self.base_url,
+                model=self.model_name,
+                system_prompt=self._scenario_expansion_system_prompt(),
+                prompt=self._scenario_expansion_prompt(
+                    request,
+                    scenario_anchor=self._scenario_expansion_anchor(anchor_bundle),
+                ),
+                timeout_sec=min(self.timeout_sec, 75.0),
+            )
+        except RuntimeError:
+            return anchor_bundle
+        scenario_payload = payload.get("scenario_expansion") if isinstance(payload.get("scenario_expansion"), dict) else payload
+        scenario_expansion = self._normalize_scenario_expansion(
+            request,
+            anchor_bundle.characters,
+            anchor_bundle.scenes,
+            product_preset,
+            scenario_payload if isinstance(scenario_payload, dict) else None,
+            anchor_bundle=anchor_bundle,
+        )
+        expanded_scenes = apply_scenario_expansion_to_scenes(anchor_bundle.scenes, scenario_expansion)
+        return self._compose_bundle(
+            request,
+            anchor_bundle.characters,
+            expanded_scenes,
+            product_preset=product_preset,
+            scenario_expansion=scenario_expansion,
+            character_bible=anchor_bundle.character_bible,
         )
 
     @staticmethod
@@ -1578,8 +1762,25 @@ class OllamaPlannerService(PlannerService):
             ],
         }
 
+    @staticmethod
+    def _scenario_expansion_anchor(bundle: PlanningBundle) -> dict[str, Any]:
+        return {
+            "story_premise_en": bundle.scenario_expansion.get("story_premise_en", ""),
+            "visual_world_en": bundle.scenario_expansion.get("visual_world_en", ""),
+            "narrative_goal_en": bundle.scenario_expansion.get("narrative_goal_en", ""),
+            "character_grounding": bundle.scenario_expansion.get("character_grounding", []),
+            "scene_expansions": bundle.scenario_expansion.get("scene_expansions", []),
+            "dialogue_contract": bundle.scenario_expansion.get("dialogue_contract", {}),
+        }
+
     def _system_prompt(self) -> str:
         return build_planner_system_prompt(
+            render_width=self.render_width,
+            render_height=self.render_height,
+        )
+
+    def _scenario_expansion_system_prompt(self) -> str:
+        return build_scenario_expansion_system_prompt(
             render_width=self.render_width,
             render_height=self.render_height,
         )
@@ -1591,6 +1792,14 @@ class OllamaPlannerService(PlannerService):
         structural_anchor: dict[str, Any] | None = None,
     ) -> str:
         return build_planner_enrichment_prompt(request, structural_anchor=structural_anchor or {})
+
+    @staticmethod
+    def _scenario_expansion_prompt(
+        request: ProjectCreateRequest,
+        *,
+        scenario_anchor: dict[str, Any],
+    ) -> str:
+        return build_scenario_expansion_prompt(request, scenario_anchor=scenario_anchor)
 
     def _normalize_safe_zones(
         self,
@@ -1992,7 +2201,7 @@ class OllamaPlannerService(PlannerService):
             )
         )
         if not isinstance(payload, dict):
-            return base
+            return canonicalize_scenario_expansion(base, characters=characters, scenes=scenes)
 
         base["story_premise_en"] = coerce_planning_english(
             str(payload.get("story_premise_en") or base.get("story_premise_en") or ""),
@@ -2181,7 +2390,7 @@ class OllamaPlannerService(PlannerService):
         base["language_contract"] = bilingual_language_contract(request.language)
         base["planning_language"] = "en"
         base["dialogue_language"] = request.language
-        return base
+        return canonicalize_scenario_expansion(base, characters=characters, scenes=scenes)
 
     def _normalize_character_bible(
         self,

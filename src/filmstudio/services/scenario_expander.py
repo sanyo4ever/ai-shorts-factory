@@ -3,7 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from filmstudio.domain.models import CharacterProfile, ProjectCreateRequest, ScenePlan, ShotPlan
-from filmstudio.services.planning_contract import bilingual_language_contract, collapse_text, coerce_planning_english
+from filmstudio.services.planning_contract import (
+    bilingual_language_contract,
+    collapse_text,
+    coerce_planning_english,
+    strip_duplicate_planning_label,
+)
 
 
 def _dedupe_fragments(fragments: list[str]) -> list[str]:
@@ -106,14 +111,114 @@ def _continuity_anchor_en(shot: ShotPlan, characters_by_name: dict[str, Characte
     return merge_expansion_fragments(*parts, limit=220)
 
 
+def _character_visual_descriptor_en(
+    shot: ShotPlan,
+    *,
+    characters_by_name: dict[str, CharacterProfile],
+) -> str:
+    descriptors: list[str] = []
+    for name in shot.characters[:2]:
+        profile = characters_by_name.get(name.casefold())
+        if profile is None:
+            descriptors.append(
+                coerce_planning_english(
+                    name,
+                    source_language="uk",
+                    limit=60,
+                )
+            )
+            continue
+        descriptors.append(
+            merge_expansion_fragments(
+                coerce_planning_english(profile.role_hint, source_language="uk", limit=40),
+                coerce_planning_english(profile.age_hint, source_language="uk", limit=80),
+                coerce_planning_english(profile.wardrobe_hint, source_language="uk", limit=120),
+                limit=140,
+            )
+        )
+    return merge_expansion_fragments(*descriptors, limit=220)
+
+
 def _shot_action_choreography_en(shot: ShotPlan) -> str:
     if shot.strategy != "hero_insert":
         return ""
     return merge_expansion_fragments(
         "Keep the action legible inside a vertical 9:16 frame.",
-        shot.prompt_seed,
+        strip_duplicate_planning_label(shot.prompt_seed, label="English action beat"),
         limit=260,
     )
+
+
+def _canonical_shot_context(
+    shot: ShotPlan,
+    *,
+    scene_visual_context_en: str,
+    scene_action_choreography_en: str,
+    characters_by_name: dict[str, CharacterProfile],
+) -> dict[str, Any]:
+    continuity_anchor = _continuity_anchor_en(shot, characters_by_name)
+    character_descriptor = _character_visual_descriptor_en(shot, characters_by_name=characters_by_name)
+    prompt_seed = strip_duplicate_planning_label(shot.prompt_seed, label="English planning beat")
+    if shot.strategy == "hero_insert":
+        action_choreography_en = merge_expansion_fragments(
+            scene_action_choreography_en,
+            _shot_action_choreography_en(shot),
+            "One shared readable action payoff, full-body silhouettes, exactly the planned characters only.",
+            limit=260,
+        )
+        visual_prompt_en = merge_expansion_fragments(
+            scene_visual_context_en,
+            action_choreography_en,
+            character_descriptor,
+            "Single shared action scene, not split-screen, not a poster, no crowd, no extra faces.",
+            limit=320,
+        )
+    elif shot.strategy == "portrait_lipsync":
+        action_choreography_en = ""
+        visual_prompt_en = merge_expansion_fragments(
+            scene_visual_context_en,
+            character_descriptor,
+            shot.purpose,
+            "Single dominant speaking face, clear mouth visibility, clean subtitle-safe framing.",
+            limit=320,
+        )
+    elif shot.strategy == "portrait_motion":
+        action_choreography_en = merge_expansion_fragments(
+            scene_action_choreography_en,
+            "Gentle closing motion after the main payoff.",
+            limit=220,
+        )
+        visual_prompt_en = merge_expansion_fragments(
+            scene_visual_context_en,
+            character_descriptor,
+            shot.purpose,
+            "Readable duo close, celebratory release, stable faces, clean closing pose.",
+            limit=320,
+        )
+    else:
+        action_choreography_en = ""
+        visual_prompt_en = merge_expansion_fragments(
+            scene_visual_context_en,
+            character_descriptor,
+            prompt_seed,
+            limit=320,
+        )
+    return {
+        "shot_id": shot.shot_id,
+        "title_en": shot.title,
+        "strategy": shot.strategy,
+        "intent_en": merge_expansion_fragments(shot.purpose, limit=160),
+        "visual_prompt_en": visual_prompt_en or prompt_seed,
+        "continuity_anchor_en": continuity_anchor,
+        "action_choreography_en": action_choreography_en,
+        "dialogue_lines": [
+            {
+                "character_name": line.character_name,
+                "text": line.text,
+            }
+            for line in shot.dialogue
+        ],
+    }
 
 
 def build_scenario_expansion(
@@ -148,45 +253,33 @@ def build_scenario_expansion(
     scene_expansions: list[dict[str, Any]] = []
     dialogue_lines: list[dict[str, str]] = []
     for scene in scenes:
+        scene_visual_context_en = merge_expansion_fragments(
+            scene.summary,
+            str(style_direction.get("visual_direction") or ""),
+            limit=260,
+        )
+        scene_action_choreography_en = merge_expansion_fragments(
+            *[_shot_action_choreography_en(shot) for shot in scene.shots],
+            limit=280,
+        )
         shot_contexts: list[dict[str, Any]] = []
         dialogue_lines.extend(_scene_dialogue_lines(scene))
         for shot in scene.shots:
             shot_contexts.append(
-                {
-                    "shot_id": shot.shot_id,
-                    "title_en": shot.title,
-                    "strategy": shot.strategy,
-                    "intent_en": merge_expansion_fragments(shot.purpose, limit=160),
-                    "visual_prompt_en": merge_expansion_fragments(
-                        shot.prompt_seed,
-                        _continuity_anchor_en(shot, characters_by_name),
-                        limit=320,
-                    ),
-                    "continuity_anchor_en": _continuity_anchor_en(shot, characters_by_name),
-                    "action_choreography_en": _shot_action_choreography_en(shot),
-                    "dialogue_lines": [
-                        {
-                            "character_name": line.character_name,
-                            "text": line.text,
-                        }
-                        for line in shot.dialogue
-                    ],
-                }
+                _canonical_shot_context(
+                    shot,
+                    scene_visual_context_en=scene_visual_context_en,
+                    scene_action_choreography_en=scene_action_choreography_en,
+                    characters_by_name=characters_by_name,
+                )
             )
         scene_expansions.append(
             {
                 "scene_id": scene.scene_id,
                 "title_en": scene.title,
                 "dramatic_beat_en": merge_expansion_fragments(scene.summary, limit=220),
-                "visual_context_en": merge_expansion_fragments(
-                    scene.summary,
-                    str(style_direction.get("visual_direction") or ""),
-                    limit=260,
-                ),
-                "action_choreography_en": merge_expansion_fragments(
-                    *[context["action_choreography_en"] for context in shot_contexts],
-                    limit=280,
-                ),
+                "visual_context_en": scene_visual_context_en,
+                "action_choreography_en": scene_action_choreography_en,
                 "dialogue_goal_en": _dialogue_goal_en(scene),
                 "dialogue_lines": _scene_dialogue_lines(scene),
                 "shot_contexts": shot_contexts,
@@ -222,6 +315,101 @@ def build_scenario_expansion(
             "speaker_count": len({line["character_name"] for line in dialogue_lines if line["character_name"]}),
             "line_count": len(dialogue_lines),
             "lines": dialogue_lines,
+        },
+    }
+
+
+def canonicalize_scenario_expansion(
+    scenario_expansion: dict[str, Any],
+    *,
+    characters: list[CharacterProfile],
+    scenes: list[ScenePlan],
+) -> dict[str, Any]:
+    if not isinstance(scenario_expansion, dict):
+        return scenario_expansion
+    characters_by_name = {character.name.casefold(): character for character in characters}
+    scene_expansion_map = {
+        str(entry.get("scene_id") or ""): dict(entry)
+        for entry in scenario_expansion.get("scene_expansions", [])
+        if isinstance(entry, dict)
+    }
+    merged_scene_expansions: list[dict[str, Any]] = []
+    for scene in scenes:
+        scene_entry = scene_expansion_map.get(scene.scene_id, {})
+        scene_visual_context_en = merge_expansion_fragments(
+            str(scene_entry.get("visual_context_en") or ""),
+            str(scene_entry.get("dramatic_beat_en") or ""),
+            limit=260,
+        ) or merge_expansion_fragments(scene.summary, limit=260)
+        scene_action_choreography_en = merge_expansion_fragments(
+            str(scene_entry.get("action_choreography_en") or ""),
+            *[_shot_action_choreography_en(shot) for shot in scene.shots],
+            limit=280,
+        )
+        merged_scene_expansions.append(
+            {
+                "scene_id": scene.scene_id,
+                "title_en": merge_expansion_fragments(
+                    str(scene_entry.get("title_en") or ""),
+                    scene.title,
+                    limit=120,
+                )
+                or scene.title,
+                "dramatic_beat_en": merge_expansion_fragments(
+                    str(scene_entry.get("dramatic_beat_en") or ""),
+                    scene.summary,
+                    limit=220,
+                )
+                or scene.summary,
+                "visual_context_en": scene_visual_context_en,
+                "action_choreography_en": scene_action_choreography_en,
+                "dialogue_goal_en": merge_expansion_fragments(
+                    str(scene_entry.get("dialogue_goal_en") or ""),
+                    _dialogue_goal_en(scene),
+                    limit=180,
+                )
+                or _dialogue_goal_en(scene),
+                "dialogue_lines": _scene_dialogue_lines(scene),
+                "shot_contexts": [
+                    _canonical_shot_context(
+                        shot,
+                        scene_visual_context_en=scene_visual_context_en,
+                        scene_action_choreography_en=scene_action_choreography_en,
+                        characters_by_name=characters_by_name,
+                    )
+                    for shot in scene.shots
+                ],
+            }
+        )
+    return {
+        **scenario_expansion,
+        "scene_expansions": merged_scene_expansions,
+        "dialogue_contract": {
+            **dict(scenario_expansion.get("dialogue_contract") or {}),
+            "lines": [
+                line
+                for scene in scenes
+                for shot in scene.shots
+                for line in [
+                    {
+                        "shot_id": shot.shot_id,
+                        "character_name": dialogue_line.character_name,
+                        "text": dialogue_line.text,
+                    }
+                    for dialogue_line in shot.dialogue
+                    if collapse_text(dialogue_line.text)
+                ]
+            ],
+            "line_count": sum(len(shot.dialogue) for scene in scenes for shot in scene.shots),
+            "speaker_count": len(
+                {
+                    dialogue_line.character_name
+                    for scene in scenes
+                    for shot in scene.shots
+                    for dialogue_line in shot.dialogue
+                    if dialogue_line.character_name
+                }
+            ),
         },
     }
 
@@ -264,7 +452,6 @@ def apply_scenario_expansion_to_scenes(
                         )
                         or shot.purpose,
                         "prompt_seed": merge_expansion_fragments(
-                            shot.prompt_seed,
                             str(shot_entry.get("visual_prompt_en") or ""),
                             str(shot_entry.get("action_choreography_en") or ""),
                             str(shot_entry.get("continuity_anchor_en") or ""),

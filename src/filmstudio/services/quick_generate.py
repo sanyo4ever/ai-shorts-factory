@@ -131,7 +131,7 @@ def build_quick_project_request(payload: QuickGenerateRequest) -> tuple[ProjectC
         raise RuntimeError("Quick generate requires either a prompt or an example.")
 
     character_names = _resolve_character_names(payload, example)
-    product_preset = _resolve_product_preset(payload, example)
+    product_preset = _resolve_product_preset(payload, example, character_names=character_names, prompt=prompt)
     target_duration_sec = int(payload.target_duration_sec or example.get("target_duration_sec") or 8)
     title = _resolve_title(payload, example, prompt)
     script = _compose_quick_script(
@@ -194,19 +194,33 @@ def _resolve_character_names(payload: QuickGenerateRequest, example: dict[str, A
     names = [name.strip() for name in (payload.character_names or example.get("character_names") or []) if name.strip()]
     if names:
         return names
+    inferred = _infer_prompt_character_names(payload.prompt)
+    if inferred:
+        return inferred
     inline = _extract_inline_character_names(payload.prompt)
-    return inline or []
+    if inline:
+        return inline
+    return []
 
 
 def _resolve_product_preset(
     payload: QuickGenerateRequest,
     example: dict[str, Any],
+    *,
+    character_names: list[str],
+    prompt: str,
 ) -> ProductPresetContract:
+    inferred_duo = len(character_names) >= 2
+    inferred_action = _prompt_has_action_beat(prompt)
+    default_style_preset = "kinetic_graphic" if _prompt_prefers_kinetic_style(prompt) else "studio_illustrated"
+    default_voice_cast_preset = "duo_contrast" if inferred_duo else "solo_host"
+    default_music_preset = "heroic_surge" if inferred_action else "uplift_pulse"
+    default_short_archetype = "dialogue_pivot" if inferred_duo else "creator_hook"
     return ProductPresetContract(
-        style_preset=payload.style_preset or example.get("style_preset") or "studio_illustrated",
-        voice_cast_preset=payload.voice_cast_preset or example.get("voice_cast_preset") or "solo_host",
-        music_preset=payload.music_preset or example.get("music_preset") or "uplift_pulse",
-        short_archetype=payload.short_archetype or example.get("short_archetype") or "creator_hook",
+        style_preset=payload.style_preset or example.get("style_preset") or default_style_preset,
+        voice_cast_preset=payload.voice_cast_preset or example.get("voice_cast_preset") or default_voice_cast_preset,
+        music_preset=payload.music_preset or example.get("music_preset") or default_music_preset,
+        short_archetype=payload.short_archetype or example.get("short_archetype") or default_short_archetype,
     )
 
 
@@ -234,7 +248,10 @@ def _compose_quick_script(
     cleaned = prompt.replace("\r\n", "\n").replace("\r", "\n").strip()
     if _looks_like_screenplay(cleaned):
         return _ensure_scene_heading(cleaned, language=language)
-    if len(character_names) >= 2 and short_archetype in {"dialogue_pivot", "hero_teaser"}:
+    if len(character_names) >= 2 and short_archetype in {"dialogue_pivot", "hero_teaser", "creator_hook"}:
+        structured = _compose_structured_duo_script(cleaned, language=language, character_names=character_names[:2])
+        if structured:
+            return structured
         return _compose_dialogue_action_script(cleaned, language=language, character_names=character_names[:2])
     if character_names:
         return _compose_single_host_script(cleaned, language=language, speaker_name=character_names[0])
@@ -246,7 +263,7 @@ def _looks_like_screenplay(text: str) -> bool:
         return True
     return bool(
         re.search(
-            r"(?m)(?:^|\s)([A-Za-zА-Яа-яІіЇїЄєҐґ0-9_][A-Za-zА-Яа-яІіЇїЄєҐґ0-9_ ]{1,30}):",
+            r"(?im)^\s*(?:hero insert|героїчна вставка|геройська вставка|narrator|оповідач|[A-ZА-ЯІЇЄҐ][A-ZА-ЯІЇЄҐ' -]{1,30})\s*:",
             text,
         )
     )
@@ -292,6 +309,40 @@ def _compose_dialogue_action_script(text: str, *, language: str, character_names
     )
 
 
+def _compose_structured_duo_script(text: str, *, language: str, character_names: list[str]) -> str | None:
+    dialogues = _extract_inline_dialogue_segments(text, character_names=character_names)
+    action_segment = _extract_action_segment(text)
+    closing_segment = _extract_closing_segment(text, action_segment=action_segment)
+    setup = _extract_setup_segment(text, action_segment=action_segment, closing_segment=closing_segment)
+    if not dialogues and not action_segment:
+        return None
+
+    scene_heading = "СЦЕНА 1." if language == "uk" else "SCENE 1."
+    hero_insert_label = "ГЕРОЇСЬКА ВСТАВКА" if language == "uk" else "HERO INSERT"
+    lines: list[str] = [f"{scene_heading} {_sentence(setup or text)}"]
+
+    if dialogues:
+        for speaker_name, line_text in dialogues[:2]:
+            lines.append(f"{speaker_name.upper()}: {line_text}")
+    else:
+        return None
+
+    if action_segment:
+        lines.append("")
+        lines.append(f"{hero_insert_label}: {_sentence(action_segment)}")
+
+    closing_dialogues = _extract_inline_dialogue_segments(closing_segment, character_names=character_names)
+    if closing_segment or closing_dialogues:
+        closing_heading = "СЦЕНА 2." if language == "uk" else "SCENE 2."
+        closing_description = _remove_inline_dialogue_segments(closing_segment, character_names=character_names)
+        lines.append("")
+        lines.append(f"{closing_heading} {_sentence(closing_description or 'Closing reaction beat')}")
+        for speaker_name, line_text in closing_dialogues:
+            lines.append(f"{speaker_name.upper()}: {line_text}")
+
+    return "\n".join(lines)
+
+
 def _compose_single_host_script(text: str, *, language: str, speaker_name: str) -> str:
     prompt_line = _sentence(text)
     host_line = (
@@ -329,6 +380,139 @@ def _sentence(text: str) -> str:
     return sentence
 
 
+def _prompt_prefers_kinetic_style(text: str) -> bool:
+    lowered = text.casefold()
+    return "fortnite" in lowered or "hero insert" in lowered or "героїч" in lowered
+
+
+def _prompt_has_action_beat(text: str) -> bool:
+    lowered = text.casefold()
+    return any(token in lowered for token in ("hero insert", "героїч", "стриб", "корон", "rush", "jump", "victory"))
+
+
+def _infer_prompt_character_names(text: str) -> list[str]:
+    lowered = text.casefold()
+    inferred: list[str] = []
+    for aliases, canonical in (
+        (("тато", "тата", "татові", "father", "dad", "tato"), "Тато"),
+        (("син", "сина", "сину", "son", "syn"), "Син"),
+        (("ведучий", "host"), "Ведучий"),
+        (("експерт", "expert"), "Експерт"),
+    ):
+        if any(alias in lowered for alias in aliases) and canonical not in inferred:
+            inferred.append(canonical)
+    return inferred
+
+
+def _speaker_aliases(name: str) -> tuple[str, ...]:
+    normalized = name.casefold()
+    if normalized == "тато":
+        return ("тато", "тата", "татові", "father", "dad", "tato")
+    if normalized == "син":
+        return ("син", "сина", "сину", "son", "syn")
+    if normalized == "ведучий":
+        return ("ведучий", "host")
+    if normalized == "експерт":
+        return ("експерт", "expert")
+    return (normalized,)
+
+
+def _extract_inline_dialogue_segments(text: str, *, character_names: list[str]) -> list[tuple[str, str]]:
+    if not text.strip():
+        return []
+    speech_verbs = "каже|говорить|питає|додає|відповідає|вигукує|says|asks|adds|answers|replies|shouts"
+    matches: list[tuple[int, str, str]] = []
+    for speaker_name in character_names[:2]:
+        alias_pattern = "|".join(re.escape(alias) for alias in _speaker_aliases(speaker_name))
+        pattern = re.compile(
+            rf"(?i)(?:^|[\s,.;!?])(?:{alias_pattern})(?:\s+(?:{speech_verbs}))?\s*:\s*[«\"“”]?([^»\"“”]+)[»\"“”]?"
+        )
+        for match in pattern.finditer(text):
+            line_text = _clean_fragment(match.group(1))
+            if line_text:
+                matches.append((match.start(), speaker_name, line_text))
+    matches.sort(key=lambda item: item[0])
+    deduped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for _, speaker_name, line_text in matches:
+        key = (speaker_name, line_text)
+        if key in seen:
+            continue
+        deduped.append((speaker_name, line_text))
+        seen.add(key)
+    return deduped
+
+
+def _remove_inline_dialogue_segments(text: str, *, character_names: list[str]) -> str:
+    cleaned = text
+    speech_verbs = "каже|говорить|питає|додає|відповідає|вигукує|says|asks|adds|answers|replies|shouts"
+    for speaker_name in character_names[:2]:
+        alias_pattern = "|".join(re.escape(alias) for alias in _speaker_aliases(speaker_name))
+        cleaned = re.sub(
+            rf"(?i)(?:^|[\s,.;!?])(?:{alias_pattern})(?:\s+(?:{speech_verbs}))?\s*:\s*[«\"“”]?[^»\"“”]+[»\"“”]?",
+            " ",
+            cleaned,
+        )
+    return _clean_fragment(cleaned)
+
+
+def _extract_action_segment(text: str) -> str:
+    match = re.search(
+        r"(?i)(?:потім\s+йде\s+|then\s+comes\s+|then\s+there\s+is\s+)?"
+        r"(?:hero insert|героїчна вставка|геройська вставка)\s*:\s*(.+)",
+        text,
+    )
+    if not match:
+        return ""
+    action_text = match.group(1)
+    closing_match = _closing_marker_pattern().search(action_text)
+    if closing_match:
+        action_text = action_text[: closing_match.start()]
+    return _clean_fragment(action_text)
+
+
+def _extract_closing_segment(text: str, *, action_segment: str) -> str:
+    closing_match = _closing_marker_pattern().search(text)
+    if not closing_match:
+        return ""
+    closing_text = text[closing_match.start() :]
+    if action_segment and action_segment in closing_text:
+        return ""
+    return _clean_fragment(closing_text)
+
+
+def _extract_setup_segment(text: str, *, action_segment: str, closing_segment: str) -> str:
+    setup = text
+    action_match = re.search(
+        r"(?i)(?:потім\s+йде\s+|then\s+comes\s+|then\s+there\s+is\s+)?"
+        r"(?:hero insert|героїчна вставка|геройська вставка)\s*:",
+        setup,
+    )
+    if action_match:
+        setup = setup[: action_match.start()]
+    closing_match = _closing_marker_pattern().search(setup)
+    if closing_match:
+        setup = setup[: closing_match.start()]
+    if closing_segment and closing_segment in setup:
+        setup = setup.replace(closing_segment, " ")
+    setup = re.sub(
+        r"(?i)(?:^|[\s,.;!?])(?:тато|тата|татові|син|сина|сину|ведучий|експерт|host|expert|father|dad|son|syn)(?:\s+(?:каже|говорить|питає|додає|відповідає|вигукує|says|asks|adds|answers|replies|shouts))?\s*:\s*[«\"“”]?[^»\"“”]+[»\"“”]?",
+        " ",
+        setup,
+    )
+    return _clean_fragment(setup)
+
+
+def _closing_marker_pattern() -> re.Pattern[str]:
+    return re.compile(r"(?i)(?:\bв\s+кінці\b|\bнаприкінці\b|\bу\s+фіналі\b|\bat the end\b|\bfinally\b)")
+
+
+def _clean_fragment(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", text or "").strip(" ,.;:-")
+    cleaned = re.sub(r"\s+([,.;!?])", r"\1", cleaned)
+    return cleaned
+
+
 def _extract_inline_character_names(text: str) -> list[str]:
     matches = re.findall(
         r"(?m)(?:^|\s)([A-Za-zА-Яа-яІіЇїЄєҐґ][A-Za-zА-Яа-яІіЇїЄєҐґ0-9_ ]{1,30}):",
@@ -346,8 +530,26 @@ def _extract_inline_character_names(text: str) -> list[str]:
     }
     for match in matches:
         name = re.sub(r"\s+", " ", match).strip()
+        parts = name.split()
+        if len(parts) >= 2 and parts[-1].casefold() in {
+            "каже",
+            "говорить",
+            "питає",
+            "додає",
+            "відповідає",
+            "вигукує",
+            "says",
+            "asks",
+            "adds",
+            "answers",
+            "replies",
+            "shouts",
+        }:
+            name = " ".join(parts[:-1]).strip()
+            if not name:
+                continue
         normalized = name.lower()
-        if normalized in blocked:
+        if normalized in blocked or "героїч" in normalized:
             continue
         if name not in deduped:
             deduped.append(name)

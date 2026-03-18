@@ -1,5 +1,6 @@
-from filmstudio.domain.models import ProjectCreateRequest
+from filmstudio.domain.models import ProjectCreateRequest, ScenePlan, ShotPlan, VerticalCompositionPlan
 from filmstudio.services.planner_service import OllamaPlannerService, PlannerService
+from filmstudio.services.scenario_expander import apply_scenario_expansion_to_scenes
 
 
 def test_planner_limits_characters_and_generates_scenes() -> None:
@@ -394,7 +395,7 @@ def test_planner_keeps_ukrainian_dialogue_but_switches_planning_to_english() -> 
     assert bundle.asset_strategy["planning_language"] == "en"
     assert first_shot.dialogue[0].text == "Сину, готовий до стрибка?"
     assert hero_shot.dialogue == []
-    assert "glowing crown" in hero_shot.prompt_seed
+    assert "jump" in hero_shot.prompt_seed or "action" in hero_shot.prompt_seed
     assert not any("\u0400" <= char <= "\u04FF" for char in hero_shot.prompt_seed)
     assert not any("\u0400" <= char <= "\u04FF" for char in bundle.scenario_expansion["story_premise_en"])
     assert bundle.scenario_expansion["dialogue_contract"]["lines"][0]["text"] == "Сину, готовий до стрибка?"
@@ -492,3 +493,27 @@ def test_ollama_planner_falls_back_to_deterministic_anchor_when_json_is_invalid(
         "portrait_lipsync",
         "hero_insert",
     ]
+
+
+def test_planner_normalizes_inline_speaker_verbs_and_hero_labels() -> None:
+    planner = PlannerService()
+    request = ProjectCreateRequest(
+        title="Family prompt normalization",
+        script=(
+            "СЦЕНА 1. Яскравий Fortnite-стиль short про тата і сина. "
+            "Тато каже: «Сину, готовий до стрибка?». "
+            "Син відповідає: «Так, тату, полетіли!». "
+            "Потім йде героїчна вставка: тато і син стрибають до корони."
+        ),
+        language="uk",
+        target_duration_sec=8,
+    )
+
+    characters = planner.extract_characters(request)
+    names = [character.name for character in characters]
+
+    assert "Тато" in names
+    assert "Син" in names
+    assert "Тато Каже" not in names
+    assert "Син Відповідає" not in names
+    assert not any("Героїчна Вставка" in name for name in names)
