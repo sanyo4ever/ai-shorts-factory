@@ -227,9 +227,15 @@ def build_scenario_expansion(
     characters: list[CharacterProfile],
     scenes: list[ScenePlan],
     product_preset: dict[str, Any],
+    input_translation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_language = request.language
-    first_line = next((line.strip() for line in request.script.splitlines() if line.strip()), request.title)
+    translation_payload = dict(input_translation or {})
+    first_line = str(
+        translation_payload.get("planning_seed_en")
+        or translation_payload.get("title_en")
+        or next((line.strip() for line in request.script.splitlines() if line.strip()), request.title)
+    )
     archetype_direction = dict(product_preset.get("archetype_direction") or {})
     style_direction = dict(product_preset.get("style_direction") or {})
     characters_by_name = {character.name.casefold(): character for character in characters}
@@ -291,13 +297,22 @@ def build_scenario_expansion(
         "planning_language": "en",
         "dialogue_language": source_language,
         "language_contract": bilingual_language_contract(source_language),
+        "input_translation": {
+            "title_en": str(translation_payload.get("title_en") or ""),
+            "screenplay_en": str(translation_payload.get("screenplay_en") or ""),
+            "planning_seed_en": str(translation_payload.get("planning_seed_en") or ""),
+            "translation_backend": translation_payload.get("translation_backend"),
+            "translation_model": translation_payload.get("translation_model"),
+        },
         "story_premise_en": merge_expansion_fragments(
+            str(translation_payload.get("planning_seed_en") or ""),
             _english_fragment(first_line, source_language=source_language, limit=180),
             f"{request.target_duration_sec}-second vertical short",
             str(archetype_direction.get("planning_bias") or ""),
             limit=240,
         ),
         "visual_world_en": merge_expansion_fragments(
+            str(translation_payload.get("screenplay_en") or "")[:180],
             _english_fragment(first_line, source_language=source_language, limit=180),
             str(style_direction.get("visual_direction") or ""),
             limit=240,
@@ -384,6 +399,7 @@ def canonicalize_scenario_expansion(
     return {
         **scenario_expansion,
         "scene_expansions": merged_scene_expansions,
+        "input_translation": dict(scenario_expansion.get("input_translation") or {}),
         "dialogue_contract": {
             **dict(scenario_expansion.get("dialogue_contract") or {}),
             "lines": [

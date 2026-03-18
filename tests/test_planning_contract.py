@@ -1,4 +1,5 @@
 from filmstudio.domain.models import ProjectCreateRequest
+from filmstudio.services.input_translation import build_input_translation
 from filmstudio.services.planning_contract import (
     bilingual_language_contract,
     build_planner_request_payload,
@@ -30,9 +31,12 @@ def test_build_planner_request_payload_declares_bilingual_contract() -> None:
         character_names=["Тато", "Син"],
     )
 
-    payload = build_planner_request_payload(request)
+    input_translation = build_input_translation(request)
+
+    payload = build_planner_request_payload(request, input_translation=input_translation)
 
     assert payload["language_contract"] == bilingual_language_contract("uk")
+    assert payload["input_translation"]["planning_language"] == "en"
     assert "scenario_expansion" in payload["required_schema"]
     assert payload["required_schema"]["scenario_expansion"]["story_premise_en"] == "english string"
     assert payload["required_schema"]["scenes"][0]["shots"][0]["prompt_seed"] == "english string"
@@ -42,7 +46,7 @@ def test_build_planner_request_payload_declares_bilingual_contract() -> None:
 def test_build_planner_system_prompt_requires_english_non_dialogue_fields() -> None:
     prompt = build_planner_system_prompt(render_width=720, render_height=1280)
 
-    assert "input screenplay may be Ukrainian" in prompt
+    assert "canonical English translation will be provided for planning" in prompt
     assert "Preserve spoken dialogue lines in the original screenplay language" in prompt
     assert "All non-dialogue planning fields must be English" in prompt
     assert "scenario_expansion" in prompt
@@ -56,12 +60,13 @@ def test_build_planner_request_prompt_uses_instruction_style_not_raw_payload_ech
         character_names=["Тато", "Син"],
     )
 
-    prompt = build_planner_request_prompt(request)
+    prompt = build_planner_request_prompt(request, input_translation=build_input_translation(request))
 
     assert "Do not echo this request." in prompt
-    assert "<<<SCREENPLAY" in prompt
+    assert "<<<EN_SCREENPLAY" in prompt
     assert "Return schema:" in prompt
     assert "Return scenario_expansion" in prompt
+    assert "canonical English screenplay" in prompt
     assert "\"required_schema\"" not in prompt
 
 

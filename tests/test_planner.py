@@ -27,6 +27,8 @@ def test_planner_builds_rich_planning_bundle() -> None:
     )
     bundle = planner.build_planning_bundle("proj_test", request)
     assert bundle.story_bible["title"] == "Bundle test"
+    assert bundle.input_translation["planning_language"] == "en"
+    assert bundle.input_translation["screenplay_en"]
     assert bundle.scenario_expansion["story_premise_en"]
     assert bundle.scenario_expansion["dialogue_contract"]["preserve_original_dialogue"] is True
     assert bundle.character_bible["characters"]
@@ -388,6 +390,8 @@ def test_planner_keeps_ukrainian_dialogue_but_switches_planning_to_english() -> 
 
     assert bundle.story_bible["language_contract"]["planning_language"] == "en"
     assert bundle.character_bible["language_contract"]["visual_prompt_language"] == "en"
+    assert bundle.input_translation["planning_seed_en"]
+    assert not any("\u0400" <= char <= "\u04FF" for char in bundle.input_translation["screenplay_en"])
     assert bundle.scenario_expansion["planning_language"] == "en"
     assert bundle.scenario_expansion["dialogue_language"] == "uk"
     assert bundle.scene_plan["planning_language"] == "en"

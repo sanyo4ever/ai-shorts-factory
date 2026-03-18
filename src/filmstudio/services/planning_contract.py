@@ -92,7 +92,9 @@ _PLANNING_TEXT_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bopovidach\b", re.IGNORECASE), "narrator"),
     (re.compile(r"\bveduchy[iy]\b", re.IGNORECASE), "host"),
     (re.compile(r"\bekspert\b", re.IGNORECASE), "expert"),
+    (re.compile(r"\btak\b", re.IGNORECASE), "yes"),
     (re.compile(r"\btato\b", re.IGNORECASE), "father Tato"),
+    (re.compile(r"\btatu\b", re.IGNORECASE), "father Tato"),
     (re.compile(r"\bsynu\b", re.IGNORECASE), "son Syn"),
     (re.compile(r"\bsyn\b", re.IGNORECASE), "son Syn"),
     (re.compile(r"\bstryb\w*\b", re.IGNORECASE), "jump"),
@@ -110,6 +112,7 @@ _PLANNING_PHRASE_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\byaskravyi ostriv u styli fortnite\b", re.IGNORECASE), "bright Fortnite-style island"),
     (re.compile(r"\bstoiat na derev['’]?ianomu trapi\b", re.IGNORECASE), "stand on a wooden ramp"),
     (re.compile(r"\biz trapa\b", re.IGNORECASE), "from the ramp"),
+    (re.compile(r"\bjump do glowing crown\b", re.IGNORECASE), "jump toward the glowing crown"),
     (re.compile(r"\bbuduiut\b", re.IGNORECASE), "build"),
     (re.compile(r"\bzavmyraiut\b", re.IGNORECASE), "freeze"),
     (re.compile(r"\bu victory pozi\b", re.IGNORECASE), "in a victory pose"),
@@ -202,7 +205,9 @@ _ACTUAL_CYRILLIC_PLANNING_TEXT_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], 
     (re.compile(r"\bоповідач\b", re.IGNORECASE), "narrator"),
     (re.compile(r"\bведуч\w*\b", re.IGNORECASE), "host"),
     (re.compile(r"\bексперт\b", re.IGNORECASE), "expert"),
+    (re.compile(r"\bтак\b", re.IGNORECASE), "yes"),
     (re.compile(r"\bтато\b", re.IGNORECASE), "father Tato"),
+    (re.compile(r"\bтату\b", re.IGNORECASE), "father Tato"),
     (re.compile(r"\bсину\b", re.IGNORECASE), "son Syn"),
     (re.compile(r"\bсин\b", re.IGNORECASE), "son Syn"),
     (re.compile(r"\bстриб\w*\b", re.IGNORECASE), "jump"),
@@ -329,10 +334,12 @@ def build_planner_system_prompt(*, render_width: int, render_height: int) -> str
     return (
         f"You are a screenplay planning service for a {orientation} animation assembly system. "
         "Return strict JSON only. Do not include markdown. "
-        "The input screenplay may be Ukrainian. Preserve spoken dialogue lines in the original screenplay language for TTS and subtitles. "
+        "The source screenplay may be Ukrainian, but a canonical English translation will be provided for planning. "
+        "Preserve spoken dialogue lines in the original screenplay language for TTS and subtitles. "
         "All non-dialogue planning fields must be English: story_bible.logline, story_bible.synopsis, scene summaries, shot purpose, shot prompt_seed, visual hints, wardrobe hints, negative prompts, and asset-strategy notes. "
         "Character names may stay in their original form, but descriptions around them must be English. "
         "If a locked structural anchor is provided, keep its scene order, shot order, strategies, named characters, and dialogue text. "
+        "Use the canonical English screenplay as the planning source and do not reintroduce source-language text outside preserved dialogue fields. "
         "Use the model only to enrich English planning descriptions without inventing new beats that conflict with the anchor. "
         "Use no more than 3 characters, 4 scenes, and 4 shots per scene. "
         "Each shot.strategy must be one of: parallax_comp, portrait_motion, portrait_lipsync, hero_insert. "
@@ -347,9 +354,10 @@ def build_scenario_expansion_system_prompt(*, render_width: int, render_height: 
     return (
         f"You are a scenario expansion service for a {orientation} animation pipeline. "
         "Return strict JSON only. Do not include markdown. "
-        "The source screenplay may be Ukrainian. Preserve dialogue text exactly in the source language. "
+        "The source screenplay may be Ukrainian, but a canonical English translation will be provided for planning. "
+        "Preserve dialogue text exactly in the source language. "
         "All scenario-expansion planning fields must be concise natural English. "
-        "Do not transliterate Ukrainian into pseudo-English; translate the meaning into clean production English. "
+        "Do not transliterate Ukrainian into pseudo-English; translate the meaning into clean production English and use the provided English screenplay as the planning source. "
         "Keep existing character names, scene_ids, and shot_ids from the anchor. "
         "Do not invent extra scenes, extra shots, or extra characters. "
         "Focus on readable story premise, visual world, action choreography, and shot-level visual intent for short-form production."
@@ -360,6 +368,7 @@ def build_planner_request_payload(
     request: ProjectCreateRequest,
     *,
     structural_anchor: dict[str, Any] | None = None,
+    input_translation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     product_preset = ProductPresetContract(
         style_preset=request.style_preset,
@@ -375,6 +384,7 @@ def build_planner_request_payload(
         "target_duration_sec": request.target_duration_sec,
         "character_names": request.character_names,
         "script": request.script,
+        "input_translation": input_translation or {},
         "structural_anchor": structural_anchor or {},
         "required_schema": {
             "scenario_expansion": {
@@ -519,13 +529,19 @@ def build_planner_request_prompt(
     request: ProjectCreateRequest,
     *,
     structural_anchor: dict[str, Any] | None = None,
+    input_translation: dict[str, Any] | None = None,
 ) -> str:
-    payload = build_planner_request_payload(request, structural_anchor=structural_anchor)
+    payload = build_planner_request_payload(
+        request,
+        structural_anchor=structural_anchor,
+        input_translation=input_translation,
+    )
     schema = json.dumps(payload["required_schema"], ensure_ascii=False, indent=2)
     product_preset = json.dumps(payload["product_preset"], ensure_ascii=False, indent=2)
     language_contract = json.dumps(payload["language_contract"], ensure_ascii=False, indent=2)
     structural_anchor_json = json.dumps(payload["structural_anchor"], ensure_ascii=False, indent=2)
     character_names = ", ".join(payload["character_names"]) or "none"
+    translated_screenplay = str((payload["input_translation"] or {}).get("screenplay_en") or payload["script"])
     return (
         "Plan the screenplay into production JSON.\n\n"
         "Important:\n"
@@ -534,18 +550,19 @@ def build_planner_request_prompt(
         "- Return one JSON object only.\n"
         "- Return scenario_expansion before or alongside the planning bundle fields.\n"
         "- All non-dialogue planning fields must be English.\n"
+        "- Use the canonical English screenplay as the planning source.\n"
         "- Keep dialogue text in the original screenplay language.\n\n"
         f"Language contract:\n{language_contract}\n\n"
         f"Style: {payload['style']}\n"
         f"Target duration sec: {payload['target_duration_sec']}\n"
         f"Character names: {character_names}\n"
         f"Product preset:\n{product_preset}\n\n"
+        "Canonical English screenplay:\n"
+        "<<<EN_SCREENPLAY\n"
+        f"{translated_screenplay}\n"
+        "EN_SCREENPLAY\n\n"
         "Locked structural anchor:\n"
         f"{structural_anchor_json}\n\n"
-        "Screenplay input:\n"
-        "<<<SCREENPLAY\n"
-        f"{payload['script']}\n"
-        "SCREENPLAY\n\n"
         "Return schema:\n"
         f"{schema}\n"
     )
@@ -555,6 +572,7 @@ def build_planner_enrichment_prompt(
     request: ProjectCreateRequest,
     *,
     structural_anchor: dict[str, Any],
+    input_translation: dict[str, Any] | None = None,
 ) -> str:
     product_preset = ProductPresetContract(
         style_preset=request.style_preset,
@@ -565,6 +583,7 @@ def build_planner_enrichment_prompt(
     language_contract = json.dumps(bilingual_language_contract(request.language), ensure_ascii=False, indent=2)
     preset_json = json.dumps(product_preset.model_dump(), ensure_ascii=False, indent=2)
     anchor_json = json.dumps(structural_anchor, ensure_ascii=False, indent=2)
+    translated_screenplay = str((input_translation or {}).get("screenplay_en") or request.script)
     schema = json.dumps(
         {
             "scenario_expansion": {
@@ -692,15 +711,16 @@ def build_planner_enrichment_prompt(
         "- Do not change shot strategies, dialogue text, or named speakers.\n"
         "- Keep dialogue text in the original screenplay language.\n"
         "- Return scenario_expansion as a richer English scenario layer that keeps dialogue_contract untouched.\n"
+        "- Use the canonical English screenplay below as the planning source.\n"
         "- Use English only for story summaries, shot titles, purposes, prompt seeds, and character visual descriptions.\n"
         "- Return one JSON object only.\n\n"
         f"Language contract:\n{language_contract}\n\n"
         f"Target duration sec: {request.target_duration_sec}\n"
         f"Product preset:\n{preset_json}\n\n"
-        "Screenplay input:\n"
-        "<<<SCREENPLAY\n"
-        f"{request.script}\n"
-        "SCREENPLAY\n\n"
+        "Canonical English screenplay:\n"
+        "<<<EN_SCREENPLAY\n"
+        f"{translated_screenplay}\n"
+        "EN_SCREENPLAY\n\n"
         "Locked structural anchor:\n"
         f"{anchor_json}\n\n"
         "Return schema:\n"
@@ -712,6 +732,7 @@ def build_scenario_expansion_prompt(
     request: ProjectCreateRequest,
     *,
     scenario_anchor: dict[str, Any],
+    input_translation: dict[str, Any] | None = None,
 ) -> str:
     product_preset = ProductPresetContract(
         style_preset=request.style_preset,
@@ -722,6 +743,7 @@ def build_scenario_expansion_prompt(
     language_contract = json.dumps(bilingual_language_contract(request.language), ensure_ascii=False, indent=2)
     preset_json = json.dumps(product_preset.model_dump(), ensure_ascii=False, indent=2)
     anchor_json = json.dumps(scenario_anchor, ensure_ascii=False, indent=2)
+    translated_screenplay = str((input_translation or {}).get("screenplay_en") or request.script)
     schema = json.dumps(
         {
             "story_premise_en": "english string",
@@ -795,7 +817,7 @@ def build_scenario_expansion_prompt(
             "style": request.style,
             "title": request.title,
             "character_names": request.character_names,
-            "script": request.script,
+            "dialogue_source_script": request.script,
         },
         ensure_ascii=False,
         indent=2,
@@ -805,10 +827,14 @@ def build_scenario_expansion_prompt(
         f"Language contract:\n{language_contract}\n\n"
         f"Product preset:\n{preset_json}\n\n"
         f"Scenario anchor:\n{anchor_json}\n\n"
+        "Canonical English screenplay:\n"
+        "<<<EN_SCREENPLAY\n"
+        f"{translated_screenplay}\n"
+        "EN_SCREENPLAY\n\n"
         f"Required schema:\n{schema}\n\n"
         "Requirements:\n"
         "- Keep dialogue text exactly as written in the source language.\n"
-        "- Expand the short idea into clean English story and action context.\n"
+        "- Expand the short idea into clean English story and action context from the canonical English screenplay.\n"
         "- Keep shot intent concise and visual-backend-friendly.\n"
         "- For hero inserts, describe one readable payoff action beat, not a collage or poster.\n\n"
         f"Screenplay request:\n{request_json}\n"

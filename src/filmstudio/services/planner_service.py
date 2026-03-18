@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from filmstudio.core.settings import Settings
@@ -26,6 +26,12 @@ from filmstudio.services.planning_contract import (
     coerce_planning_english,
     normalize_screenplay_labels,
     romanize_ukrainian_ascii,
+)
+from filmstudio.services.input_translation import (
+    build_input_translation,
+    build_input_translation_prompt,
+    build_input_translation_system_prompt,
+    canonicalize_input_translation,
 )
 from filmstudio.services.product_preset_catalog import (
     build_product_preset_payload,
@@ -53,6 +59,7 @@ class PlanningBundle:
     shot_plan: dict[str, Any]
     asset_strategy: dict[str, Any]
     continuity_bible: dict[str, Any]
+    input_translation: dict[str, Any] = field(default_factory=dict)
 
 
 class PlannerService:
@@ -158,6 +165,9 @@ class PlannerService:
             limit=limit,
             label=label,
         )
+
+    def _build_input_translation(self, request: ProjectCreateRequest) -> dict[str, Any]:
+        return build_input_translation(request)
 
     def _render_orientation(self) -> str:
         return "portrait" if self.render_height >= self.render_width else "landscape"
@@ -342,6 +352,7 @@ class PlannerService:
     ) -> PlanningBundle:
         del project_id
         product_preset = self._build_product_preset(request)
+        input_translation = self._build_input_translation(request)
         characters = self.extract_characters(request, product_preset=product_preset)
         raw_blocks = self._split_script_into_scene_blocks(request.script)
         if not raw_blocks:
@@ -373,6 +384,7 @@ class PlannerService:
             characters=characters,
             scenes=scenes,
             product_preset=product_preset,
+            input_translation=input_translation,
         )
         expanded_scenes = apply_scenario_expansion_to_scenes(scenes, scenario_expansion)
         return self._compose_bundle(
@@ -381,6 +393,7 @@ class PlannerService:
             expanded_scenes,
             product_preset=product_preset,
             scenario_expansion=scenario_expansion,
+            input_translation=input_translation,
         )
 
     def _compose_bundle(
@@ -397,13 +410,16 @@ class PlannerService:
         shot_plan: dict[str, Any] | None = None,
         asset_strategy: dict[str, Any] | None = None,
         continuity_bible: dict[str, Any] | None = None,
+        input_translation: dict[str, Any] | None = None,
     ) -> PlanningBundle:
         resolved_product_preset = product_preset or self._build_product_preset(request)
+        resolved_input_translation = input_translation or self._build_input_translation(request)
         resolved_scenario_expansion = scenario_expansion or build_scenario_expansion(
             request,
             characters=characters,
             scenes=scenes,
             product_preset=resolved_product_preset,
+            input_translation=resolved_input_translation,
         )
         self._apply_shot_conditioning_contract(
             scenes,
@@ -422,6 +438,7 @@ class PlannerService:
                 scenes,
                 resolved_product_preset,
                 resolved_scenario_expansion,
+                input_translation=resolved_input_translation,
             ),
             character_bible=character_bible
             or self._build_character_bible(request, characters, resolved_product_preset),
@@ -431,6 +448,7 @@ class PlannerService:
             or self._build_asset_strategy(scenes, resolved_product_preset, resolved_scenario_expansion),
             continuity_bible=continuity_bible
             or self._build_continuity_bible(scenes, resolved_product_preset, resolved_scenario_expansion),
+            input_translation=resolved_input_translation,
         )
 
     @classmethod
@@ -501,23 +519,31 @@ class PlannerService:
         scenes: list[ScenePlan],
         product_preset: dict[str, Any],
         scenario_expansion: dict[str, Any] | None = None,
+        *,
+        input_translation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        first_line = next((line.strip() for line in request.script.splitlines() if line.strip()), request.title)
+        translation_payload = dict(input_translation or {})
+        first_line = str(
+            translation_payload.get("planning_seed_en")
+            or translation_payload.get("title_en")
+            or next((line.strip() for line in request.script.splitlines() if line.strip()), request.title)
+        )
         synopsis_parts = [scene.summary for scene in scenes[:3]]
         orientation = self._render_orientation()
         aspect_ratio = self._render_aspect_ratio()
         expansion_summary = dict(scenario_expansion or {})
         return {
-            "title": request.title,
+            "title": str(translation_payload.get("title_en") or request.title),
             "logline": merge_expansion_fragments(
                 str(expansion_summary.get("story_premise_en") or ""),
-                self._planning_text(first_line, source_language=request.language, limit=180),
+                self._planning_text(first_line, source_language="en", limit=180),
                 limit=180,
             ),
             "synopsis": merge_expansion_fragments(
                 str(expansion_summary.get("visual_world_en") or ""),
                 " ".join(synopsis_parts)[:500],
                 str(expansion_summary.get("narrative_goal_en") or ""),
+                str(translation_payload.get("planning_seed_en") or ""),
                 limit=500,
             ),
             "theme": "to_be_refined",
@@ -558,6 +584,12 @@ class PlannerService:
                 "visual_world_en": expansion_summary.get("visual_world_en", ""),
                 "narrative_goal_en": expansion_summary.get("narrative_goal_en", ""),
                 "dialogue_language": expansion_summary.get("dialogue_language", request.language),
+            },
+            "input_translation": {
+                "title_en": str(translation_payload.get("title_en") or ""),
+                "planning_seed_en": str(translation_payload.get("planning_seed_en") or ""),
+                "translation_backend": translation_payload.get("translation_backend"),
+                "translation_model": translation_payload.get("translation_model"),
             },
         }
 
@@ -1607,17 +1639,23 @@ class OllamaPlannerService(PlannerService):
         )
         anchor_bundle = anchor_planner.build_planning_bundle(project_id, request)
         product_preset = self._build_product_preset(request)
+        input_translation = self._enrich_input_translation(request, anchor_bundle.input_translation)
         anchor_bundle = self._enrich_anchor_scenario_bundle(
             request,
             anchor_bundle=anchor_bundle,
             product_preset=product_preset,
+            input_translation=input_translation,
         )
         try:
             payload = ollama_generate_json(
                 base_url=self.base_url,
                 model=self.model_name,
                 system_prompt=self._system_prompt(),
-                prompt=self._prompt(request, structural_anchor=self._structural_anchor(anchor_bundle)),
+                prompt=self._prompt(
+                    request,
+                    structural_anchor=self._structural_anchor(anchor_bundle),
+                    input_translation=input_translation,
+                ),
                 timeout_sec=self.timeout_sec,
             )
         except RuntimeError:
@@ -1644,6 +1682,7 @@ class OllamaPlannerService(PlannerService):
                 product_preset,
                 scenario_expansion,
                 payload.get("story_bible"),
+                input_translation=input_translation,
             ),
             character_bible=self._normalize_character_bible(
                 request,
@@ -1665,6 +1704,7 @@ class OllamaPlannerService(PlannerService):
                 scenario_expansion,
                 payload.get("continuity_bible"),
             ),
+            input_translation=input_translation,
         )
 
     def _enrich_anchor_scenario_bundle(
@@ -1673,6 +1713,7 @@ class OllamaPlannerService(PlannerService):
         *,
         anchor_bundle: PlanningBundle,
         product_preset: dict[str, Any],
+        input_translation: dict[str, Any],
     ) -> PlanningBundle:
         try:
             payload = ollama_generate_json(
@@ -1682,11 +1723,20 @@ class OllamaPlannerService(PlannerService):
                 prompt=self._scenario_expansion_prompt(
                     request,
                     scenario_anchor=self._scenario_expansion_anchor(anchor_bundle),
+                    input_translation=input_translation,
                 ),
                 timeout_sec=min(self.timeout_sec, 75.0),
             )
         except RuntimeError:
-            return anchor_bundle
+            return self._compose_bundle(
+                request,
+                anchor_bundle.characters,
+                anchor_bundle.scenes,
+                product_preset=product_preset,
+                scenario_expansion=anchor_bundle.scenario_expansion,
+                character_bible=anchor_bundle.character_bible,
+                input_translation=input_translation,
+            )
         scenario_payload = payload.get("scenario_expansion") if isinstance(payload.get("scenario_expansion"), dict) else payload
         scenario_expansion = self._normalize_scenario_expansion(
             request,
@@ -1704,6 +1754,34 @@ class OllamaPlannerService(PlannerService):
             product_preset=product_preset,
             scenario_expansion=scenario_expansion,
             character_bible=anchor_bundle.character_bible,
+            input_translation=input_translation,
+        )
+
+    def _enrich_input_translation(
+        self,
+        request: ProjectCreateRequest,
+        base_translation: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        try:
+            payload = ollama_generate_json(
+                base_url=self.base_url,
+                model=self.model_name,
+                system_prompt=self._input_translation_system_prompt(),
+                prompt=self._input_translation_prompt(request),
+                timeout_sec=min(self.timeout_sec, 45.0),
+            )
+        except RuntimeError:
+            return canonicalize_input_translation(
+                request,
+                base_translation,
+                translation_backend=self.backend_name,
+                model_name=self.model_name,
+            )
+        return canonicalize_input_translation(
+            request,
+            payload if isinstance(payload, dict) else None,
+            translation_backend=self.backend_name,
+            model_name=self.model_name,
         )
 
     @staticmethod
@@ -1785,21 +1863,41 @@ class OllamaPlannerService(PlannerService):
             render_height=self.render_height,
         )
 
+    def _input_translation_system_prompt(self) -> str:
+        return build_input_translation_system_prompt(
+            render_width=self.render_width,
+            render_height=self.render_height,
+        )
+
     @staticmethod
     def _prompt(
         request: ProjectCreateRequest,
         *,
         structural_anchor: dict[str, Any] | None = None,
+        input_translation: dict[str, Any] | None = None,
     ) -> str:
-        return build_planner_enrichment_prompt(request, structural_anchor=structural_anchor or {})
+        return build_planner_enrichment_prompt(
+            request,
+            structural_anchor=structural_anchor or {},
+            input_translation=input_translation,
+        )
 
     @staticmethod
     def _scenario_expansion_prompt(
         request: ProjectCreateRequest,
         *,
         scenario_anchor: dict[str, Any],
+        input_translation: dict[str, Any] | None = None,
     ) -> str:
-        return build_scenario_expansion_prompt(request, scenario_anchor=scenario_anchor)
+        return build_scenario_expansion_prompt(
+            request,
+            scenario_anchor=scenario_anchor,
+            input_translation=input_translation,
+        )
+
+    @staticmethod
+    def _input_translation_prompt(request: ProjectCreateRequest) -> str:
+        return build_input_translation_prompt(request)
 
     def _normalize_safe_zones(
         self,
@@ -2157,11 +2255,20 @@ class OllamaPlannerService(PlannerService):
         product_preset: dict[str, Any],
         scenario_expansion: dict[str, Any] | None,
         payload: dict[str, Any] | None,
+        *,
+        input_translation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        base = self._build_story_bible(request, scenes, product_preset, scenario_expansion)
+        base = self._build_story_bible(
+            request,
+            scenes,
+            product_preset,
+            scenario_expansion,
+            input_translation=input_translation,
+        )
         if not isinstance(payload, dict):
             return base
         base.update({key: value for key, value in payload.items() if value not in (None, "", [])})
+        base["title"] = str(base.get("title") or base["title"])
         base["logline"] = coerce_planning_english(
             str(base.get("logline") or ""),
             source_language=request.language,
