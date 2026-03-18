@@ -34,6 +34,7 @@ from filmstudio.worker.stability_sweep import (
     extract_music_summary,
     extract_portrait_shot_summary,
     extract_subtitle_lane_summary,
+    extract_video_shot_summary,
     extract_wan_shot_summary,
     hydrate_seeded_quick_generate_acceptance_runs,
     hydrate_seeded_product_readiness_runs,
@@ -476,6 +477,64 @@ def test_summarize_project_run_reads_manifest_and_latest_qc(tmp_path) -> None:
     assert len(summary["portrait_shots"]) == 1
     assert summary["portrait_shots"][0]["selected_prompt_variant"] == "studio_headshot"
     assert summary["wan_shots"] == []
+    assert summary["video_shots"] == []
+
+
+def test_summarize_project_run_matches_quick_generate_backend_profile_with_planner_model() -> None:
+    snapshot = ProjectSnapshot(
+        project=ProjectRecord(
+            project_id="proj_quick",
+            title="Quick profile",
+            script="SCENE 1. HOST: Pryvit.",
+            language="uk",
+            style="stylized_short",
+            target_duration_sec=120,
+            estimated_duration_sec=6,
+            status="completed",
+            metadata={
+                "orchestrator_backend": "local",
+                "planner_backend": "ollama",
+                "planner_model": "qwen3:8b",
+                "visual_backend": "comfyui",
+                "video_backend": "cogvideox",
+                "tts_backend": "piper",
+                "music_backend": "ace_step",
+                "lipsync_backend": "musetalk",
+                "subtitle_backend": "whisperx",
+                "quick_generate": {
+                    "mode": "quick_generate",
+                    "stack_profile": "production_vertical_cogvideox",
+                    "example_slug": "creator_hook_breakdown",
+                    "run_immediately": True,
+                    "source_prompt": "Prompt",
+                    "generated_script": "SCENE 1. HOST: Pryvit.",
+                    "profile": {
+                        "backend_profile": {
+                            "orchestrator_backend": "local",
+                            "planner_backend": "ollama",
+                            "planner_model": "qwen3:8b",
+                            "visual_backend": "comfyui",
+                            "video_backend": "cogvideox",
+                            "tts_backend": "piper",
+                            "music_backend": "ace_step",
+                            "lipsync_backend": "musetalk",
+                            "subtitle_backend": "whisperx",
+                        }
+                    },
+                },
+            },
+        ),
+        scenes=[],
+        jobs=[],
+        job_attempts=[],
+        artifacts=[],
+        qc_reports=[],
+    )
+
+    summary = summarize_project_run(snapshot)
+
+    assert summary["backend_profile"]["planner_model"] == "qwen3:8b"
+    assert summary["quick_generate"]["backend_profile_matches"] is True
 
 
 def test_extract_music_and_render_summary_read_manifests(tmp_path) -> None:
@@ -892,6 +951,58 @@ def test_extract_wan_shot_summary_reads_render_manifest(tmp_path) -> None:
     assert summary["profile_text_encoder_total_forward_sec"] == 6.4
     assert summary["profile_text_encoder_max_seq_len"] == 21
     assert summary["profile_sampling_total_sec"] == 85.0
+
+
+def test_extract_video_shot_summary_reads_cogvideox_render_manifest(tmp_path) -> None:
+    manifest_path = tmp_path / "render_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "shot_id": "shot_cog",
+                "scene_id": "scene_01",
+                "strategy": "hero_insert",
+                "duration_sec": 2.0,
+                "composition": {
+                    "subtitle_lane": "top",
+                    "framing": "action_insert",
+                },
+                "backend": "cogvideox",
+                "video_backend": "cogvideox",
+                "model_path": "THUDM/CogVideoX-2b",
+                "generate_type": "t2v",
+                "target_resolution": "720x1280",
+                "input_mode": "text_to_video",
+                "normalize_duration_policy": "trim_only",
+                "raw_probe": {
+                    "width": 720,
+                    "height": 480,
+                    "duration_sec": 2.125,
+                },
+                "probe": {
+                    "width": 720,
+                    "height": 1280,
+                    "duration_sec": 2.125,
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    summary = extract_video_shot_summary(manifest_path)
+
+    assert summary["shot_id"] == "shot_cog"
+    assert summary["backend"] == "cogvideox"
+    assert summary["video_backend"] == "cogvideox"
+    assert summary["model_path"] == "THUDM/CogVideoX-2b"
+    assert summary["generate_type"] == "t2v"
+    assert summary["input_mode"] == "text_to_video"
+    assert summary["raw_resolution"] == "720x480"
+    assert summary["normalized_resolution"] == "720x1280"
+    assert summary["normalized_matches_target_resolution"] is True
+    assert summary["normalize_duration_policy"] == "trim_only"
+    assert summary["subtitle_lane"] == "top"
+    assert summary["framing"] == "action_insert"
 
 
 def test_aggregate_stability_results_counts_rates() -> None:
@@ -1323,6 +1434,7 @@ def test_aggregate_full_dry_run_results_counts_mixed_pipeline_requirements() -> 
     assert aggregate["qc_passed_runs"] == 1
     assert aggregate["portrait_shot_count"] == 2
     assert aggregate["wan_shot_count"] == 1
+    assert aggregate["video_shot_count"] == 1
     assert aggregate["mixed_pipeline_runs"] == 1
     assert aggregate["required_strategy_runs"] == 1
     assert aggregate["required_lane_runs"] == 1
@@ -1334,8 +1446,121 @@ def test_aggregate_full_dry_run_results_counts_mixed_pipeline_requirements() -> 
     assert aggregate["strategy_counts"] == {"portrait_lipsync": 3, "hero_insert": 1}
     assert aggregate["lane_counts"] == {"top": 2, "bottom": 2}
     assert aggregate["music_backend_counts"] == {"ace_step": 2}
+    assert aggregate["video_backend_counts"] == {"wan": 1}
     assert aggregate["render_resolution_counts"] == {"720x1280": 2}
     assert aggregate["qc_finding_counts"] == {"wan_timeout": 1}
+
+
+def test_aggregate_quick_generate_acceptance_results_accepts_cogvideox_hero_runs() -> None:
+    operator_overview, operator_queue_summary, operator_queue_items = _ready_operator_surface(
+        project_id="proj_cog",
+        shot_count=3,
+        scene_count=1,
+        next_action="review",
+        revision_release_gate_passed=False,
+    )
+    aggregate = aggregate_quick_generate_acceptance_results(
+        [
+            {
+                "project_id": "proj_cog",
+                "status": "completed",
+                "qc_status": "passed",
+                "qc_findings": [],
+                "case_slug": "fortnite_family_jump_cogvideox",
+                "case_category": "quick_generate",
+                "style_preset": "kinetic_graphic",
+                "voice_cast_preset": "duo_contrast",
+                "music_preset": "heroic_surge",
+                "short_archetype": "dialogue_pivot",
+                "expected_input_mode": "example",
+                "expected_example_slug": "fortnite_family_jump",
+                "expected_stack_profile": "production_vertical_cogvideox",
+                "expected_style_preset": "kinetic_graphic",
+                "expected_voice_cast_preset": "duo_contrast",
+                "expected_music_preset": "heroic_surge",
+                "expected_short_archetype": "dialogue_pivot",
+                "expected_strategies": ["portrait_lipsync", "hero_insert"],
+                "expected_subtitle_lanes": ["bottom"],
+                "expected_scene_count_min": 1,
+                "expected_character_count_min": 2,
+                "expected_speaker_count_min": 2,
+                "expected_portrait_shot_count_min": 2,
+                "expected_wan_shot_count_min": 0,
+                "expected_music_backend": "ace_step",
+                "scene_count": 1,
+                "character_count": 2,
+                "speaker_count": 2,
+                "shot_strategy_counts": {"portrait_lipsync": 2, "hero_insert": 1},
+                "portrait_shots": [{"shot_id": "shot_portrait_1"}, {"shot_id": "shot_portrait_2"}],
+                "wan_shots": [],
+                "video_shots": [
+                    {
+                        "shot_id": "shot_cog_1",
+                        "backend": "cogvideox",
+                        "video_backend": "cogvideox",
+                    }
+                ],
+                "subtitle_summary": {"lane_counts": {"bottom": 2}},
+                "subtitle_visibility_clean": True,
+                "music_summary": {
+                    "backend": "ace_step",
+                    "manifest_available": True,
+                    "music_bed_exists": True,
+                },
+                "render_summary": {
+                    "actual_resolution": "720x1280",
+                    "subtitle_burned_in": True,
+                    "target_matches_actual": True,
+                },
+                "deliverables_summary": _ready_deliverables_summary(shot_count=3, scene_count=1),
+                "semantic_quality": _ready_semantic_quality(),
+                "revision_semantic": {
+                    "available": True,
+                    "gate_passed": True,
+                    "failed_gates": [],
+                    "regressed_metrics": [],
+                },
+                "revision_release": {
+                    "available": True,
+                    "gate_passed": False,
+                    "failed_gates": ["shot_approval_incomplete"],
+                },
+                "quick_generate": {
+                    "available": True,
+                    "mode": "quick_generate",
+                    "input_mode": "example",
+                    "example_slug": "fortnite_family_jump",
+                    "stack_profile": "production_vertical_cogvideox",
+                    "source_prompt_length": 32,
+                    "generated_script_length": 64,
+                    "backend_profile_matches": True,
+                },
+                "backend_profile": {
+                    "planner_backend": "ollama",
+                    "planner_model": "qwen3:8b",
+                    "visual_backend": "comfyui",
+                    "video_backend": "cogvideox",
+                    "tts_backend": "piper",
+                    "music_backend": "ace_step",
+                    "lipsync_backend": "musetalk",
+                    "subtitle_backend": "whisperx",
+                },
+                "operator_overview": operator_overview,
+                "operator_queue_summary": operator_queue_summary,
+                "operator_queue_items": operator_queue_items,
+            }
+        ]
+    )
+
+    assert aggregate["total_runs"] == 1
+    assert aggregate["wan_shot_count"] == 0
+    assert aggregate["video_shot_count"] == 1
+    assert aggregate["video_backend_counts"] == {"cogvideox": 1}
+    assert aggregate["mixed_pipeline_runs"] == 1
+    assert aggregate["all_requirements_met_runs"] == 1
+    assert aggregate["quick_backend_profile_match_runs"] == 1
+    assert aggregate["quick_contract_match_runs"] == 1
+    assert aggregate["quick_acceptance_ready_runs"] == 1
 
 
 def test_aggregate_product_readiness_results_counts_category_and_topology_requirements() -> None:

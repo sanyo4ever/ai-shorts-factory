@@ -1067,6 +1067,67 @@ def extract_wan_shot_summary(manifest_path: Path) -> dict[str, Any]:
     }
 
 
+def extract_video_shot_summary(manifest_path: Path) -> dict[str, Any]:
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw_probe = payload.get("raw_probe") if isinstance(payload.get("raw_probe"), dict) else {}
+    normalized_probe = payload.get("probe") if isinstance(payload.get("probe"), dict) else {}
+    composition = payload.get("composition") if isinstance(payload.get("composition"), dict) else {}
+    planned_duration_sec = float(payload.get("duration_sec") or 0.0)
+    normalized_duration_sec = float(normalized_probe.get("duration_sec") or 0.0)
+    duration_delta_sec = round(normalized_duration_sec - planned_duration_sec, 3)
+    target_resolution = str(payload.get("target_resolution") or "")
+    raw_width = int(raw_probe.get("width") or 0)
+    raw_height = int(raw_probe.get("height") or 0)
+    normalized_width = int(normalized_probe.get("width") or 0)
+    normalized_height = int(normalized_probe.get("height") or 0)
+    target_width = 0
+    target_height = 0
+    if "x" in target_resolution:
+        target_width_text, target_height_text = target_resolution.split("x", 1)
+        if target_width_text.isdigit() and target_height_text.isdigit():
+            target_width = int(target_width_text)
+            target_height = int(target_height_text)
+    input_media_path = payload.get("input_image_path")
+    if input_media_path in (None, ""):
+        input_media_path = payload.get("input_media_path")
+    return {
+        "shot_id": str(payload.get("shot_id") or manifest_path.parent.name),
+        "manifest_path": str(manifest_path),
+        "backend": str(payload.get("backend") or ""),
+        "video_backend": str(payload.get("video_backend") or payload.get("backend") or ""),
+        "scene_id": str(payload.get("scene_id") or ""),
+        "strategy": str(payload.get("strategy") or ""),
+        "input_mode": str(payload.get("input_mode") or ""),
+        "input_media_path": input_media_path,
+        "has_input_media": bool(input_media_path),
+        "prompt_length": len(str(payload.get("prompt") or "")),
+        "model_path": str(payload.get("model_path") or ""),
+        "generate_type": str(payload.get("generate_type") or ""),
+        "planned_duration_sec": planned_duration_sec,
+        "raw_duration_sec": float(raw_probe.get("duration_sec") or 0.0),
+        "normalized_duration_sec": normalized_duration_sec,
+        "duration_delta_sec": duration_delta_sec,
+        "raw_width": raw_width,
+        "raw_height": raw_height,
+        "raw_resolution": f"{raw_width}x{raw_height}" if raw_width and raw_height else "",
+        "normalized_width": normalized_width,
+        "normalized_height": normalized_height,
+        "normalized_resolution": (
+            f"{normalized_width}x{normalized_height}" if normalized_width and normalized_height else ""
+        ),
+        "target_resolution": target_resolution,
+        "normalized_matches_target_resolution": bool(
+            target_width
+            and target_height
+            and normalized_width == target_width
+            and normalized_height == target_height
+        ),
+        "normalize_duration_policy": str(payload.get("normalize_duration_policy") or ""),
+        "subtitle_lane": str(composition.get("subtitle_lane") or ""),
+        "framing": str(composition.get("framing") or ""),
+    }
+
+
 def extract_subtitle_lane_summary(snapshot: ProjectSnapshot) -> dict[str, Any]:
     shot_by_id = {
         shot.shot_id: shot
@@ -1378,6 +1439,12 @@ def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
         for path in shot_render_manifest_paths
         if json.loads(path.read_text(encoding="utf-8")).get("backend") == "wan"
     ]
+    video_shots = [
+        extract_video_shot_summary(path)
+        for path in shot_render_manifest_paths
+        if str(json.loads(path.read_text(encoding="utf-8")).get("backend") or "").strip()
+        in {"wan", "cogvideox"}
+    ]
     final_render_path = next(
         (
             artifact.path
@@ -1421,6 +1488,7 @@ def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
         for key in (
             "orchestrator_backend",
             "planner_backend",
+            "planner_model",
             "visual_backend",
             "video_backend",
             "tts_backend",
@@ -1476,6 +1544,7 @@ def summarize_project_run(snapshot: ProjectSnapshot) -> dict[str, Any]:
         "portrait_retry_free": portrait_retry_free,
         "portrait_warning_free": portrait_warning_free,
         "wan_shots": wan_shots,
+        "video_shots": video_shots,
         "subtitle_summary": subtitle_summary,
         "subtitle_visibility_clean": subtitle_visibility_clean,
         "music_summary": music_summary,
@@ -1542,13 +1611,13 @@ def _run_has_expected_lanes(run: dict[str, Any]) -> bool:
 
 def _run_meets_full_dry_run_requirements(run: dict[str, Any]) -> bool:
     portrait_shots = [shot for shot in run.get("portrait_shots", []) if isinstance(shot, dict)]
-    wan_shots = [shot for shot in run.get("wan_shots", []) if isinstance(shot, dict)]
+    video_shots = _run_video_shots(run)
     render_summary = run.get("render_summary", {})
     music_summary = run.get("music_summary", {})
     return bool(
         not run.get("qc_findings")
         and portrait_shots
-        and wan_shots
+        and len(video_shots) >= _run_expected_video_shot_count_min(run)
         and _run_has_expected_strategies(run)
         and _run_has_expected_lanes(run)
         and bool(isinstance(render_summary, dict) and render_summary.get("subtitle_burned_in"))
@@ -1668,9 +1737,44 @@ def _run_has_quick_generate_music_ready(run: dict[str, Any]) -> bool:
     return manifest_available and music_bed_exists
 
 
+def _run_video_shots(run: dict[str, Any]) -> list[dict[str, Any]]:
+    explicit_video_shots = [
+        shot for shot in run.get("video_shots", []) if isinstance(shot, dict)
+    ]
+    if explicit_video_shots:
+        return explicit_video_shots
+    legacy_wan_shots = []
+    for shot in run.get("wan_shots", []):
+        if not isinstance(shot, dict):
+            continue
+        legacy_wan_shots.append(
+            {
+                **shot,
+                "backend": str(shot.get("backend") or "wan"),
+                "video_backend": str(shot.get("video_backend") or "wan"),
+            }
+        )
+    return legacy_wan_shots
+
+
+def _run_expected_video_shot_count_min(run: dict[str, Any]) -> int:
+    explicit_expected = run.get("expected_video_shot_count_min")
+    if explicit_expected not in (None, ""):
+        return max(0, int(explicit_expected or 0))
+    legacy_wan_expected = max(0, int(run.get("expected_wan_shot_count_min") or 0))
+    expected_strategies = {
+        str(strategy).strip()
+        for strategy in run.get("expected_strategies", [])
+        if isinstance(strategy, str) and str(strategy).strip()
+    }
+    if "hero_insert" in expected_strategies:
+        return max(1, legacy_wan_expected)
+    return legacy_wan_expected
+
+
 def _run_meets_quick_generate_acceptance_requirements(run: dict[str, Any]) -> bool:
     portrait_shots = [shot for shot in run.get("portrait_shots", []) if isinstance(shot, dict)]
-    wan_shots = [shot for shot in run.get("wan_shots", []) if isinstance(shot, dict)]
+    video_shots = _run_video_shots(run)
     render_summary = run.get("render_summary", {})
     return bool(
         not run.get("qc_findings")
@@ -1682,7 +1786,7 @@ def _run_meets_quick_generate_acceptance_requirements(run: dict[str, Any]) -> bo
         and int(run.get("character_count") or 0) >= int(run.get("expected_character_count_min") or 0)
         and int(run.get("speaker_count") or 0) >= int(run.get("expected_speaker_count_min") or 0)
         and len(portrait_shots) >= int(run.get("expected_portrait_shot_count_min") or 0)
-        and len(wan_shots) >= int(run.get("expected_wan_shot_count_min") or 0)
+        and len(video_shots) >= _run_expected_video_shot_count_min(run)
         and bool(run.get("subtitle_visibility_clean"))
         and bool(isinstance(render_summary, dict) and render_summary.get("subtitle_burned_in"))
         and bool(isinstance(render_summary, dict) and render_summary.get("target_matches_actual"))
@@ -1869,7 +1973,7 @@ def _run_has_operator_queue_ready(run: dict[str, Any]) -> bool:
 
 def _run_meets_product_readiness_requirements(run: dict[str, Any]) -> bool:
     portrait_shots = [shot for shot in run.get("portrait_shots", []) if isinstance(shot, dict)]
-    wan_shots = [shot for shot in run.get("wan_shots", []) if isinstance(shot, dict)]
+    video_shots = _run_video_shots(run)
     music_summary = run.get("music_summary", {})
     expected_music_backend = str(run.get("expected_music_backend") or "").strip()
     actual_music_backend = (
@@ -1883,7 +1987,7 @@ def _run_meets_product_readiness_requirements(run: dict[str, Any]) -> bool:
         and int(run.get("character_count") or 0) >= int(run.get("expected_character_count_min") or 0)
         and int(run.get("speaker_count") or 0) >= int(run.get("expected_speaker_count_min") or 0)
         and len(portrait_shots) >= int(run.get("expected_portrait_shot_count_min") or 0)
-        and len(wan_shots) >= int(run.get("expected_wan_shot_count_min") or 0)
+        and len(video_shots) >= _run_expected_video_shot_count_min(run)
         and bool(run.get("subtitle_visibility_clean"))
         and (not expected_music_backend or actual_music_backend == expected_music_backend)
         and _run_matches_expected_product_preset(run)
@@ -2806,9 +2910,11 @@ def aggregate_full_dry_run_results(run_summaries: Iterable[dict[str, Any]]) -> d
     strategy_counts: Counter[str] = Counter()
     lane_counts: Counter[str] = Counter()
     music_backend_counts: Counter[str] = Counter()
+    video_backend_counts: Counter[str] = Counter()
     render_resolution_counts: Counter[str] = Counter()
     total_portrait_shots = 0
     total_wan_shots = 0
+    total_video_shots = 0
     mixed_pipeline_runs = 0
     required_strategy_runs = 0
     required_lane_runs = 0
@@ -2830,10 +2936,17 @@ def aggregate_full_dry_run_results(run_summaries: Iterable[dict[str, Any]]) -> d
             )
         portrait_shots = [shot for shot in run.get("portrait_shots", []) if isinstance(shot, dict)]
         wan_shots = [shot for shot in run.get("wan_shots", []) if isinstance(shot, dict)]
+        video_shots = _run_video_shots(run)
         total_portrait_shots += len(portrait_shots)
         total_wan_shots += len(wan_shots)
-        if portrait_shots and wan_shots:
+        total_video_shots += len(video_shots)
+        if portrait_shots and video_shots:
             mixed_pipeline_runs += 1
+        video_backend_counts.update(
+            str(shot.get("video_backend") or shot.get("backend") or "unknown")
+            for shot in video_shots
+            if str(shot.get("video_backend") or shot.get("backend") or "").strip()
+        )
 
         expected_strategies = [
             str(strategy)
@@ -2891,6 +3004,7 @@ def aggregate_full_dry_run_results(run_summaries: Iterable[dict[str, Any]]) -> d
         "runs_without_qc_findings": sum(1 for run in runs if not run.get("qc_findings")),
         "portrait_shot_count": total_portrait_shots,
         "wan_shot_count": total_wan_shots,
+        "video_shot_count": total_video_shots,
         "mixed_pipeline_runs": mixed_pipeline_runs,
         "mixed_pipeline_rate": _rate(mixed_pipeline_runs, len(runs)),
         "required_strategy_runs": required_strategy_runs,
@@ -2910,6 +3024,7 @@ def aggregate_full_dry_run_results(run_summaries: Iterable[dict[str, Any]]) -> d
         "strategy_counts": dict(strategy_counts),
         "lane_counts": dict(lane_counts),
         "music_backend_counts": dict(music_backend_counts),
+        "video_backend_counts": dict(video_backend_counts),
         "render_resolution_counts": dict(render_resolution_counts),
         "project_status_counts": dict(project_status_counts),
         "qc_status_counts": dict(qc_status_counts),
