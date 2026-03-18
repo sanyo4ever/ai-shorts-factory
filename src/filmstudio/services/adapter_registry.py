@@ -14,6 +14,7 @@ from filmstudio.services.runtime_support import (
     probe_python_json,
     resolve_binary,
 )
+from filmstudio.services.cogvideox_runner import SUPPORTED_COGVIDEOX_GENERATE_TYPES
 from filmstudio.services.wan_runner import SUPPORTED_WAN_SIZES
 
 
@@ -128,6 +129,45 @@ def _build_runtime_probe_cached(settings: Settings) -> dict[str, Any]:
     wan_env = probe_python_json(
         settings.wan_python_binary,
         code=wan_probe_code,
+        timeout_sec=30.0,
+    )
+    cogvideox_probe_code = (
+        "import importlib.util, json, pathlib\n"
+        "repo = pathlib.Path(r'''"
+        + str(settings.cogvideox_repo_path)
+        + "''')\n"
+        "model_path = r'''"
+        + settings.cogvideox_model_path
+        + "'''\n"
+        "model_candidate = pathlib.Path(model_path)\n"
+        "payload = {\n"
+        "  'repo_exists': repo.exists(),\n"
+        "  'cli_demo_exists': (repo / 'inference' / 'cli_demo.py').exists(),\n"
+        "  'model_path': model_path,\n"
+        "  'model_path_exists': model_candidate.exists(),\n"
+        "  'model_path_is_repo_id': not model_candidate.exists(),\n"
+        "  'torch_version': None,\n"
+        "  'cuda_version': None,\n"
+        "  'cuda_available': False,\n"
+        "  'diffusers_available': importlib.util.find_spec('diffusers') is not None,\n"
+        "  'transformers_available': importlib.util.find_spec('transformers') is not None,\n"
+        "  'accelerate_available': importlib.util.find_spec('accelerate') is not None,\n"
+        "  'sentencepiece_available': importlib.util.find_spec('sentencepiece') is not None,\n"
+        "  'protobuf_available': importlib.util.find_spec('google.protobuf') is not None,\n"
+        "  'tiktoken_available': importlib.util.find_spec('tiktoken') is not None,\n"
+        "}\n"
+        "try:\n"
+        "  import torch\n"
+        "  payload['torch_version'] = torch.__version__\n"
+        "  payload['cuda_version'] = torch.version.cuda\n"
+        "  payload['cuda_available'] = bool(torch.cuda.is_available())\n"
+        "except Exception as exc:\n"
+        "  payload['torch_error'] = str(exc)\n"
+        "print(json.dumps(payload))\n"
+    )
+    cogvideox_env = probe_python_json(
+        settings.cogvideox_python_binary,
+        code=cogvideox_probe_code,
         timeout_sec=30.0,
     )
     chatterbox_probe_code = (
@@ -272,6 +312,23 @@ def _build_runtime_probe_cached(settings: Settings) -> dict[str, Any]:
             "vae_dtype": settings.wan_vae_dtype,
             "use_prompt_extend": settings.wan_use_prompt_extend,
             "timeout_sec": settings.wan_timeout_sec,
+        },
+        "cogvideox_env": cogvideox_env,
+        "cogvideox_runtime": {
+            "backend": settings.video_backend,
+            "python_binary": settings.cogvideox_python_binary,
+            "repo_path": str(settings.cogvideox_repo_path),
+            "model_path": settings.cogvideox_model_path,
+            "generate_type": settings.cogvideox_generate_type,
+            "supported_generate_types": sorted(SUPPORTED_COGVIDEOX_GENERATE_TYPES),
+            "num_frames": settings.cogvideox_num_frames,
+            "num_inference_steps": settings.cogvideox_num_inference_steps,
+            "guidance_scale": settings.cogvideox_guidance_scale,
+            "width": settings.cogvideox_width,
+            "height": settings.cogvideox_height,
+            "fps": settings.cogvideox_fps,
+            "dtype": settings.cogvideox_dtype,
+            "timeout_sec": settings.cogvideox_timeout_sec,
         },
         "ace_step": _binary_probe(settings.ace_step_binary, version_args=["--help"]),
         "temporal_cli": _binary_probe(settings.temporal_cli_binary, version_args=["--help"]),
@@ -502,6 +559,20 @@ def _build_service_registry_cached(settings: Settings) -> list[ServiceStatus]:
                 "configured"
                 if settings.video_backend == "deterministic"
                 or (
+                    settings.video_backend == "cogvideox"
+                    and probe["cogvideox_env"]["available"]
+                    and probe["cogvideox_env"].get("repo_exists")
+                    and probe["cogvideox_env"].get("cli_demo_exists")
+                    and probe["cogvideox_env"].get("diffusers_available")
+                    and probe["cogvideox_env"].get("sentencepiece_available")
+                    and (
+                        probe["cogvideox_env"].get("protobuf_available")
+                        or probe["cogvideox_env"].get("tiktoken_available")
+                    )
+                )
+                or (
+                    settings.video_backend == "wan"
+                    and
                     probe["wan_env"]["available"]
                     and probe["wan_env"].get("repo_exists")
                     and probe["wan_env"].get("generate_script_exists")
@@ -513,17 +584,40 @@ def _build_service_registry_cached(settings: Settings) -> list[ServiceStatus]:
                 "Deterministic hero-shot rendering is the stable baseline; Wan is available as an explicit opt-in backend."
                 if settings.video_backend == "deterministic"
                 else (
-                    f"Wan configured from {settings.wan_repo_path} with task '{settings.wan_task}' and checkpoint dir '{settings.wan_ckpt_dir}'."
+                    f"CogVideoX configured from {settings.cogvideox_repo_path} with model '{settings.cogvideox_model_path}' and generate_type '{settings.cogvideox_generate_type}'."
                     if (
-                        probe["wan_env"]["available"]
-                        and probe["wan_env"].get("repo_exists")
-                        and probe["wan_env"].get("generate_script_exists")
-                        and probe["wan_env"].get("ckpt_dir_exists")
+                        settings.video_backend == "cogvideox"
+                        and probe["cogvideox_env"]["available"]
+                        and probe["cogvideox_env"].get("repo_exists")
+                        and probe["cogvideox_env"].get("cli_demo_exists")
+                        and probe["cogvideox_env"].get("diffusers_available")
+                        and probe["cogvideox_env"].get("sentencepiece_available")
+                        and (
+                            probe["cogvideox_env"].get("protobuf_available")
+                            or probe["cogvideox_env"].get("tiktoken_available")
+                        )
                     )
-                    else "Wan runtime is not fully ready yet."
+                    else (
+                        "CogVideoX runtime is not fully ready yet."
+                        if settings.video_backend == "cogvideox"
+                        else (
+                            f"Wan configured from {settings.wan_repo_path} with task '{settings.wan_task}' and checkpoint dir '{settings.wan_ckpt_dir}'."
+                            if (
+                                probe["wan_env"]["available"]
+                                and probe["wan_env"].get("repo_exists")
+                                and probe["wan_env"].get("generate_script_exists")
+                                and probe["wan_env"].get("ckpt_dir_exists")
+                            )
+                            else "Wan runtime is not fully ready yet."
+                        )
+                    )
                 )
             ),
-            repo_url="https://github.com/Wan-Video/Wan2.1",
+            repo_url=(
+                "https://github.com/zai-org/CogVideo"
+                if settings.video_backend == "cogvideox"
+                else "https://github.com/Wan-Video/Wan2.1"
+            ),
         ),
         ServiceStatus(
             service="music",
