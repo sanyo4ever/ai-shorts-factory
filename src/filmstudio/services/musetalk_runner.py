@@ -39,6 +39,8 @@ class MuseTalkSourceProbeConfig:
     min_face_height_px: int = 160
     min_face_area_ratio: float = 0.05
     min_eye_distance_px: float = 60.0
+    min_feature_patch_luma_mean: float = 24.0
+    min_feature_patch_luma_std: float = 6.0
 
 
 @dataclass(frozen=True)
@@ -168,6 +170,8 @@ def run_musetalk_source_probe(
         "min_face_height_px": int(config.min_face_height_px),
         "min_face_area_ratio": float(config.min_face_area_ratio),
         "min_eye_distance_px": float(config.min_eye_distance_px),
+        "min_feature_patch_luma_mean": float(config.min_feature_patch_luma_mean),
+        "min_feature_patch_luma_std": float(config.min_feature_patch_luma_std),
     }
     command = [
         python_binary,
@@ -267,6 +271,18 @@ def _box_size(box):
     return max(0.0, float(box[2] - box[0])), max(0.0, float(box[3] - box[1]))
 
 
+def _patch_stats(gray, center, radius=24):
+    cx, cy = [int(round(value)) for value in center[:2]]
+    x1 = max(0, cx - radius)
+    y1 = max(0, cy - radius)
+    x2 = min(gray.shape[1], cx + radius)
+    y2 = min(gray.shape[0], cy + radius)
+    if x2 <= x1 or y2 <= y1:
+        return 0.0, 0.0
+    patch = gray[y1:y2, x1:x2]
+    return float(np.mean(patch)), float(np.std(patch))
+
+
 source_path = Path(sys.argv[1])
 probe_path = Path(sys.argv[2])
 thresholds = json.loads(sys.argv[3])
@@ -312,6 +328,7 @@ else:
         "landmarks_detected": False,
         "semantic_layout_ok": False,
         "face_size_ok": False,
+        "feature_visibility_ok": False,
     }
     if keypoints is None or len(keypoints) == 0:
         payload["failure_reasons"].append("landmarks_missing")
@@ -365,6 +382,16 @@ else:
             nose_tip = face_landmarks[30]
             mouth_center = face_landmarks[48:68].mean(axis=0)
             eye_distance_px = float(np.linalg.norm(left_eye_center - right_eye_center))
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            left_eye_patch_mean, left_eye_patch_std = _patch_stats(gray, left_eye_center)
+            right_eye_patch_mean, right_eye_patch_std = _patch_stats(gray, right_eye_center)
+            mouth_patch_mean, mouth_patch_std = _patch_stats(gray, mouth_center)
+            feature_patch_luma_mean = float(
+                (left_eye_patch_mean + right_eye_patch_mean + mouth_patch_mean) / 3.0
+            )
+            feature_patch_luma_std = float(
+                (left_eye_patch_std + right_eye_patch_std + mouth_patch_std) / 3.0
+            )
             face_center_x = (
                 float(selected_bbox[0] + selected_bbox[2]) / 2.0
                 if selected_bbox is not None
@@ -383,8 +410,13 @@ else:
                 and bbox_area_ratio >= float(thresholds["min_face_area_ratio"])
                 and eye_distance_px >= float(thresholds["min_eye_distance_px"])
             )
+            feature_visibility_ok = bool(
+                feature_patch_luma_mean >= float(thresholds["min_feature_patch_luma_mean"])
+                and feature_patch_luma_std >= float(thresholds["min_feature_patch_luma_std"])
+            )
             checks["semantic_layout_ok"] = semantic_layout_ok
             checks["face_size_ok"] = face_size_ok
+            checks["feature_visibility_ok"] = feature_visibility_ok
             if selected_bbox is not None:
                 if selected_bbox[0] <= 1.0 or selected_bbox[1] <= 1.0:
                     payload["warnings"].append("face_bbox_touches_upper_or_left_border")
@@ -398,6 +430,14 @@ else:
                 "bbox_height_px": bbox_height,
                 "bbox_area_ratio": bbox_area_ratio,
                 "eye_distance_px": eye_distance_px,
+                "feature_patch_luma_mean": feature_patch_luma_mean,
+                "feature_patch_luma_std": feature_patch_luma_std,
+                "left_eye_patch_luma_mean": left_eye_patch_mean,
+                "left_eye_patch_luma_std": left_eye_patch_std,
+                "right_eye_patch_luma_mean": right_eye_patch_mean,
+                "right_eye_patch_luma_std": right_eye_patch_std,
+                "mouth_patch_luma_mean": mouth_patch_mean,
+                "mouth_patch_luma_std": mouth_patch_std,
                 "eye_tilt_ratio": abs(float(left_eye_center[1] - right_eye_center[1]))
                 / max(1.0, bbox_height),
                 "nose_center_offset_ratio": abs(float(nose_tip[0] - face_center_x))
@@ -411,11 +451,14 @@ else:
                 payload["failure_reasons"].append("semantic_layout_invalid")
             if not face_size_ok:
                 payload["failure_reasons"].append("face_size_below_threshold")
+            if not feature_visibility_ok:
+                payload["failure_reasons"].append("face_visibility_low")
             payload["passed"] = bool(
                 checks["face_detected"]
                 and checks["landmarks_detected"]
                 and semantic_layout_ok
                 and face_size_ok
+                and feature_visibility_ok
             )
     payload["checks"] = checks
 

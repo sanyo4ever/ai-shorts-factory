@@ -4,6 +4,7 @@ from filmstudio.services.comfyui_client import (
     build_character_portrait_workflow,
     build_lipsync_source_reference_workflow,
     build_lipsync_source_workflow,
+    build_storyboard_reference_workflow,
     sanitize_comfyui_filename_prefix,
     stable_visual_seed,
 )
@@ -267,6 +268,22 @@ def test_lipsync_source_reference_workflow_uses_loadimage_and_saveimage_contract
     assert workflow["2"]["inputs"]["image"] == "hero_reference.png"
     assert workflow["8"]["class_type"] == "SaveImage"
     assert workflow["8"]["inputs"]["filename_prefix"] == "filmstudio/tests/lipsync_source_ref"
+
+
+def test_storyboard_reference_workflow_uses_img2img_contract() -> None:
+    workflow = build_storyboard_reference_workflow(
+        checkpoint_name="model.safetensors",
+        positive_prompt="duo action frame",
+        negative_prompt="crowd",
+        filename_prefix="filmstudio/tests/storyboard_ref",
+        input_image_name="duo_reference.png",
+        seed=stable_visual_seed("proj", "shot", "storyboard_reference"),
+    )
+    assert workflow["1"]["class_type"] == "CheckpointLoaderSimple"
+    assert workflow["2"]["class_type"] == "LoadImage"
+    assert workflow["2"]["inputs"]["image"] == "duo_reference.png"
+    assert workflow["8"]["class_type"] == "SaveImage"
+    assert workflow["8"]["inputs"]["filename_prefix"] == "filmstudio/tests/storyboard_ref"
 
 
 def test_comfyui_filename_prefix_sanitizes_cyrillic_segments() -> None:

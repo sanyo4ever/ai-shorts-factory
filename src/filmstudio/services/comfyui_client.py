@@ -410,6 +410,31 @@ def build_storyboard_workflow(
     )
 
 
+def build_storyboard_reference_workflow(
+    *,
+    checkpoint_name: str,
+    positive_prompt: str,
+    negative_prompt: str,
+    filename_prefix: str,
+    input_image_name: str,
+    steps: int = 24,
+    cfg: float = 6.8,
+    denoise: float = 0.5,
+    seed: int,
+) -> dict[str, Any]:
+    return _build_img2img_workflow(
+        checkpoint_name=checkpoint_name,
+        positive_prompt=positive_prompt,
+        negative_prompt=negative_prompt,
+        filename_prefix=filename_prefix,
+        input_image_name=input_image_name,
+        steps=steps,
+        cfg=cfg,
+        denoise=denoise,
+        seed=seed,
+    )
+
+
 def write_image_bytes(path: Path, image_bytes: bytes) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(image_bytes)

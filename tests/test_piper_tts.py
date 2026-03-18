@@ -45,3 +45,14 @@ def test_normalize_text_for_piper_repairs_utf8_mojibake_before_lowercasing() -> 
     assert normalized.normalized_text == "\u043f\u0440\u0438\u0432\u0456\u0442, \u0442\u0430\u0442\u0443!"
     assert normalized.changed is True
     assert normalized.kind == "utf8_mojibake_repair+lowercase"
+
+
+def test_normalize_text_for_piper_strips_guillemets_for_ukrainian_tts() -> None:
+    normalized = normalize_text_for_piper(
+        "\u00ab\u0421\u0438\u043d\u0443, \u0433\u043e\u0442\u043e\u0432\u0438\u0439?\u00bb",
+        language="uk",
+    )
+
+    assert normalized.normalized_text == "\u0441\u0438\u043d\u0443, \u0433\u043e\u0442\u043e\u0432\u0438\u0439?"
+    assert normalized.changed is True
+    assert normalized.kind == "strip_quotes+lowercase"

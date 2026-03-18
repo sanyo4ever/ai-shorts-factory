@@ -342,6 +342,20 @@ def build_planner_system_prompt(*, render_width: int, render_height: int) -> str
     )
 
 
+def build_scenario_expansion_system_prompt(*, render_width: int, render_height: int) -> str:
+    orientation = "vertical 9:16 shorts" if render_height >= render_width else "16:9 shorts"
+    return (
+        f"You are a scenario expansion service for a {orientation} animation pipeline. "
+        "Return strict JSON only. Do not include markdown. "
+        "The source screenplay may be Ukrainian. Preserve dialogue text exactly in the source language. "
+        "All scenario-expansion planning fields must be concise natural English. "
+        "Do not transliterate Ukrainian into pseudo-English; translate the meaning into clean production English. "
+        "Keep existing character names, scene_ids, and shot_ids from the anchor. "
+        "Do not invent extra scenes, extra shots, or extra characters. "
+        "Focus on readable story premise, visual world, action choreography, and shot-level visual intent for short-form production."
+    )
+
+
 def build_planner_request_payload(
     request: ProjectCreateRequest,
     *,
@@ -691,4 +705,111 @@ def build_planner_enrichment_prompt(
         f"{anchor_json}\n\n"
         "Return schema:\n"
         f"{schema}\n"
+    )
+
+
+def build_scenario_expansion_prompt(
+    request: ProjectCreateRequest,
+    *,
+    scenario_anchor: dict[str, Any],
+) -> str:
+    product_preset = ProductPresetContract(
+        style_preset=request.style_preset,
+        voice_cast_preset=request.voice_cast_preset,
+        music_preset=request.music_preset,
+        short_archetype=request.short_archetype,
+    )
+    language_contract = json.dumps(bilingual_language_contract(request.language), ensure_ascii=False, indent=2)
+    preset_json = json.dumps(product_preset.model_dump(), ensure_ascii=False, indent=2)
+    anchor_json = json.dumps(scenario_anchor, ensure_ascii=False, indent=2)
+    schema = json.dumps(
+        {
+            "story_premise_en": "english string",
+            "visual_world_en": "english string",
+            "narrative_goal_en": "english string",
+            "character_grounding": [
+                {
+                    "name": "existing character name from the anchor",
+                    "role_en": "english string",
+                    "relationship_en": "english string",
+                    "visual_hook_en": "english string",
+                    "dialogue_voice_hint": "string",
+                }
+            ],
+            "scene_expansions": [
+                {
+                    "scene_id": "existing scene_id from the anchor",
+                    "title_en": "english string",
+                    "dramatic_beat_en": "english string",
+                    "visual_context_en": "english string",
+                    "action_choreography_en": "english string",
+                    "dialogue_goal_en": "english string",
+                    "dialogue_lines": [
+                        {
+                            "shot_id": "existing shot_id from the anchor",
+                            "character_name": "existing character name",
+                            "text": "original-language string",
+                        }
+                    ],
+                    "shot_contexts": [
+                        {
+                            "shot_id": "existing shot_id from the anchor",
+                            "title_en": "english string",
+                            "strategy": "parallax_comp|portrait_motion|portrait_lipsync|hero_insert",
+                            "intent_en": "english string",
+                            "visual_prompt_en": "english string",
+                            "continuity_anchor_en": "english string",
+                            "action_choreography_en": "english string",
+                            "dialogue_lines": [
+                                {
+                                    "character_name": "existing character name",
+                                    "text": "original-language string",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+            "dialogue_contract": {
+                "language": "source-language code",
+                "preserve_original_dialogue": True,
+                "speaker_count": "integer",
+                "line_count": "integer",
+                "lines": [
+                    {
+                        "shot_id": "existing shot_id from the anchor",
+                        "character_name": "existing character name",
+                        "text": "original-language string",
+                    }
+                ],
+            },
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    request_json = json.dumps(
+        {
+            "task": "Expand a short creator prompt into a richer bilingual production scenario.",
+            "target_duration_sec": request.target_duration_sec,
+            "language_contract": bilingual_language_contract(request.language),
+            "style": request.style,
+            "title": request.title,
+            "character_names": request.character_names,
+            "script": request.script,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    return (
+        "Use the following screenplay request, locked scenario anchor, and schema.\n\n"
+        f"Language contract:\n{language_contract}\n\n"
+        f"Product preset:\n{preset_json}\n\n"
+        f"Scenario anchor:\n{anchor_json}\n\n"
+        f"Required schema:\n{schema}\n\n"
+        "Requirements:\n"
+        "- Keep dialogue text exactly as written in the source language.\n"
+        "- Expand the short idea into clean English story and action context.\n"
+        "- Keep shot intent concise and visual-backend-friendly.\n"
+        "- For hero inserts, describe one readable payoff action beat, not a collage or poster.\n\n"
+        f"Screenplay request:\n{request_json}\n"
     )
