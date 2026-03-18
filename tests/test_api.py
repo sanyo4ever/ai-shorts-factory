@@ -70,6 +70,9 @@ def test_health_endpoints() -> None:
     assert "wan_env" in backends_payload
     assert "wan_runtime" in backends_payload
     assert backends_payload["wan_runtime"]["config_supported"] is True
+    assert "wan22_env" in backends_payload
+    assert "wan22_runtime" in backends_payload
+    assert backends_payload["wan22_runtime"]["config_supported"] is True
     assert "cogvideox_env" in backends_payload
     assert "cogvideox_runtime" in backends_payload
     cogvideox_env = backends_payload["cogvideox_env"]
@@ -141,6 +144,7 @@ def test_quick_generate_endpoints_create_project_with_profile_defaults() -> None
     catalog_payload = catalog_response.json()
     assert catalog_payload["defaults"]["stack_profile"] == "production_vertical"
     assert catalog_payload["profiles"]["production_vertical"]["label"] == "My PC (RTX 4060) Verified"
+    assert catalog_payload["profiles"]["production_vertical_wan22"]["backend_profile"]["video_backend"] == "wan22"
     assert catalog_payload["profiles"]["production_vertical_cogvideox"]["backend_profile"]["video_backend"] == "cogvideox"
     assert any(example["slug"] == "fortnite_family_jump" for example in catalog_payload["examples"])
 

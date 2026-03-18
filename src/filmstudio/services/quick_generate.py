@@ -24,6 +24,22 @@ QUICK_STACK_PROFILES: dict[str, dict[str, Any]] = {
             "subtitle_backend": "whisperx",
         },
     },
+    "production_vertical_wan22": {
+        "label": "Wan 2.2 Hero Beta",
+        "description": "Production stack with Wan 2.2 TI2V hero-video generation for scene-first action inserts.",
+        "hardware_hint": "RTX 4060 - beta TI2V-5B profile with sequential managed services",
+        "backend_profile": {
+            "orchestrator_backend": "local",
+            "planner_backend": "ollama",
+            "planner_model": "qwen3:8b",
+            "visual_backend": "comfyui",
+            "video_backend": "wan22",
+            "tts_backend": "piper",
+            "music_backend": "ace_step",
+            "lipsync_backend": "musetalk",
+            "subtitle_backend": "whisperx",
+        },
+    },
     "production_vertical_cogvideox": {
         "label": "Scene-First Hero Beta",
         "description": "Production stack with workstation-verified CogVideoX-2b scene generation for hero inserts.",

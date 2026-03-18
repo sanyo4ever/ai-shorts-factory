@@ -15,6 +15,7 @@ from filmstudio.services.runtime_support import (
     resolve_binary,
 )
 from filmstudio.services.cogvideox_runner import SUPPORTED_COGVIDEOX_GENERATE_TYPES
+from filmstudio.services.wan22_runner import SUPPORTED_WAN22_SIZES
 from filmstudio.services.wan_runner import SUPPORTED_WAN_SIZES
 
 
@@ -129,6 +130,37 @@ def _build_runtime_probe_cached(settings: Settings) -> dict[str, Any]:
     wan_env = probe_python_json(
         settings.wan_python_binary,
         code=wan_probe_code,
+        timeout_sec=30.0,
+    )
+    wan22_probe_code = (
+        "import json, pathlib\n"
+        "repo = pathlib.Path(r'''"
+        + str(settings.wan22_repo_path)
+        + "''')\n"
+        "ckpt_dir = pathlib.Path(r'''"
+        + str(settings.wan22_ckpt_dir)
+        + "''')\n"
+        "payload = {\n"
+        "  'repo_exists': repo.exists(),\n"
+        "  'generate_script_exists': (repo / 'generate.py').exists(),\n"
+        "  'ckpt_dir': str(ckpt_dir),\n"
+        "  'ckpt_dir_exists': ckpt_dir.exists(),\n"
+        "  'torch_version': None,\n"
+        "  'cuda_version': None,\n"
+        "  'cuda_available': False,\n"
+        "}\n"
+        "try:\n"
+        "  import torch\n"
+        "  payload['torch_version'] = torch.__version__\n"
+        "  payload['cuda_version'] = torch.version.cuda\n"
+        "  payload['cuda_available'] = bool(torch.cuda.is_available())\n"
+        "except Exception as exc:\n"
+        "  payload['torch_error'] = str(exc)\n"
+        "print(json.dumps(payload))\n"
+    )
+    wan22_env = probe_python_json(
+        settings.wan22_python_binary,
+        code=wan22_probe_code,
         timeout_sec=30.0,
     )
     cogvideox_probe_code = (
@@ -312,6 +344,30 @@ def _build_runtime_probe_cached(settings: Settings) -> dict[str, Any]:
             "vae_dtype": settings.wan_vae_dtype,
             "use_prompt_extend": settings.wan_use_prompt_extend,
             "timeout_sec": settings.wan_timeout_sec,
+        },
+        "wan22_env": wan22_env,
+        "wan22_runtime": {
+            "backend": settings.video_backend,
+            "repo_path": str(settings.wan22_repo_path),
+            "ckpt_dir": str(settings.wan22_ckpt_dir),
+            "ckpt_dir_exists": settings.wan22_ckpt_dir.exists(),
+            "task": settings.wan22_task,
+            "size": settings.wan22_size,
+            "supported_sizes": list(
+                SUPPORTED_WAN22_SIZES.get(settings.wan22_task.strip().lower(), ())
+            ),
+            "config_supported": settings.wan22_size
+            in SUPPORTED_WAN22_SIZES.get(settings.wan22_task.strip().lower(), ()),
+            "frame_num": settings.wan22_frame_num,
+            "sample_solver": settings.wan22_sample_solver,
+            "sample_steps": settings.wan22_sample_steps,
+            "sample_shift": settings.wan22_sample_shift,
+            "sample_guide_scale": settings.wan22_sample_guide_scale,
+            "offload_model": settings.wan22_offload_model,
+            "t5_cpu": settings.wan22_t5_cpu,
+            "convert_model_dtype": settings.wan22_convert_model_dtype,
+            "use_prompt_extend": settings.wan22_use_prompt_extend,
+            "timeout_sec": settings.wan22_timeout_sec,
         },
         "cogvideox_env": cogvideox_env,
         "cogvideox_runtime": {
@@ -571,6 +627,13 @@ def _build_service_registry_cached(settings: Settings) -> list[ServiceStatus]:
                     )
                 )
                 or (
+                    settings.video_backend == "wan22"
+                    and probe["wan22_env"]["available"]
+                    and probe["wan22_env"].get("repo_exists")
+                    and probe["wan22_env"].get("generate_script_exists")
+                    and probe["wan22_env"].get("ckpt_dir_exists")
+                )
+                or (
                     settings.video_backend == "wan"
                     and
                     probe["wan_env"]["available"]
@@ -601,14 +664,28 @@ def _build_service_registry_cached(settings: Settings) -> list[ServiceStatus]:
                         "CogVideoX runtime is not fully ready yet."
                         if settings.video_backend == "cogvideox"
                         else (
-                            f"Wan configured from {settings.wan_repo_path} with task '{settings.wan_task}' and checkpoint dir '{settings.wan_ckpt_dir}'."
+                            f"Wan 2.2 configured from {settings.wan22_repo_path} with task '{settings.wan22_task}' and checkpoint dir '{settings.wan22_ckpt_dir}'."
                             if (
-                                probe["wan_env"]["available"]
-                                and probe["wan_env"].get("repo_exists")
-                                and probe["wan_env"].get("generate_script_exists")
-                                and probe["wan_env"].get("ckpt_dir_exists")
+                                settings.video_backend == "wan22"
+                                and probe["wan22_env"]["available"]
+                                and probe["wan22_env"].get("repo_exists")
+                                and probe["wan22_env"].get("generate_script_exists")
+                                and probe["wan22_env"].get("ckpt_dir_exists")
                             )
-                            else "Wan runtime is not fully ready yet."
+                            else (
+                                "Wan2.2 runtime is not fully ready yet."
+                                if settings.video_backend == "wan22"
+                                else (
+                                    f"Wan configured from {settings.wan_repo_path} with task '{settings.wan_task}' and checkpoint dir '{settings.wan_ckpt_dir}'."
+                                    if (
+                                        probe["wan_env"]["available"]
+                                        and probe["wan_env"].get("repo_exists")
+                                        and probe["wan_env"].get("generate_script_exists")
+                                        and probe["wan_env"].get("ckpt_dir_exists")
+                                    )
+                                    else "Wan runtime is not fully ready yet."
+                                )
+                            )
                         )
                     )
                 )
@@ -616,7 +693,11 @@ def _build_service_registry_cached(settings: Settings) -> list[ServiceStatus]:
             repo_url=(
                 "https://github.com/zai-org/CogVideo"
                 if settings.video_backend == "cogvideox"
-                else "https://github.com/Wan-Video/Wan2.1"
+                else (
+                    "https://github.com/Wan-Video/Wan2.2"
+                    if settings.video_backend == "wan22"
+                    else "https://github.com/Wan-Video/Wan2.1"
+                )
             ),
         ),
         ServiceStatus(

@@ -59,6 +59,7 @@ from filmstudio.services.piper_tts import (
     normalize_text_for_piper,
 )
 from filmstudio.services.cogvideox_runner import CogVideoXRunConfig, run_cogvideox_inference
+from filmstudio.services.wan22_runner import Wan22RunConfig, run_wan22_inference
 from filmstudio.services.wan_runner import WanRunConfig, run_wan_inference
 from filmstudio.services.runtime_support import (
     ffprobe_media,
@@ -116,6 +117,21 @@ class DeterministicMediaAdapters:
         wan_profile_enabled: bool = True,
         wan_profile_sync_cuda: bool = False,
         wan_timeout_sec: float = 1800.0,
+        wan22_python_binary: str = "",
+        wan22_repo_path: Path | None = None,
+        wan22_ckpt_dir: Path | None = None,
+        wan22_task: str = "ti2v-5B",
+        wan22_size: str = "704*1280",
+        wan22_frame_num: int = 17,
+        wan22_sample_solver: str = "unipc",
+        wan22_sample_steps: int = 10,
+        wan22_sample_shift: float = 5.0,
+        wan22_sample_guide_scale: float = 5.0,
+        wan22_offload_model: bool = True,
+        wan22_t5_cpu: bool = True,
+        wan22_convert_model_dtype: bool = True,
+        wan22_use_prompt_extend: bool = False,
+        wan22_timeout_sec: float = 7200.0,
         cogvideox_python_binary: str = "",
         cogvideox_repo_path: Path | None = None,
         cogvideox_model_path: str = "THUDM/CogVideoX-5b",
@@ -187,6 +203,21 @@ class DeterministicMediaAdapters:
         self.wan_profile_enabled = wan_profile_enabled
         self.wan_profile_sync_cuda = wan_profile_sync_cuda
         self.wan_timeout_sec = wan_timeout_sec
+        self.wan22_python_binary = wan22_python_binary
+        self.wan22_repo_path = wan22_repo_path
+        self.wan22_ckpt_dir = wan22_ckpt_dir
+        self.wan22_task = wan22_task
+        self.wan22_size = wan22_size
+        self.wan22_frame_num = wan22_frame_num
+        self.wan22_sample_solver = wan22_sample_solver
+        self.wan22_sample_steps = wan22_sample_steps
+        self.wan22_sample_shift = wan22_sample_shift
+        self.wan22_sample_guide_scale = wan22_sample_guide_scale
+        self.wan22_offload_model = wan22_offload_model
+        self.wan22_t5_cpu = wan22_t5_cpu
+        self.wan22_convert_model_dtype = wan22_convert_model_dtype
+        self.wan22_use_prompt_extend = wan22_use_prompt_extend
+        self.wan22_timeout_sec = wan22_timeout_sec
         self.cogvideox_python_binary = cogvideox_python_binary
         self.cogvideox_repo_path = cogvideox_repo_path
         self.cogvideox_model_path = cogvideox_model_path
@@ -273,6 +304,21 @@ class DeterministicMediaAdapters:
             wan_profile_enabled=self.wan_profile_enabled,
             wan_profile_sync_cuda=self.wan_profile_sync_cuda,
             wan_timeout_sec=self.wan_timeout_sec,
+            wan22_python_binary=self.wan22_python_binary,
+            wan22_repo_path=self.wan22_repo_path,
+            wan22_ckpt_dir=self.wan22_ckpt_dir,
+            wan22_task=self.wan22_task,
+            wan22_size=self.wan22_size,
+            wan22_frame_num=self.wan22_frame_num,
+            wan22_sample_solver=self.wan22_sample_solver,
+            wan22_sample_steps=self.wan22_sample_steps,
+            wan22_sample_shift=self.wan22_sample_shift,
+            wan22_sample_guide_scale=self.wan22_sample_guide_scale,
+            wan22_offload_model=self.wan22_offload_model,
+            wan22_t5_cpu=self.wan22_t5_cpu,
+            wan22_convert_model_dtype=self.wan22_convert_model_dtype,
+            wan22_use_prompt_extend=self.wan22_use_prompt_extend,
+            wan22_timeout_sec=self.wan22_timeout_sec,
             cogvideox_python_binary=self.cogvideox_python_binary,
             cogvideox_repo_path=self.cogvideox_repo_path,
             cogvideox_model_path=self.cogvideox_model_path,
@@ -346,6 +392,19 @@ class DeterministicMediaAdapters:
             "wan_use_prompt_extend": self.wan_use_prompt_extend,
             "wan_profile_enabled": self.wan_profile_enabled,
             "wan_profile_sync_cuda": self.wan_profile_sync_cuda,
+            "wan22_repo_path": str(self.wan22_repo_path) if self.wan22_repo_path is not None else None,
+            "wan22_ckpt_dir": str(self.wan22_ckpt_dir) if self.wan22_ckpt_dir is not None else None,
+            "wan22_task": self.wan22_task,
+            "wan22_size": self.wan22_size,
+            "wan22_frame_num": self.wan22_frame_num,
+            "wan22_sample_solver": self.wan22_sample_solver,
+            "wan22_sample_steps": self.wan22_sample_steps,
+            "wan22_sample_shift": self.wan22_sample_shift,
+            "wan22_sample_guide_scale": self.wan22_sample_guide_scale,
+            "wan22_offload_model": self.wan22_offload_model,
+            "wan22_t5_cpu": self.wan22_t5_cpu,
+            "wan22_convert_model_dtype": self.wan22_convert_model_dtype,
+            "wan22_use_prompt_extend": self.wan22_use_prompt_extend,
             "tts_backend": self.tts_backend,
             "chatterbox_base_url": self.chatterbox_base_url,
             "chatterbox_request_timeout_sec": self.chatterbox_request_timeout_sec,
@@ -5479,6 +5538,8 @@ class DeterministicMediaAdapters:
         for shot in self._iter_target_shots(snapshot):
             if shot.strategy == "hero_insert" and self.video_backend == "wan":
                 shot_result = self._render_shot_wan(snapshot, shot)
+            elif shot.strategy == "hero_insert" and self.video_backend == "wan22":
+                shot_result = self._render_shot_wan22(snapshot, shot)
             elif shot.strategy == "hero_insert" and self.video_backend == "cogvideox":
                 shot_result = self._render_shot_cogvideox(snapshot, shot)
             else:
@@ -6276,6 +6337,182 @@ class DeterministicMediaAdapters:
         )
         return result
 
+    def _render_shot_wan22(
+        self,
+        snapshot: ProjectSnapshot,
+        shot: ShotPlan,
+    ) -> StageExecutionResult:
+        project_id = snapshot.project.project_id
+        project_dir = self.artifact_store.project_dir(project_id)
+        result_root = project_dir / f"shots/{shot.shot_id}/wan22"
+        raw_output_path = result_root / "wan22_raw.mp4"
+        normalized_output_path = project_dir / f"shots/{shot.shot_id}/raw.mp4"
+        duration_sec = self._effective_shot_duration(snapshot, shot)
+        storyboard_artifact = self._find_shot_artifact(snapshot, "storyboard", shot.shot_id)
+        input_image_path = self._resolve_wan22_input_image(storyboard_artifact)
+        prompt = self._wan22_prompt(snapshot, shot)
+        conditioning_manifest_path = self._write_shot_conditioning_manifest(
+            snapshot,
+            shot,
+            backend="wan22",
+            resolved_prompt_en=prompt,
+            prompt_source=(
+                "shot.conditioning.generation_prompt_en"
+                if shot.conditioning.generation_prompt_en
+                else "_wan22_prompt"
+            ),
+            storyboard_artifact=storyboard_artifact,
+            actual_input_mode=self._wan22_input_mode_label(input_image_path),
+        )
+        wan22_run = run_wan22_inference(
+            Wan22RunConfig(
+                python_binary=self.wan22_python_binary,
+                repo_path=self._require_wan22_repo(),
+                ckpt_dir=self._require_wan22_ckpt_dir(),
+                task=self.wan22_task,
+                size=self.wan22_size,
+                frame_num=self.wan22_frame_num,
+                sample_solver=self.wan22_sample_solver,
+                sample_steps=self.wan22_sample_steps,
+                sample_shift=self.wan22_sample_shift,
+                sample_guide_scale=self.wan22_sample_guide_scale,
+                offload_model=self.wan22_offload_model,
+                t5_cpu=self.wan22_t5_cpu,
+                convert_model_dtype=self.wan22_convert_model_dtype,
+                use_prompt_extend=self.wan22_use_prompt_extend,
+                timeout_sec=self.wan22_timeout_sec,
+            ),
+            prompt=prompt,
+            output_path=raw_output_path,
+            result_root=result_root,
+            input_image_path=input_image_path,
+            seed=stable_visual_seed(project_id, shot.shot_id, "wan22"),
+        )
+        raw_summary = summarize_probe(ffprobe_media(self.ffprobe_binary, raw_output_path))
+        raw_duration_sec = float(raw_summary.get("duration_sec") or 0.0)
+        target_duration_sec = max(raw_duration_sec, float(duration_sec or 0.0))
+        hold_duration_sec = max(0.0, target_duration_sec - raw_duration_sec)
+        normalize_filter = f"{self._scale_crop_filter()},fps={self.render_fps}"
+        if hold_duration_sec > 0.01:
+            normalize_filter += f",tpad=stop_mode=clone:stop_duration={hold_duration_sec:.3f}"
+        normalize_filter += ",format=yuv420p"
+        normalize_command = [
+            resolve_binary(self.ffmpeg_binary) or self.ffmpeg_binary,
+            "-y",
+            "-i",
+            str(raw_output_path),
+            "-vf",
+            normalize_filter,
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            "-t",
+            f"{target_duration_sec:.3f}",
+            str(normalized_output_path),
+        ]
+        normalize_run = run_command(normalize_command, timeout_sec=self.command_timeout_sec)
+        normalized_summary = summarize_probe(ffprobe_media(self.ffprobe_binary, normalized_output_path))
+        normalize_policy = "hold_last_frame" if hold_duration_sec > 0.01 else "trim_only"
+        manifest_path = self.artifact_store.write_json(
+            project_id,
+            f"shots/{shot.shot_id}/render_manifest.json",
+            {
+                "shot_id": shot.shot_id,
+                "scene_id": shot.scene_id,
+                "strategy": shot.strategy,
+                "duration_sec": duration_sec,
+                "composition": shot.composition.model_dump(),
+                "conditioning": shot.conditioning.model_dump(),
+                "conditioning_manifest_path": str(conditioning_manifest_path),
+                "backend": "wan22",
+                "video_backend": self.video_backend,
+                "task": self.wan22_task,
+                "size": self.wan22_size,
+                "frame_num": self.wan22_frame_num,
+                "sample_solver": self.wan22_sample_solver,
+                "sample_steps": self.wan22_sample_steps,
+                "sample_shift": self.wan22_sample_shift,
+                "sample_guide_scale": self.wan22_sample_guide_scale,
+                "offload_model": self.wan22_offload_model,
+                "t5_cpu": self.wan22_t5_cpu,
+                "convert_model_dtype": self.wan22_convert_model_dtype,
+                "target_resolution": self._render_resolution(),
+                "target_orientation": self._render_orientation(),
+                "prompt": prompt,
+                "prompt_path": str(wan22_run.prompt_path),
+                "input_mode": self._wan22_input_mode_label(input_image_path),
+                "input_image_path": str(input_image_path) if input_image_path is not None else None,
+                "wan22_command": wan22_run.command,
+                "wan22_stdout_path": str(wan22_run.stdout_path),
+                "wan22_stderr_path": str(wan22_run.stderr_path),
+                "wan22_duration_sec": wan22_run.duration_sec,
+                "raw_output_path": str(raw_output_path),
+                "raw_probe": raw_summary,
+                "normalize_target_duration_sec": target_duration_sec,
+                "normalize_hold_duration_sec": hold_duration_sec,
+                "normalize_duration_policy": normalize_policy,
+                "normalize_command": normalize_command,
+                "normalize_duration_sec": normalize_run.duration_sec,
+                "probe": normalized_summary,
+            },
+        )
+        result = StageExecutionResult()
+        result.artifacts.extend(
+            [
+                ArtifactRecord(
+                    artifact_id=new_id("artifact"),
+                    kind="shot_video_conditioning_manifest",
+                    path=str(conditioning_manifest_path),
+                    stage="render_shots",
+                    metadata={"shot_id": shot.shot_id, "backend": "wan22"},
+                ),
+                ArtifactRecord(
+                    artifact_id=new_id("artifact"),
+                    kind="shot_video_backend_raw",
+                    path=str(raw_output_path),
+                    stage="render_shots",
+                    metadata={"shot_id": shot.shot_id, "backend": "wan22", **raw_summary},
+                ),
+                ArtifactRecord(
+                    artifact_id=new_id("artifact"),
+                    kind="shot_video",
+                    path=str(normalized_output_path),
+                    stage="render_shots",
+                    metadata={"shot_id": shot.shot_id, "backend": "wan22", **normalized_summary},
+                ),
+                ArtifactRecord(
+                    artifact_id=new_id("artifact"),
+                    kind="shot_render_manifest",
+                    path=str(manifest_path),
+                    stage="render_shots",
+                    metadata={"shot_id": shot.shot_id, "backend": "wan22"},
+                ),
+            ]
+        )
+        result.logs.append(
+            {
+                "message": f"rendered shot {shot.shot_id}",
+                "shot_id": shot.shot_id,
+                "backend": "wan22",
+                "wan22_command": " ".join(wan22_run.command),
+                "normalize_command": " ".join(normalize_command),
+                "duration_sec": wan22_run.duration_sec + normalize_run.duration_sec,
+                "normalize_target_duration_sec": target_duration_sec,
+                "normalize_hold_duration_sec": hold_duration_sec,
+                "normalize_duration_policy": normalize_policy,
+                "input_mode": self._wan22_input_mode_label(input_image_path),
+            }
+        )
+        return result
+
     def _cogvideox_prompt(self, snapshot: ProjectSnapshot, shot: ShotPlan) -> str:
         conditioning = self._resolve_runtime_shot_conditioning(snapshot, shot)
         prompt_parts = [
@@ -6307,6 +6544,47 @@ class DeterministicMediaAdapters:
 
     def _cogvideox_input_mode_label(self, input_media_path: Path | None) -> str:
         return "image_to_video" if input_media_path is not None else "text_to_video"
+
+    def _wan22_prompt(self, snapshot: ProjectSnapshot, shot: ShotPlan) -> str:
+        conditioning = self._resolve_runtime_shot_conditioning(snapshot, shot)
+        prompt_parts = [
+            strip_duplicate_planning_label(
+                conditioning.generation_prompt_en or self._planning_seed(snapshot, shot)
+            ),
+            strip_duplicate_planning_label(conditioning.camera_intent_en or ""),
+            strip_duplicate_planning_label(conditioning.motion_intent_en or ""),
+            "One continuous cinematic action scene.",
+            "Readable vertical staging, no collage, no duplicate characters, no split screen.",
+            "Keep the father and child distinct, grounded, and moving through one clear payoff beat."
+            if len(shot.characters) >= 2
+            else "Keep one dominant subject readable through the whole shot.",
+        ]
+        return coerce_planning_english(
+            " ".join(part.strip() for part in prompt_parts if part and part.strip())
+        )
+
+    def _resolve_wan22_input_image(
+        self,
+        storyboard_artifact: ArtifactRecord | None,
+    ) -> Path | None:
+        normalized_task = self.wan22_task.strip().lower()
+        if normalized_task in {"animate-14b", "s2v-14b"}:
+            raise RuntimeError(
+                f"Wan2.2 task {self.wan22_task} is not supported by the current hero-shot path."
+            )
+        if normalized_task not in {"i2v-a14b", "ti2v-5b"}:
+            return None
+        if storyboard_artifact is None:
+            raise RuntimeError(
+                f"Wan2.2 task {self.wan22_task} requires a storyboard artifact for the hero shot."
+            )
+        storyboard_path = Path(storyboard_artifact.path)
+        if not storyboard_path.exists():
+            raise RuntimeError(f"Wan2.2 storyboard input not found: {storyboard_path}")
+        return storyboard_path
+
+    def _wan22_input_mode_label(self, input_image_path: Path | None) -> str:
+        return "image_to_video" if input_image_path is not None else "text_to_video"
 
     def _require_cogvideox_repo(self) -> Path:
         if self.cogvideox_repo_path is None or not self.cogvideox_repo_path.exists():
@@ -10452,6 +10730,24 @@ class DeterministicMediaAdapters:
         if not self.wan_ckpt_dir.exists():
             raise RuntimeError(f"Wan checkpoint dir not found: {self.wan_ckpt_dir}")
         return self.wan_ckpt_dir
+
+    def _require_wan22_repo(self) -> Path:
+        if self.wan22_repo_path is None:
+            raise RuntimeError("Wan2.2 backend requires FILMSTUDIO_WAN22_REPO_PATH.")
+        if not self.wan22_repo_path.exists():
+            raise RuntimeError(f"Wan2.2 repo path not found: {self.wan22_repo_path}")
+        if not self.wan22_python_binary:
+            raise RuntimeError("Wan2.2 backend requires FILMSTUDIO_WAN22_PYTHON_BINARY.")
+        if resolve_binary(self.wan22_python_binary) is None:
+            raise RuntimeError(f"Wan2.2 python binary not found: {self.wan22_python_binary}")
+        return self.wan22_repo_path
+
+    def _require_wan22_ckpt_dir(self) -> Path:
+        if self.wan22_ckpt_dir is None:
+            raise RuntimeError("Wan2.2 backend requires FILMSTUDIO_WAN22_CKPT_DIR.")
+        if not self.wan22_ckpt_dir.exists():
+            raise RuntimeError(f"Wan2.2 checkpoint dir not found: {self.wan22_ckpt_dir}")
+        return self.wan22_ckpt_dir
 
     def _wan_hold_duration_cap(self, raw_duration_sec: float) -> float | None:
         normalized_task = self.wan_task.strip().lower()

@@ -7,6 +7,7 @@ def test_build_quick_generate_catalog_exposes_profiles_and_examples() -> None:
 
     assert payload["defaults"]["stack_profile"] == "production_vertical"
     assert "production_vertical" in payload["profiles"]
+    assert "production_vertical_wan22" in payload["profiles"]
     assert "production_vertical_cogvideox" in payload["profiles"]
     assert payload["profiles"]["production_vertical"]["label"] == "My PC (RTX 4060) Verified"
     assert "RTX 4060" in payload["profiles"]["production_vertical"]["hardware_hint"]
@@ -94,6 +95,20 @@ def test_build_quick_project_request_supports_cogvideox_profile() -> None:
     assert request.video_backend == "cogvideox"
     assert request.visual_backend == "comfyui"
     assert metadata["profile"]["backend_profile"]["video_backend"] == "cogvideox"
+
+
+def test_build_quick_project_request_supports_wan22_profile() -> None:
+    request, metadata = build_quick_project_request(
+        QuickGenerateRequest(
+            example_slug="fortnite_family_jump",
+            stack_profile="production_vertical_wan22",
+            run_immediately=False,
+        )
+    )
+
+    assert request.video_backend == "wan22"
+    assert request.visual_backend == "comfyui"
+    assert metadata["profile"]["backend_profile"]["video_backend"] == "wan22"
 
 
 def test_build_quick_project_request_infers_duo_contract_from_natural_language_prompt() -> None:

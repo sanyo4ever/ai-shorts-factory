@@ -40,6 +40,7 @@ The current codebase restores:
 - deterministic visual generation as the stable baseline plus opt-in `ComfyUI` wiring for character-package and storyboard stages
 - live local Ukrainian TTS through `Piper` with the `uk_UA-ukrainian_tts-medium` voice pack
 - scene-first `CogVideoX` hero-video backend wiring as an explicit opt-in alternative to `Wan` for `hero_insert` shots, with the workstation-verified local default now pinned to `CogVideoX-2b`
+- scene-first `Wan 2.2` hero-video backend wiring as an explicit opt-in beta path for `hero_insert` shots, targeting `Wan2.2-TI2V-5B` with a portrait `704x1280` workstation profile
 - deterministic music generation as the stable baseline plus opt-in `ACE-Step` wiring through a local HTTP service
 - deterministic lipsync manifests as the stable baseline plus opt-in `MuseTalk` wiring for portrait dialogue shots with dedicated source generation
 - deterministic local subtitles as the stable baseline plus opt-in `WhisperX` wiring through an isolated runtime env
@@ -164,6 +165,7 @@ This keeps the first-run flow simple without removing the deeper operator surfac
 If you want the simplest path instead of the full intake form, use the built-in `Quick Generate` card in the default `Generate` view. It wraps the same API with a smaller payload, curated starter examples, and explicit runtime-stack profiles:
 
 - `My PC (RTX 4060) Verified`: `ComfyUI + Wan + Piper + WhisperX + MuseTalk + ACE-Step + FFmpeg`
+- `Wan 2.2 Hero Beta`: `ComfyUI + Wan2.2 TI2V-5B + Piper + WhisperX + MuseTalk + ACE-Step + FFmpeg`
 - `Scene-First Hero Beta`: `ComfyUI + CogVideoX-2b + Piper + WhisperX + MuseTalk + ACE-Step + FFmpeg`
 - `Fast Preview`: faster local preview path with deterministic visuals and live `Piper`
 

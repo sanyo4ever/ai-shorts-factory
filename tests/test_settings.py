@@ -9,6 +9,10 @@ from filmstudio.core.settings import (
     default_wan_size_for_task,
     default_wan_t5_cpu_for_task,
     default_wan_timeout_sec_for_task,
+    default_wan22_frame_num_for_task,
+    default_wan22_sample_steps_for_task,
+    default_wan22_size_for_task,
+    default_wan22_timeout_sec_for_task,
     detect_default_comfyui_checkpoint_name,
     get_settings,
 )
@@ -72,6 +76,15 @@ def test_get_settings_defaults_to_portrait_render_profile(monkeypatch, tmp_path:
     assert settings.wan_offload_model is False
     assert settings.wan_t5_cpu is False
     assert settings.wan_vae_dtype == "bfloat16"
+    assert settings.wan22_task == "ti2v-5B"
+    assert settings.wan22_size == "704*1280"
+    assert settings.wan22_ckpt_dir.name == "Wan2.2-TI2V-5B"
+    assert settings.wan22_frame_num == 17
+    assert settings.wan22_sample_steps == 10
+    assert settings.wan22_timeout_sec == 7200.0
+    assert settings.wan22_offload_model is True
+    assert settings.wan22_t5_cpu is True
+    assert settings.wan22_convert_model_dtype is True
     assert settings.cogvideox_model_path == "THUDM/CogVideoX-2b"
     assert settings.cogvideox_generate_type == "t2v"
     assert settings.cogvideox_num_frames == 17
@@ -121,3 +134,12 @@ def test_default_wan_budget_profile_tracks_task_family() -> None:
     assert default_wan_timeout_sec_for_task("i2v-14B") == 1800.0
     assert default_wan_offload_model_for_task("i2v-14B") is True
     assert default_wan_t5_cpu_for_task("i2v-14B") is True
+
+
+def test_default_wan22_budget_profile_tracks_task_family() -> None:
+    assert default_wan22_size_for_task("ti2v-5B", render_width=720, render_height=1280) == "704*1280"
+    assert default_wan22_size_for_task("ti2v-5B", render_width=1280, render_height=720) == "1280*704"
+    assert default_wan22_size_for_task("t2v-A14B", render_width=720, render_height=1280) == "720*1280"
+    assert default_wan22_frame_num_for_task("ti2v-5B") == 17
+    assert default_wan22_sample_steps_for_task("ti2v-5B") == 10
+    assert default_wan22_timeout_sec_for_task("ti2v-5B") == 7200.0

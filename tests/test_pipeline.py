@@ -23,6 +23,7 @@ from filmstudio.services.musetalk_runner import MuseTalkRunResult, MuseTalkSourc
 from filmstudio.services.planner_service import PlannerService
 from filmstudio.services.project_service import ProjectService
 from filmstudio.services.runtime_support import CommandResult
+from filmstudio.services.wan22_runner import Wan22RunResult
 from filmstudio.services.wan_runner import WanRunResult
 from filmstudio.storage.attempt_log_store import AttemptLogStore
 from filmstudio.storage.artifact_store import ArtifactStore
@@ -5787,4 +5788,131 @@ def test_render_shots_cogvideox_writes_backend_manifest(
     assert manifest["backend"] == "cogvideox"
     assert manifest["generate_type"] == "t2v"
     assert manifest["input_mode"] == "text_to_video"
+    assert manifest["conditioning_manifest_path"].endswith("video_conditioning_manifest.json")
+
+
+def test_render_shots_wan22_writes_backend_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="Wan2.2 hero test",
+            script=(
+                "SCENE 1. Bright Fortnite-style island. Father Tato and son Syn stand on a wooden ramp.\n"
+                "TATO: Son, ready to jump?\n"
+                "SYN: Yes, launch forward!\n\n"
+                "HERO INSERT: Father Tato and son Syn jump from the ramp and sprint to a glowing crown."
+            ),
+            language="uk",
+        )
+    )
+    adapters = DeterministicMediaAdapters(
+        artifact_store,
+        ffmpeg_binary=sys.executable,
+        ffprobe_binary=sys.executable,
+        video_backend="wan22",
+        wan22_python_binary=sys.executable,
+        wan22_repo_path=tmp_path / "Wan2.2",
+        wan22_ckpt_dir=tmp_path / "models" / "wan22" / "Wan2.2-TI2V-5B",
+        wan22_task="ti2v-5B",
+        wan22_size="704*1280",
+    )
+    (tmp_path / "Wan2.2").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "Wan2.2" / "generate.py").write_text("print('stub')\n", encoding="utf-8")
+    adapters.wan22_ckpt_dir.mkdir(parents=True, exist_ok=True)
+    hero_shot = next(shot for scene in snapshot.scenes for shot in scene.shots if shot.strategy == "hero_insert")
+    project_dir = artifact_store.project_dir(snapshot.project.project_id)
+    storyboard_path = project_dir / f"shots/{hero_shot.shot_id}/storyboard.png"
+    storyboard_path.parent.mkdir(parents=True, exist_ok=True)
+    storyboard_path.write_bytes(b"fake-storyboard")
+    snapshot.artifacts.append(
+        ArtifactRecord(
+            artifact_id="artifact_storyboard",
+            kind="storyboard",
+            path=str(storyboard_path),
+            stage="generate_storyboards",
+            metadata={"shot_id": hero_shot.shot_id},
+        )
+    )
+
+    def fake_run_wan22_inference(config, *, prompt, output_path, result_root, input_image_path, seed):  # type: ignore[no-untyped-def]
+        result_root.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-mp4")
+        stdout_path = result_root / "wan22_stdout.log"
+        stderr_path = result_root / "wan22_stderr.log"
+        stdout_path.write_text("ok", encoding="utf-8")
+        stderr_path.write_text("", encoding="utf-8")
+        prompt_path = result_root / "wan22_prompt.txt"
+        prompt_path.write_text(prompt, encoding="utf-8")
+        return Wan22RunResult(
+            output_video_path=output_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            command=[sys.executable, "generate.py"],
+            duration_sec=33.0,
+            prompt_path=prompt_path,
+        )
+
+    def fake_ffprobe_media(binary, path):  # type: ignore[no-untyped-def]
+        probe_path = Path(path)
+        if probe_path.name == "wan22_raw.mp4":
+            return {
+                "format": {"duration": "1.0"},
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "width": 704,
+                        "height": 1280,
+                        "avg_frame_rate": "24/1",
+                    }
+                ],
+            }
+        return {
+            "format": {"duration": "2.0"},
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "width": 720,
+                    "height": 1280,
+                    "avg_frame_rate": "24/1",
+                }
+            ],
+        }
+
+    def fake_run_command(args, *, timeout_sec=300.0, cwd=None, env=None, capture_output=True, hide_window=False):  # type: ignore[no-untyped-def]
+        Path(args[-1]).write_bytes(b"normalized")
+        return CommandResult(
+            args=args,
+            returncode=0,
+            stdout="",
+            stderr="",
+            duration_sec=0.5,
+        )
+
+    monkeypatch.setattr(
+        "filmstudio.services.media_adapters.run_wan22_inference",
+        fake_run_wan22_inference,
+    )
+    monkeypatch.setattr("filmstudio.services.media_adapters.ffprobe_media", fake_ffprobe_media)
+    monkeypatch.setattr("filmstudio.services.media_adapters.run_command", fake_run_command)
+
+    render_result = adapters.render_shots(snapshot)
+
+    manifest_artifact = next(
+        artifact
+        for artifact in render_result.artifacts
+        if artifact.kind == "shot_render_manifest" and artifact.metadata.get("backend") == "wan22"
+    )
+    manifest = json.loads(Path(manifest_artifact.path).read_text(encoding="utf-8"))
+    assert manifest["backend"] == "wan22"
+    assert manifest["task"] == "ti2v-5B"
+    assert manifest["input_mode"] == "image_to_video"
+    assert manifest["normalize_duration_policy"] == "hold_last_frame"
     assert manifest["conditioning_manifest_path"].endswith("video_conditioning_manifest.json")

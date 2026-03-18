@@ -45,6 +45,7 @@ ShortArchetype = Literal[
 ]
 QuickGenerateStackProfile = Literal[
     "production_vertical",
+    "production_vertical_wan22",
     "production_vertical_cogvideox",
     "deterministic_preview",
 ]

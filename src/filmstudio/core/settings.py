@@ -52,6 +52,21 @@ class Settings:
     wan_profile_enabled: bool
     wan_profile_sync_cuda: bool
     wan_timeout_sec: float
+    wan22_python_binary: str
+    wan22_repo_path: Path
+    wan22_ckpt_dir: Path
+    wan22_task: str
+    wan22_size: str
+    wan22_frame_num: int
+    wan22_sample_solver: str
+    wan22_sample_steps: int
+    wan22_sample_shift: float
+    wan22_sample_guide_scale: float
+    wan22_offload_model: bool
+    wan22_t5_cpu: bool
+    wan22_convert_model_dtype: bool
+    wan22_use_prompt_extend: bool
+    wan22_timeout_sec: float
     cogvideox_python_binary: str
     cogvideox_repo_path: Path
     cogvideox_model_path: str
@@ -221,6 +236,57 @@ def default_wan_t5_cpu_for_task(task: str) -> bool:
     return normalized_task not in {"t2v-1.3b", "vace-1.3b"}
 
 
+def default_wan22_size_for_task(
+    task: str,
+    *,
+    render_width: int,
+    render_height: int,
+) -> str:
+    normalized_task = task.strip().lower()
+    portrait = render_height >= render_width
+    if normalized_task == "ti2v-5b":
+        return "704*1280" if portrait else "1280*704"
+    if normalized_task in {"t2v-a14b", "i2v-a14b", "animate-14b"}:
+        return "720*1280" if portrait else "1280*720"
+    if normalized_task == "s2v-14b":
+        return "704*1280" if portrait else "1280*704"
+    return "704*1280" if portrait else "1280*704"
+
+
+def default_wan22_checkpoint_dir(task: str, runtime_root: Path) -> Path:
+    normalized_task = task.strip().lower()
+    ckpt_name_map = {
+        "t2v-a14b": "Wan2.2-T2V-A14B",
+        "i2v-a14b": "Wan2.2-I2V-A14B",
+        "ti2v-5b": "Wan2.2-TI2V-5B",
+        "animate-14b": "Wan2.2-Animate-14B",
+        "s2v-14b": "Wan2.2-S2V-14B",
+    }
+    ckpt_name = ckpt_name_map.get(normalized_task, "Wan2.2-TI2V-5B")
+    return runtime_root / "models" / "wan22" / ckpt_name
+
+
+def default_wan22_frame_num_for_task(task: str) -> int:
+    normalized_task = task.strip().lower()
+    if normalized_task == "ti2v-5b":
+        return 17
+    return 9
+
+
+def default_wan22_sample_steps_for_task(task: str) -> int:
+    normalized_task = task.strip().lower()
+    if normalized_task == "ti2v-5b":
+        return 10
+    return 8
+
+
+def default_wan22_timeout_sec_for_task(task: str) -> float:
+    normalized_task = task.strip().lower()
+    if normalized_task == "ti2v-5b":
+        return 7200.0
+    return 10800.0
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     cwd = Path.cwd()
@@ -242,6 +308,8 @@ def get_settings() -> Settings:
     comfyui_default_repo = runtime_root / "services/ComfyUI"
     wan_default_python = runtime_root / "envs/wan/Scripts/python.exe"
     wan_default_repo = runtime_root / "services/Wan2.1"
+    wan22_default_python = runtime_root / "envs/wan22/Scripts/python.exe"
+    wan22_default_repo = runtime_root / "services/Wan2.2"
     cogvideox_default_python = runtime_root / "envs/cogvideox/Scripts/python.exe"
     cogvideox_default_repo = runtime_root / "services/CogVideoX"
     wan_default_task = os.getenv("FILMSTUDIO_WAN_TASK", "t2v-1.3B")
@@ -256,6 +324,16 @@ def get_settings() -> Settings:
     wan_default_timeout_sec = default_wan_timeout_sec_for_task(wan_default_task)
     wan_default_offload_model = default_wan_offload_model_for_task(wan_default_task)
     wan_default_t5_cpu = default_wan_t5_cpu_for_task(wan_default_task)
+    wan22_default_task = os.getenv("FILMSTUDIO_WAN22_TASK", "ti2v-5B")
+    wan22_default_ckpt_dir = default_wan22_checkpoint_dir(wan22_default_task, runtime_root)
+    wan22_default_size = default_wan22_size_for_task(
+        wan22_default_task,
+        render_width=render_width,
+        render_height=render_height,
+    )
+    wan22_default_frame_num = default_wan22_frame_num_for_task(wan22_default_task)
+    wan22_default_sample_steps = default_wan22_sample_steps_for_task(wan22_default_task)
+    wan22_default_timeout_sec = default_wan22_timeout_sec_for_task(wan22_default_task)
     chatterbox_default_python = runtime_root / "envs/chatterbox/Scripts/python.exe"
     chatterbox_default_repo = runtime_root / "services/Chatterbox-TTS-Server"
     ace_step_default_repo = runtime_root / "services/ACE-Step-1.5"
@@ -352,6 +430,38 @@ def get_settings() -> Settings:
         wan_profile_sync_cuda=os.getenv("FILMSTUDIO_WAN_PROFILE_SYNC_CUDA", "0") == "1",
         wan_timeout_sec=float(
             os.getenv("FILMSTUDIO_WAN_TIMEOUT_SEC", str(wan_default_timeout_sec))
+        ),
+        wan22_python_binary=os.getenv(
+            "FILMSTUDIO_WAN22_PYTHON_BINARY", str(wan22_default_python)
+        ),
+        wan22_repo_path=Path(
+            os.getenv("FILMSTUDIO_WAN22_REPO_PATH", wan22_default_repo)
+        ).resolve(),
+        wan22_ckpt_dir=Path(
+            os.getenv("FILMSTUDIO_WAN22_CKPT_DIR", wan22_default_ckpt_dir)
+        ).resolve(),
+        wan22_task=wan22_default_task,
+        wan22_size=os.getenv("FILMSTUDIO_WAN22_SIZE", wan22_default_size),
+        wan22_frame_num=int(
+            os.getenv("FILMSTUDIO_WAN22_FRAME_NUM", str(wan22_default_frame_num))
+        ),
+        wan22_sample_solver=os.getenv("FILMSTUDIO_WAN22_SAMPLE_SOLVER", "unipc"),
+        wan22_sample_steps=int(
+            os.getenv("FILMSTUDIO_WAN22_SAMPLE_STEPS", str(wan22_default_sample_steps))
+        ),
+        wan22_sample_shift=float(os.getenv("FILMSTUDIO_WAN22_SAMPLE_SHIFT", "5.0")),
+        wan22_sample_guide_scale=float(
+            os.getenv("FILMSTUDIO_WAN22_SAMPLE_GUIDE_SCALE", "5.0")
+        ),
+        wan22_offload_model=os.getenv("FILMSTUDIO_WAN22_OFFLOAD_MODEL", "1") == "1",
+        wan22_t5_cpu=os.getenv("FILMSTUDIO_WAN22_T5_CPU", "1") == "1",
+        wan22_convert_model_dtype=os.getenv(
+            "FILMSTUDIO_WAN22_CONVERT_MODEL_DTYPE", "1"
+        )
+        == "1",
+        wan22_use_prompt_extend=os.getenv("FILMSTUDIO_WAN22_USE_PROMPT_EXTEND", "0") == "1",
+        wan22_timeout_sec=float(
+            os.getenv("FILMSTUDIO_WAN22_TIMEOUT_SEC", str(wan22_default_timeout_sec))
         ),
         cogvideox_python_binary=os.getenv(
             "FILMSTUDIO_COGVIDEOX_PYTHON_BINARY", str(cogvideox_default_python)
