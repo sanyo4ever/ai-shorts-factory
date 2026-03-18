@@ -1322,16 +1322,23 @@ def test_storyboard_prompts_strengthen_hero_insert_duo_contract(tmp_path) -> Non
     shot.characters = ["Tato", "Syn"]
 
     positive_prompt, negative_prompt = adapters._storyboard_prompts(snapshot, shot)
+    setup_prompt, _ = adapters._storyboard_prompts(snapshot, shot, hero_phase="setup")
+    closing_prompt, _ = adapters._storyboard_prompts(snapshot, shot, hero_phase="closing")
 
     assert "exactly two characters only" in positive_prompt
     assert "same duo from the dialogue closeups" in positive_prompt
     assert "not a poster" in positive_prompt
+    assert "single cinematic still" in positive_prompt
+    assert "contact sheet" in negative_prompt
+    assert "storyboard page" in negative_prompt
     assert "squad" in negative_prompt
     assert "roster poster" in negative_prompt
     assert "extra fighters" in negative_prompt
+    assert "single frozen setup moment" in setup_prompt
+    assert "single frozen closing moment" in closing_prompt
 
 
-def test_generate_storyboards_comfyui_uses_reference_img2img_for_duo_hero_insert(tmp_path, monkeypatch) -> None:
+def test_generate_storyboards_comfyui_generates_text_to_image_keyframes_for_duo_hero_insert(tmp_path, monkeypatch) -> None:
     runtime_root = tmp_path / "runtime"
     artifact_store = ArtifactStore(runtime_root / "artifacts")
     service = ProjectService(
@@ -1375,18 +1382,20 @@ def test_generate_storyboards_comfyui_uses_reference_img2img_for_duo_hero_insert
         ffmpeg_binary="ffmpeg",
     )
     workflow_calls: list[tuple[str, str]] = []
+    call_index = {"value": 0}
 
     class FakeComfyClient:
         def generate_image(self, workflow, *, output_node_id="7"):
             workflow_calls.append((output_node_id, workflow["2"]["class_type"]))
+            call_index["value"] += 1
             return ComfyUIImageResult(
-                prompt_id="prompt_storyboard_reference",
-                filename="storyboard_00001_.png",
+                prompt_id=f"prompt_storyboard_reference_{call_index['value']}",
+                filename=f"storyboard_{call_index['value']:02d}.png",
                 subfolder="filmstudio/tests",
                 output_type="output",
-                image_bytes=b"storyboard",
+                image_bytes=f"storyboard-{call_index['value']}".encode("utf-8"),
                 workflow=workflow,
-                history={"prompt_storyboard_reference": {"outputs": {}}},
+                history={f"prompt_storyboard_reference_{call_index['value']}": {"outputs": {}}},
                 duration_sec=1.0,
             )
 
@@ -1411,12 +1420,189 @@ def test_generate_storyboards_comfyui_uses_reference_img2img_for_duo_hero_insert
         next(artifact.path for artifact in storyboard_result.artifacts if artifact.kind == "storyboard_manifest")
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["input_mode"] == "img2img"
+    assert manifest["input_mode"] == "text_to_image"
     assert manifest["storyboard_reference_kind"] == "duo_character_reference_composite"
     assert Path(str(manifest["storyboard_reference_path"])).exists()
-    assert manifest["comfyui_input_image_name"].startswith("filmstudio_")
+    assert manifest["comfyui_input_image_name"] is None
+    assert manifest["selected_storyboard_label"] == "payoff"
+    assert [item["label"] for item in manifest["keyframes"]] == ["setup", "payoff", "closing"]
+    assert len(
+        [
+            artifact
+            for artifact in storyboard_result.artifacts
+            if artifact.kind == "storyboard_keyframe" and artifact.metadata.get("shot_id") == shot.shot_id
+        ]
+    ) == 3
     assert any(artifact.kind == "storyboard_reference" for artifact in storyboard_result.artifacts)
-    assert ("8", "LoadImage") in workflow_calls
+    assert all(call[0] == "7" for call in workflow_calls[:3])
+    assert ("8", "LoadImage") not in workflow_calls[:3]
+
+
+def test_render_shots_wan_uses_storyboard_keyframes_when_raw_center_rejected(tmp_path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="Wan keyframe fallback",
+            style="fortnite_stylized_action",
+            script="SCENE 1. TATO and SYN sprint toward the glowing crown.\nHERO INSERT: explosive duo payoff.",
+            language="uk",
+            video_backend="wan",
+            character_names=["Tato", "Syn"],
+        )
+    )
+    adapters = DeterministicMediaAdapters(artifact_store, video_backend="wan", wan_task="i2v-14B")
+
+    shot = snapshot.scenes[0].shots[0]
+    shot.strategy = "hero_insert"
+    project_dir = artifact_store.project_dir(snapshot.project.project_id)
+    shot_dir = project_dir / f"shots/{shot.shot_id}"
+    shot_dir.mkdir(parents=True, exist_ok=True)
+    storyboard_path = shot_dir / "storyboard.png"
+    storyboard_path.write_bytes(b"fake-storyboard")
+    keyframe_payload = []
+    for label in ("setup", "payoff", "closing"):
+        keyframe_path = shot_dir / f"storyboard_{label}.png"
+        keyframe_path.write_bytes(label.encode("utf-8"))
+        keyframe_payload.append({"label": label, "path": str(keyframe_path)})
+    storyboard_manifest_path = shot_dir / "storyboard_manifest.json"
+    storyboard_manifest_path.write_text(
+        json.dumps({"keyframes": keyframe_payload}, indent=2),
+        encoding="utf-8",
+    )
+    snapshot.artifacts.extend(
+        [
+            ArtifactRecord(
+                artifact_id="artifact_storyboard",
+                kind="storyboard",
+                path=str(storyboard_path),
+                stage="generate_storyboards",
+                metadata={"shot_id": shot.shot_id},
+            ),
+            ArtifactRecord(
+                artifact_id="artifact_storyboard_manifest",
+                kind="storyboard_manifest",
+                path=str(storyboard_manifest_path),
+                stage="generate_storyboards",
+                metadata={"shot_id": shot.shot_id},
+            ),
+        ]
+    )
+    command_calls: list[list[str]] = []
+
+    def fake_run_wan_inference(config, *, prompt, output_path, result_root, input_image_path, seed):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-raw-video")
+        stdout_path = result_root / "wan_stdout.log"
+        stderr_path = result_root / "wan_stderr.log"
+        prompt_path = result_root / "wan_prompt.txt"
+        profile_path = result_root / "wan_profile.jsonl"
+        profile_summary_path = result_root / "wan_profile_summary.json"
+        stdout_path.write_text("wan ok", encoding="utf-8")
+        stderr_path.write_text("", encoding="utf-8")
+        prompt_path.write_text(prompt, encoding="utf-8")
+        profile_path.write_text("", encoding="utf-8")
+        profile_summary_path.write_text(json.dumps({"status": "completed"}, indent=2), encoding="utf-8")
+        return WanRunResult(
+            output_video_path=output_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            profile_path=profile_path,
+            profile_summary_path=profile_summary_path,
+            profile_summary={"status": "completed"},
+            command=["python", "generate.py", "--task", config.task],
+            duration_sec=12.5,
+            prompt_path=prompt_path,
+        )
+
+    def fake_run_command(args, *, timeout_sec=300.0, cwd=None, env=None):
+        command_calls.append(list(args))
+        output_path = Path(args[-1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-normalized-video")
+        return CommandResult(
+            args=args,
+            returncode=0,
+            stdout="ok",
+            stderr="",
+            duration_sec=1.0,
+        )
+
+    def fake_ffprobe_media(ffprobe_binary, media_path, *, timeout_sec=30.0):
+        path = Path(media_path)
+        if path.name == "wan_raw.mp4":
+            return {
+                "format": {"duration": "0.500", "size": "1024", "bit_rate": "5000000"},
+                "streams": [
+                    {
+                        "codec_type": "video",
+                        "codec_name": "h264",
+                        "width": 1280,
+                        "height": 720,
+                        "r_frame_rate": "24/1",
+                    }
+                ],
+            }
+        return {
+            "format": {"duration": "2.000", "size": "2048", "bit_rate": "6000000"},
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "width": 1280,
+                    "height": 720,
+                    "r_frame_rate": "24/1",
+                }
+            ],
+        }
+
+    monkeypatch.setattr("filmstudio.services.media_adapters.resolve_binary", lambda value: value)
+    monkeypatch.setattr("filmstudio.services.media_adapters.run_wan_inference", fake_run_wan_inference)
+    monkeypatch.setattr("filmstudio.services.media_adapters.run_command", fake_run_command)
+    monkeypatch.setattr("filmstudio.services.media_adapters.ffprobe_media", fake_ffprobe_media)
+    wan_repo_path = runtime_root / "wan-repo"
+    wan_ckpt_dir = runtime_root / "wan-ckpt"
+    wan_repo_path.mkdir(parents=True, exist_ok=True)
+    wan_ckpt_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(adapters, "wan_repo_path", wan_repo_path)
+    monkeypatch.setattr(adapters, "wan_ckpt_dir", wan_ckpt_dir)
+    monkeypatch.setattr(adapters, "wan_python_binary", "python")
+    monkeypatch.setattr(
+        adapters,
+        "_probe_wan_raw_quality",
+        lambda path: {
+            "available": True,
+            "usable": False,
+            "status": "reject",
+            "reasons": ["washed_out_high_luma_low_saturation"],
+            "metrics": {"yavg_mean": 210.0, "satavg_mean": 12.0},
+        },
+    )
+
+    result = adapters.render_shots(snapshot)
+    manifest_path = Path(
+        next(artifact.path for artifact in result.artifacts if artifact.kind == "shot_render_manifest")
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["normalize_duration_policy"] == "hybrid_storyboard_keyframes_raw_rejected"
+    assert manifest["wan_center_selected"] is False
+    assert [segment["label"] for segment in manifest["hybrid_segments"]] == [
+        "storyboard_setup",
+        "storyboard_payoff",
+        "storyboard_closing",
+    ]
+    assert {
+        "hybrid_storyboard_setup",
+        "hybrid_storyboard_payoff",
+        "hybrid_storyboard_closing",
+        "hybrid_concat",
+    }.issubset(set(manifest["normalize_commands"]))
+    assert all("hybrid_center.mp4" not in " ".join(call) for call in command_calls)
 
 
 def test_build_characters_retries_until_reference_quality_gate_passes(tmp_path, monkeypatch) -> None:

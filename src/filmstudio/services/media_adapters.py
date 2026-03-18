@@ -1204,6 +1204,26 @@ class DeterministicMediaAdapters:
             return False, "secondary_face_detected"
         return True, "quality_gate_passed"
 
+    @staticmethod
+    def _hero_storyboard_keyframe_specs() -> list[dict[str, str]]:
+        return [
+            {
+                "phase": "setup",
+                "label": "setup",
+                "prompt_hint": "setup beat, pre-launch anticipation, clean runway into the action",
+            },
+            {
+                "phase": "payoff",
+                "label": "payoff",
+                "prompt_hint": "main payoff beat, strongest center action, decisive crown rush moment",
+            },
+            {
+                "phase": "closing",
+                "label": "closing",
+                "prompt_hint": "closing beat, victory pose, stable finish after the action",
+            },
+        ]
+
     def _generate_storyboards_comfyui(self, snapshot: ProjectSnapshot) -> StageExecutionResult:
         client = self._require_comfyui()
         result = StageExecutionResult()
@@ -1223,16 +1243,12 @@ class DeterministicMediaAdapters:
             input_mode = "text_to_image"
             output_node_id = "7"
             staged_reference: dict[str, str] | None = None
-            workflow = build_storyboard_workflow(
-                checkpoint_name=self.comfyui_checkpoint_name,
-                positive_prompt=positive_prompt,
-                negative_prompt=negative_prompt,
-                filename_prefix=f"filmstudio/{snapshot.project.project_id}/shots/{shot.shot_id}/storyboard",
-                width=self.render_width,
-                height=self.render_height,
-                seed=stable_visual_seed(snapshot.project.project_id, shot.shot_id, "storyboard"),
+            use_reference_input = (
+                reference_payload is not None
+                and self.comfyui_input_dir is not None
+                and shot.strategy != "hero_insert"
             )
-            if reference_payload is not None and self.comfyui_input_dir is not None:
+            if use_reference_input:
                 staged_reference = self._stage_comfyui_input_image(
                     snapshot,
                     shot,
@@ -1240,25 +1256,96 @@ class DeterministicMediaAdapters:
                     source_path=Path(reference_payload["reference_image_path"]),
                     label="storyboard_reference",
                 )
-                workflow = build_storyboard_reference_workflow(
+                input_mode = "img2img"
+                output_node_id = "8"
+
+            project_dir = self.artifact_store.project_dir(snapshot.project.project_id)
+            shot_dir = project_dir / f"shots/{shot.shot_id}"
+            storyboard_keyframes: list[dict[str, Any]] = []
+            image = None
+            if shot.strategy == "hero_insert":
+                for spec in self._hero_storyboard_keyframe_specs():
+                    keyframe_positive_prompt, keyframe_negative_prompt = self._storyboard_prompts(
+                        snapshot,
+                        shot,
+                        hero_phase=spec["phase"],
+                    )
+                    workflow = build_storyboard_workflow(
+                        checkpoint_name=self.comfyui_checkpoint_name,
+                        positive_prompt=keyframe_positive_prompt,
+                        negative_prompt=keyframe_negative_prompt,
+                        filename_prefix=(
+                            f"filmstudio/{snapshot.project.project_id}/shots/{shot.shot_id}/storyboard_{spec['label']}"
+                        ),
+                        width=self.render_width,
+                        height=self.render_height,
+                        steps=24,
+                        cfg=6.8,
+                        seed=stable_visual_seed(
+                            snapshot.project.project_id,
+                            shot.shot_id,
+                            f"storyboard_{spec['phase']}",
+                        ),
+                    )
+                    keyframe_image = client.generate_image(workflow, output_node_id=output_node_id)
+                    keyframe_path = write_image_bytes(
+                        shot_dir / f"storyboard_{spec['label']}.png",
+                        keyframe_image.image_bytes,
+                    )
+                    storyboard_keyframes.append(
+                        {
+                            "label": spec["label"],
+                            "phase": spec["phase"],
+                            "prompt_hint": spec["prompt_hint"],
+                            "path": str(keyframe_path),
+                            "prompt_id": keyframe_image.prompt_id,
+                            "filename": keyframe_image.filename,
+                            "subfolder": keyframe_image.subfolder,
+                            "duration_sec": keyframe_image.duration_sec,
+                            "workflow": keyframe_image.workflow,
+                            "history": keyframe_image.history,
+                        }
+                    )
+                selected_keyframe = next(
+                    (item for item in storyboard_keyframes if item["label"] == "payoff"),
+                    storyboard_keyframes[0],
+                )
+                image = next(
+                    item
+                    for item in storyboard_keyframes
+                    if item["label"] == selected_keyframe["label"]
+                )
+                storyboard_path = write_image_bytes(
+                    shot_dir / "storyboard.png",
+                    Path(selected_keyframe["path"]).read_bytes(),
+                )
+            else:
+                workflow = build_storyboard_workflow(
                     checkpoint_name=self.comfyui_checkpoint_name,
                     positive_prompt=positive_prompt,
                     negative_prompt=negative_prompt,
                     filename_prefix=f"filmstudio/{snapshot.project.project_id}/shots/{shot.shot_id}/storyboard",
-                    input_image_name=staged_reference["staged_input_name"],
-                    steps=26 if shot.strategy == "hero_insert" else 22,
-                    cfg=7.0 if shot.strategy == "hero_insert" else 6.5,
-                    denoise=0.72 if shot.strategy == "hero_insert" else 0.42,
-                    seed=stable_visual_seed(snapshot.project.project_id, shot.shot_id, "storyboard_reference"),
+                    width=self.render_width,
+                    height=self.render_height,
+                    seed=stable_visual_seed(snapshot.project.project_id, shot.shot_id, "storyboard"),
                 )
-                input_mode = "img2img"
-                output_node_id = "8"
-            image = client.generate_image(workflow, output_node_id=output_node_id)
-            storyboard_path = write_image_bytes(
-                self.artifact_store.project_dir(snapshot.project.project_id)
-                / f"shots/{shot.shot_id}/storyboard.png",
-                image.image_bytes,
-            )
+                if staged_reference is not None:
+                    workflow = build_storyboard_reference_workflow(
+                        checkpoint_name=self.comfyui_checkpoint_name,
+                        positive_prompt=positive_prompt,
+                        negative_prompt=negative_prompt,
+                        filename_prefix=f"filmstudio/{snapshot.project.project_id}/shots/{shot.shot_id}/storyboard",
+                        input_image_name=staged_reference["staged_input_name"],
+                        steps=22,
+                        cfg=6.5,
+                        denoise=0.42,
+                        seed=stable_visual_seed(snapshot.project.project_id, shot.shot_id, "storyboard_reference"),
+                    )
+                image = client.generate_image(workflow, output_node_id=output_node_id)
+                storyboard_path = write_image_bytes(
+                    shot_dir / "storyboard.png",
+                    image.image_bytes,
+                )
             manifest_path = self.artifact_store.write_json(
                 snapshot.project.project_id,
                 f"shots/{shot.shot_id}/storyboard_manifest.json",
@@ -1266,11 +1353,15 @@ class DeterministicMediaAdapters:
                     "backend": "comfyui",
                     "shot_id": shot.shot_id,
                     "scene_id": shot.scene_id,
-                    "prompt_id": image.prompt_id,
-                    "duration_sec": image.duration_sec,
-                    "filename": image.filename,
-                    "subfolder": image.subfolder,
+                    "prompt_id": image["prompt_id"] if isinstance(image, dict) else image.prompt_id,
+                    "duration_sec": image["duration_sec"] if isinstance(image, dict) else image.duration_sec,
+                    "filename": image["filename"] if isinstance(image, dict) else image.filename,
+                    "subfolder": image["subfolder"] if isinstance(image, dict) else image.subfolder,
                     "input_mode": input_mode,
+                    "selected_storyboard_label": (
+                        image.get("label") if isinstance(image, dict) else None
+                    ),
+                    "keyframes": storyboard_keyframes,
                     "storyboard_reference_kind": (
                         reference_payload.get("reference_kind") if reference_payload is not None else None
                     ),
@@ -1289,8 +1380,8 @@ class DeterministicMediaAdapters:
                     "comfyui_input_image_name": (
                         staged_reference["staged_input_name"] if staged_reference is not None else None
                     ),
-                    "workflow": image.workflow,
-                    "history": image.history,
+                    "workflow": image["workflow"] if isinstance(image, dict) else image.workflow,
+                    "history": image["history"] if isinstance(image, dict) else image.history,
                 },
             )
             result.artifacts.extend(
@@ -1308,6 +1399,22 @@ class DeterministicMediaAdapters:
                         path=str(storyboard_path),
                         stage="generate_storyboards",
                         metadata={"backend": "comfyui", "shot_id": shot.shot_id},
+                    ),
+                    *(
+                        [
+                            ArtifactRecord(
+                                artifact_id=new_id("artifact"),
+                                kind="storyboard_keyframe",
+                                path=str(keyframe["path"]),
+                                stage="generate_storyboards",
+                                metadata={
+                                    "backend": "comfyui",
+                                    "shot_id": shot.shot_id,
+                                    "keyframe_label": keyframe["label"],
+                                },
+                            )
+                            for keyframe in storyboard_keyframes
+                        ]
                     ),
                     *(
                         [
@@ -1339,9 +1446,14 @@ class DeterministicMediaAdapters:
                 {
                     "message": f"generated storyboard {shot.shot_id} via comfyui",
                     "shot_id": shot.shot_id,
-                    "prompt_id": image.prompt_id,
-                    "duration_sec": image.duration_sec,
+                    "prompt_id": image["prompt_id"] if isinstance(image, dict) else image.prompt_id,
+                    "duration_sec": (
+                        sum(float(keyframe.get("duration_sec") or 0.0) for keyframe in storyboard_keyframes)
+                        if storyboard_keyframes
+                        else (image["duration_sec"] if isinstance(image, dict) else image.duration_sec)
+                    ),
                     "input_mode": input_mode,
+                    "keyframe_count": len(storyboard_keyframes),
                     "visual_backend": "comfyui",
                 }
             )
@@ -1351,9 +1463,11 @@ class DeterministicMediaAdapters:
         self,
         snapshot: ProjectSnapshot,
         shot: ShotPlan,
+        hero_phase: str | None = None,
     ) -> tuple[str, str]:
         purpose_hint = self._planning_purpose(snapshot, shot)
         prompt_seed_hint = self._planning_seed(snapshot, shot)
+        conditioning = self._resolve_runtime_shot_conditioning(snapshot, shot)
         primary_character = self._resolve_primary_character(snapshot, shot)
         primary_visual_name = self._visual_prompt_identity_label_ascii(primary_character)
         primary_descriptor = self._character_visual_fragment_ascii(primary_character)
@@ -1414,8 +1528,21 @@ class DeterministicMediaAdapters:
                 ),
             )
         if shot.strategy == "hero_insert":
-            duo_focus = "one clear action subject, no extra crowd, "
+            prompt_seed_compact = self._compact_prompt_text(
+                strip_duplicate_planning_label(prompt_seed_hint),
+                limit=140,
+            )
+            camera_hint = self._compact_prompt_text(
+                strip_duplicate_planning_label(conditioning.camera_intent_en or composition_hint),
+                limit=88,
+            )
+            duo_focus = "exactly one father and one son only, one visible instance of each character, no extra crowd, "
             hero_character_hint = f"characters: {compact_group_descriptor}, one shared payoff beat, readable vertical action, "
+            phase_hint = "single frozen payoff moment, one decisive center-frame action instant, "
+            if hero_phase == "setup":
+                phase_hint = "single frozen setup moment before the jump, both characters visible once on the ramp, "
+            elif hero_phase == "closing":
+                phase_hint = "single frozen closing moment in one victory pose, both characters standing once, "
             if len(shot_character_profiles) == 2:
                 duo_labels = [
                     self._character_action_fragment(character)
@@ -1423,7 +1550,8 @@ class DeterministicMediaAdapters:
                 ]
                 duo_focus = (
                     f"exactly two characters only, {duo_labels[0]} and {duo_labels[1]} only, "
-                    "same duo from the dialogue closeups, no extra fighters, no squad, no crowd, "
+                    "same duo from the dialogue closeups, one visible instance of each character, "
+                    "no extra fighters, no squad, no crowd, "
                 )
                 hero_character_hint = (
                     f"{duo_labels[0]} and {duo_labels[1]}, one shared payoff beat, "
@@ -1436,19 +1564,28 @@ class DeterministicMediaAdapters:
             )
             return (
                 (
-                    f"{snapshot.project.style}, storyboard frame, hero insert, "
-                    f"hero action insert, {duo_focus}"
+                    f"{snapshot.project.style}, cinematic action keyframe, hero insert, "
+                    f"hero action still, {duo_focus}"
+                    f"{phase_hint}"
                     f"{hero_character_hint}"
-                    "freeze-frame readability, not a poster, not a roster card, clean silhouettes, "
+                    "single cinematic still, freeze-frame readability, not a poster, not a roster card, "
+                    "not a contact sheet, not a grid, not a storyboard page, clean silhouettes, "
                     "single shared action scene, not split-screen, not a diptych, not dual closeups, "
+                    "not a montage, not multiple moments in one frame, not repeated action echoes, "
                     "one adult father and one young boy son only, both clearly visible, "
-                    f"{hero_composition_hint}, action beat: {prompt_seed_hint}"
+                    f"{hero_composition_hint}, "
+                    f"camera: {camera_hint}, "
+                    f"action beat: {prompt_seed_compact}"
                 ),
                 (
                     "crowd, squad, team lineup, roster poster, splash art, ensemble poster, collage, "
                     "extra fighters, third person, fourth person, trio, three people, overhead jumper, "
                     "distant background people, duplicate heroes, "
                     "split-screen, diptych, side-by-side portraits, face collage, giant closeup faces, "
+                    "contact sheet, tiled image, mosaic grid, storyboard page, comic panel, triptych, "
+                    "checkerboard collage, black matte background, empty poster background, "
+                    "duplicate father, duplicate son, repeated figure, repeated character, multi exposure, "
+                    "motion trail clones, sequence montage, multiple moments in one frame, "
                     "busy key art, title card, logo, watermark, text, blurry, bad anatomy, duplicate body parts"
                     f"{', ' + shot_negative_hint if shot_negative_hint else ''}"
                 ),
@@ -2363,11 +2500,12 @@ class DeterministicMediaAdapters:
         shot_dir.mkdir(parents=True, exist_ok=True)
         output_path = shot_dir / "storyboard_reference.png"
         filter_complex = (
-            f"color=c=0x1e1e1e:s={self.render_width}x{self.render_height}[base];"
-            "[0:v]scale=280:420:force_original_aspect_ratio=decrease[left];"
-            "[1:v]scale=250:390:force_original_aspect_ratio=decrease[right];"
-            f"[base][left]overlay=x=70:y={max(0, self.render_height - 560)}[tmp];"
-            f"[tmp][right]overlay=x={max(320, self.render_width - 310)}:y={max(0, self.render_height - 520)},"
+            f"[0:v]scale={self.render_width}:{self.render_height}:force_original_aspect_ratio=increase,"
+            f"crop={self.render_width}:{self.render_height},boxblur=18:4,eq=saturation=0.35:brightness=-0.04[base];"
+            "[0:v]scale=330:500:force_original_aspect_ratio=decrease[left];"
+            "[1:v]scale=300:460:force_original_aspect_ratio=decrease[right];"
+            f"[base][left]overlay=x=24:y={max(0, self.render_height - 650)}[tmp];"
+            f"[tmp][right]overlay=x={max(360, self.render_width - 320)}:y={max(0, self.render_height - 620)},"
             "format=rgb24[out]"
         )
         command = [
@@ -2387,6 +2525,29 @@ class DeterministicMediaAdapters:
         ]
         run_command(command, timeout_sec=self.command_timeout_sec)
         return output_path, command
+
+    def _load_storyboard_keyframes(
+        self,
+        snapshot: ProjectSnapshot,
+        shot: ShotPlan,
+    ) -> list[dict[str, str]]:
+        manifest_artifact = self._find_shot_artifact(snapshot, "storyboard_manifest", shot.shot_id)
+        if manifest_artifact is None:
+            return []
+        manifest_path = Path(str(manifest_artifact.path))
+        if not manifest_path.exists():
+            return []
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        loaded: list[dict[str, str]] = []
+        for item in payload.get("keyframes") or []:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or "").strip()
+            image_path = Path(str(item.get("path") or ""))
+            if not label or not image_path.exists():
+                continue
+            loaded.append({"label": label, "path": str(image_path)})
+        return loaded
 
     def _prepare_musetalk_source(
         self,
@@ -5489,6 +5650,7 @@ class DeterministicMediaAdapters:
         )
         hybrid_segments: list[dict[str, Any]] = []
         center_quality_rejected = False
+        storyboard_keyframes = self._load_storyboard_keyframes(snapshot, shot)
         if hybrid_plan is not None:
             target_duration_sec = requested_duration_sec
             storyboard_path = Path(hybrid_plan["storyboard_path"])
@@ -5569,27 +5731,70 @@ class DeterministicMediaAdapters:
                     )
             else:
                 center_quality_rejected = True
-                storyboard_full_path = result_root / "hybrid_storyboard_full.mp4"
-                storyboard_full_command = self._render_looped_image_clip_command(
-                    image_path=storyboard_path,
-                    output_path=storyboard_full_path,
-                    duration_sec=target_duration_sec,
-                    filter_chain=self._wan_storyboard_motion_filter(phase="full"),
-                )
-                run_command(storyboard_full_command, timeout_sec=self.command_timeout_sec)
-                storyboard_full_summary = summarize_probe(
-                    ffprobe_media(self.ffprobe_binary, storyboard_full_path)
-                )
-                normalize_commands["hybrid_storyboard_full"] = storyboard_full_command
-                hybrid_segments.append(
-                    {
-                        "label": "storyboard_full",
-                        "path": str(storyboard_full_path),
-                        "duration_sec": float(storyboard_full_summary.get("duration_sec") or target_duration_sec),
-                        "probe": storyboard_full_summary,
-                        "replaces_raw_center": True,
+                if len(storyboard_keyframes) >= 2:
+                    keyframe_weights = {
+                        "setup": 0.28,
+                        "payoff": 0.44,
+                        "closing": 0.28,
                     }
-                )
+                    remaining_duration_sec = target_duration_sec
+                    fallback_specs: list[tuple[str, Path, float]] = []
+                    for index, keyframe in enumerate(storyboard_keyframes[:3]):
+                        label = keyframe["label"]
+                        image_path = Path(keyframe["path"])
+                        if index == len(storyboard_keyframes[:3]) - 1:
+                            segment_duration_sec = max(0.24, remaining_duration_sec)
+                        else:
+                            segment_duration_sec = max(
+                                0.24,
+                                round(target_duration_sec * keyframe_weights.get(label, 0.33), 3),
+                            )
+                            remaining_duration_sec = max(0.0, remaining_duration_sec - segment_duration_sec)
+                        fallback_specs.append((label, image_path, segment_duration_sec))
+                    for label, image_path, segment_duration_sec in fallback_specs:
+                        segment_path = result_root / f"hybrid_storyboard_{label}.mp4"
+                        segment_command = self._render_looped_image_clip_command(
+                            image_path=image_path,
+                            output_path=segment_path,
+                            duration_sec=segment_duration_sec,
+                            filter_chain=self._wan_storyboard_motion_filter(phase=label),
+                        )
+                        run_command(segment_command, timeout_sec=self.command_timeout_sec)
+                        segment_summary = summarize_probe(ffprobe_media(self.ffprobe_binary, segment_path))
+                        normalize_commands[f"hybrid_storyboard_{label}"] = segment_command
+                        hybrid_segments.append(
+                            {
+                                "label": f"storyboard_{label}",
+                                "path": str(segment_path),
+                                "duration_sec": float(
+                                    segment_summary.get("duration_sec") or segment_duration_sec
+                                ),
+                                "probe": segment_summary,
+                                "replaces_raw_center": True,
+                            }
+                        )
+                else:
+                    storyboard_full_path = result_root / "hybrid_storyboard_full.mp4"
+                    storyboard_full_command = self._render_looped_image_clip_command(
+                        image_path=storyboard_path,
+                        output_path=storyboard_full_path,
+                        duration_sec=target_duration_sec,
+                        filter_chain=self._wan_storyboard_motion_filter(phase="full"),
+                    )
+                    run_command(storyboard_full_command, timeout_sec=self.command_timeout_sec)
+                    storyboard_full_summary = summarize_probe(
+                        ffprobe_media(self.ffprobe_binary, storyboard_full_path)
+                    )
+                    normalize_commands["hybrid_storyboard_full"] = storyboard_full_command
+                    hybrid_segments.append(
+                        {
+                            "label": "storyboard_full",
+                            "path": str(storyboard_full_path),
+                            "duration_sec": float(storyboard_full_summary.get("duration_sec") or target_duration_sec),
+                            "probe": storyboard_full_summary,
+                            "replaces_raw_center": True,
+                        }
+                    )
 
             concat_list_path = result_root / "hybrid_concat.txt"
             write_text(
@@ -5623,7 +5828,11 @@ class DeterministicMediaAdapters:
             normalize_run = run_command(normalize_command, timeout_sec=self.command_timeout_sec)
             normalize_commands["hybrid_concat"] = normalize_command
             normalize_policy = (
-                "hybrid_storyboard_only_raw_rejected"
+                (
+                    "hybrid_storyboard_keyframes_raw_rejected"
+                    if center_quality_rejected and len(storyboard_keyframes) >= 2
+                    else "hybrid_storyboard_only_raw_rejected"
+                )
                 if center_quality_rejected
                 else "hybrid_storyboard_motion"
             )
@@ -5685,6 +5894,7 @@ class DeterministicMediaAdapters:
                 "prompt_path": str(wan_run.prompt_path),
                 "input_mode": "image_to_video" if input_image_path is not None else "text_to_video",
                 "input_image_path": str(input_image_path) if input_image_path is not None else None,
+                "storyboard_keyframes": storyboard_keyframes,
                 "wan_command": wan_run.command,
                 "wan_stdout_path": str(wan_run.stdout_path),
                 "wan_stderr_path": str(wan_run.stderr_path),
@@ -10053,6 +10263,27 @@ class DeterministicMediaAdapters:
         }
 
     def _wan_storyboard_motion_filter(self, *, phase: str) -> str:
+        if phase == "setup":
+            return (
+                f"{self._scale_crop_filter()},"
+                f"zoompan=z='if(eq(on,0),1.00,min(zoom+0.0015,1.08))':"
+                f"x='iw*0.008':y='ih*0.010':d=1:s={self._render_size()},"
+                f"fps={self.render_fps},format=yuv420p"
+            )
+        if phase == "payoff":
+            return (
+                f"{self._scale_crop_filter()},"
+                f"zoompan=z='if(eq(on,0),1.03,min(zoom+0.0022,1.15))':"
+                f"x='iw*0.016':y='ih*0.014':d=1:s={self._render_size()},"
+                f"fps={self.render_fps},format=yuv420p"
+            )
+        if phase == "closing":
+            return (
+                f"{self._scale_crop_filter()},"
+                f"zoompan=z='if(eq(on,0),1.02,min(zoom+0.0013,1.07))':"
+                f"x='iw*0.010':y='ih*0.008':d=1:s={self._render_size()},"
+                f"fps={self.render_fps},format=yuv420p"
+            )
         if phase == "full":
             return (
                 f"{self._scale_crop_filter()},"
