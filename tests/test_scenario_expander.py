@@ -6,6 +6,7 @@ from filmstudio.domain.models import (
     ScenePlan,
     ShotPlan,
 )
+from filmstudio.services.input_translation import build_input_translation
 from filmstudio.services.product_preset_catalog import build_product_preset_payload
 from filmstudio.services.scenario_expander import (
     apply_scenario_expansion_to_scenes,
@@ -105,10 +106,12 @@ def test_build_scenario_expansion_preserves_dialogue_and_expands_planning_contex
         characters=characters,
         scenes=scenes,
         product_preset=product_preset,
+        input_translation=build_input_translation(request),
     )
 
     assert expansion["planning_language"] == "en"
     assert expansion["dialogue_language"] == "uk"
+    assert expansion["input_translation"]["screenplay_en"]
     assert "glowing crown" in expansion["story_premise_en"]
     assert not any("\u0400" <= char <= "\u04FF" for char in expansion["visual_world_en"])
     assert expansion["dialogue_contract"]["preserve_original_dialogue"] is True

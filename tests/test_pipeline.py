@@ -62,6 +62,7 @@ def test_local_pipeline_completes_and_emits_qc(tmp_path) -> None:
     assert any(artifact.kind == "deliverables_manifest" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "deliverables_package" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "product_preset" for artifact in final_snapshot.artifacts)
+    assert any(artifact.kind == "input_translation" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "story_bible" for artifact in final_snapshot.artifacts)
     assert any(artifact.kind == "asset_strategy" for artifact in final_snapshot.artifacts)
     final_video = next(artifact for artifact in final_snapshot.artifacts if artifact.kind == "final_video")

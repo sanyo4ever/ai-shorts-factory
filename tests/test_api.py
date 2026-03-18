@@ -495,10 +495,12 @@ def test_create_and_run_project() -> None:
     assert planning_response.status_code == 200
     planning_payload = planning_response.json()
     assert "product_preset" in planning_payload
+    assert "input_translation" in planning_payload
     assert "scenario_expansion" in planning_payload
     assert planning_payload["product_preset"]["style_preset"] == "broadcast_panel"
     assert "story_bible" in planning_payload
     assert "asset_strategy" in planning_payload
+    assert planning_payload["input_translation"]["planning_language"] == "en"
     assert planning_payload["story_bible"]["product_preset"]["voice_cast_preset"] == "duo_contrast"
     assert planning_payload["scenario_expansion"]["planning_language"] == "en"
     assert planning_payload["shot_plan"]["shots"][0]["composition"]["subtitle_lane"] in {"top", "bottom"}

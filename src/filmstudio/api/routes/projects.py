@@ -239,6 +239,7 @@ def get_planning_bundle(request: Request, project_id: str):
     planning_kinds = {
         "planning_manifest",
         "product_preset",
+        "input_translation",
         "scenario_expansion",
         "story_bible",
         "character_bible",
