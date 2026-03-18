@@ -43,7 +43,11 @@ ShortArchetype = Literal[
     "countdown_list",
     "hero_teaser",
 ]
-QuickGenerateStackProfile = Literal["production_vertical", "deterministic_preview"]
+QuickGenerateStackProfile = Literal[
+    "production_vertical",
+    "production_vertical_cogvideox",
+    "deterministic_preview",
+]
 CampaignReleaseStatus = Literal["candidate", "canonical", "superseded"]
 ReviewStatus = Literal["pending_review", "approved", "needs_rerender"]
 ReviewTargetKind = Literal["scene", "shot"]

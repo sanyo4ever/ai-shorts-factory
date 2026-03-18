@@ -16,6 +16,7 @@ from filmstudio.domain.models import (
     ReviewUpdateRequest,
     new_id,
 )
+from filmstudio.services.cogvideox_runner import CogVideoXRunResult
 from filmstudio.services.media_adapters import DeterministicMediaAdapters
 from filmstudio.services.media_adapters import StageExecutionResult
 from filmstudio.services.musetalk_runner import MuseTalkRunResult, MuseTalkSourceProbeResult
@@ -5690,3 +5691,100 @@ def test_apply_lipsync_persists_canonical_outputs_for_each_portrait_shot(tmp_pat
     ordered_videos = adapters._ordered_shot_videos(snapshot)
     assert len(ordered_videos) == 2
     assert all(path.name == "synced.mp4" for path in ordered_videos)
+
+
+def test_render_shots_cogvideox_writes_backend_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    artifact_store = ArtifactStore(runtime_root / "artifacts")
+    service = ProjectService(
+        SqliteSnapshotStore(runtime_root / "filmstudio.sqlite3"),
+        artifact_store,
+        PlannerService(),
+    )
+    snapshot = service.create_project(
+        ProjectCreateRequest(
+            title="CogVideoX hero test",
+            script=(
+                "SCENE 1. Bright Fortnite-style island. Father Tato and son Syn stand on a wooden ramp.\n"
+                "TATO: Son, ready to jump?\n"
+                "SYN: Yes, launch forward!\n\n"
+                "HERO INSERT: Father Tato and son Syn jump from the ramp and sprint to a glowing crown."
+            ),
+            language="uk",
+        )
+    )
+    adapters = DeterministicMediaAdapters(
+        artifact_store,
+        ffmpeg_binary=sys.executable,
+        ffprobe_binary=sys.executable,
+        video_backend="cogvideox",
+        cogvideox_python_binary=sys.executable,
+        cogvideox_repo_path=tmp_path / "CogVideoX",
+        cogvideox_model_path="THUDM/CogVideoX-5b",
+        cogvideox_generate_type="t2v",
+    )
+    (tmp_path / "CogVideoX" / "inference").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "CogVideoX" / "inference" / "cli_demo.py").write_text("print('stub')\n", encoding="utf-8")
+
+    def fake_run_cogvideox_inference(config, *, prompt, output_path, result_root, input_media_path, seed):  # type: ignore[no-untyped-def]
+        result_root.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake-mp4")
+        stdout_path = result_root / "cogvideox_stdout.log"
+        stderr_path = result_root / "cogvideox_stderr.log"
+        stdout_path.write_text("ok", encoding="utf-8")
+        stderr_path.write_text("", encoding="utf-8")
+        prompt_path = result_root / "cogvideox_prompt.txt"
+        prompt_path.write_text(prompt, encoding="utf-8")
+        return CogVideoXRunResult(
+            output_video_path=output_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            command=[sys.executable, "cli_demo.py"],
+            duration_sec=12.0,
+            prompt_path=prompt_path,
+        )
+
+    def fake_ffprobe_media(binary, path):  # type: ignore[no-untyped-def]
+        return {
+            "format": {"duration": "2.0"},
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "width": 720,
+                    "height": 480,
+                    "avg_frame_rate": "8/1",
+                }
+            ],
+        }
+
+    def fake_run_command(args, *, timeout_sec=300.0, cwd=None, env=None, capture_output=True, hide_window=False):  # type: ignore[no-untyped-def]
+        Path(args[-1]).write_bytes(b"normalized")
+        return CommandResult(
+            args=args,
+            returncode=0,
+            stdout="",
+            stderr="",
+            duration_sec=0.5,
+        )
+
+    monkeypatch.setattr(
+        "filmstudio.services.media_adapters.run_cogvideox_inference",
+        fake_run_cogvideox_inference,
+    )
+    monkeypatch.setattr("filmstudio.services.media_adapters.ffprobe_media", fake_ffprobe_media)
+    monkeypatch.setattr("filmstudio.services.media_adapters.run_command", fake_run_command)
+
+    render_result = adapters.render_shots(snapshot)
+
+    manifest_artifact = next(
+        artifact
+        for artifact in render_result.artifacts
+        if artifact.kind == "shot_render_manifest" and artifact.metadata.get("backend") == "cogvideox"
+    )
+    manifest = json.loads(Path(manifest_artifact.path).read_text(encoding="utf-8"))
+    assert manifest["backend"] == "cogvideox"
+    assert manifest["generate_type"] == "t2v"
+    assert manifest["input_mode"] == "text_to_video"
+    assert manifest["conditioning_manifest_path"].endswith("video_conditioning_manifest.json")

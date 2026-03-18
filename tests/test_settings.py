@@ -72,6 +72,16 @@ def test_get_settings_defaults_to_portrait_render_profile(monkeypatch, tmp_path:
     assert settings.wan_offload_model is False
     assert settings.wan_t5_cpu is False
     assert settings.wan_vae_dtype == "bfloat16"
+    assert settings.cogvideox_model_path == "THUDM/CogVideoX-2b"
+    assert settings.cogvideox_generate_type == "t2v"
+    assert settings.cogvideox_num_frames == 17
+    assert settings.cogvideox_num_inference_steps == 10
+    assert settings.cogvideox_guidance_scale == 6.0
+    assert settings.cogvideox_width is None
+    assert settings.cogvideox_height is None
+    assert settings.cogvideox_fps == 8
+    assert settings.cogvideox_dtype == "float16"
+    assert settings.cogvideox_timeout_sec == 7200.0
     assert settings.comfyui_request_timeout_sec == 900.0
     assert settings.comfyui_poll_interval_sec == 2.0
 

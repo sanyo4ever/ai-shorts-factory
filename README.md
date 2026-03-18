@@ -39,6 +39,7 @@ The current codebase restores:
 - a typed vertical composition contract per shot, including `framing`, `subject_anchor`, `eye_line`, `subtitle_lane`, and explicit `safe_zones` that now flow from planning into prompts and runtime manifests
 - deterministic visual generation as the stable baseline plus opt-in `ComfyUI` wiring for character-package and storyboard stages
 - live local Ukrainian TTS through `Piper` with the `uk_UA-ukrainian_tts-medium` voice pack
+- scene-first `CogVideoX` hero-video backend wiring as an explicit opt-in alternative to `Wan` for `hero_insert` shots, with the workstation-verified local default now pinned to `CogVideoX-2b`
 - deterministic music generation as the stable baseline plus opt-in `ACE-Step` wiring through a local HTTP service
 - deterministic lipsync manifests as the stable baseline plus opt-in `MuseTalk` wiring for portrait dialogue shots with dedicated source generation
 - deterministic local subtitles as the stable baseline plus opt-in `WhisperX` wiring through an isolated runtime env
@@ -163,6 +164,7 @@ This keeps the first-run flow simple without removing the deeper operator surfac
 If you want the simplest path instead of the full intake form, use the built-in `Quick Generate` card in the default `Generate` view. It wraps the same API with a smaller payload, curated starter examples, and explicit runtime-stack profiles:
 
 - `My PC (RTX 4060) Verified`: `ComfyUI + Wan + Piper + WhisperX + MuseTalk + ACE-Step + FFmpeg`
+- `Scene-First Hero Beta`: `ComfyUI + CogVideoX-2b + Piper + WhisperX + MuseTalk + ACE-Step + FFmpeg`
 - `Fast Preview`: faster local preview path with deterministic visuals and live `Piper`
 
 For `language=uk`, the canonical quick-intake screenplay is now UTF-8 and Cyrillic-first:

@@ -52,6 +52,18 @@ class Settings:
     wan_profile_enabled: bool
     wan_profile_sync_cuda: bool
     wan_timeout_sec: float
+    cogvideox_python_binary: str
+    cogvideox_repo_path: Path
+    cogvideox_model_path: str
+    cogvideox_generate_type: str
+    cogvideox_num_frames: int
+    cogvideox_num_inference_steps: int
+    cogvideox_guidance_scale: float
+    cogvideox_width: int | None
+    cogvideox_height: int | None
+    cogvideox_fps: int
+    cogvideox_dtype: str
+    cogvideox_timeout_sec: float
     chatterbox_base_url: str
     chatterbox_python_binary: str
     chatterbox_repo_path: Path
@@ -230,6 +242,8 @@ def get_settings() -> Settings:
     comfyui_default_repo = runtime_root / "services/ComfyUI"
     wan_default_python = runtime_root / "envs/wan/Scripts/python.exe"
     wan_default_repo = runtime_root / "services/Wan2.1"
+    cogvideox_default_python = runtime_root / "envs/cogvideox/Scripts/python.exe"
+    cogvideox_default_repo = runtime_root / "services/CogVideoX"
     wan_default_task = os.getenv("FILMSTUDIO_WAN_TASK", "t2v-1.3B")
     wan_default_ckpt_dir = default_wan_checkpoint_dir(wan_default_task, runtime_root)
     wan_default_size = default_wan_size_for_task(
@@ -338,6 +352,38 @@ def get_settings() -> Settings:
         wan_profile_sync_cuda=os.getenv("FILMSTUDIO_WAN_PROFILE_SYNC_CUDA", "0") == "1",
         wan_timeout_sec=float(
             os.getenv("FILMSTUDIO_WAN_TIMEOUT_SEC", str(wan_default_timeout_sec))
+        ),
+        cogvideox_python_binary=os.getenv(
+            "FILMSTUDIO_COGVIDEOX_PYTHON_BINARY", str(cogvideox_default_python)
+        ),
+        cogvideox_repo_path=Path(
+            os.getenv("FILMSTUDIO_COGVIDEOX_REPO_PATH", cogvideox_default_repo)
+        ).resolve(),
+        cogvideox_model_path=os.getenv(
+            "FILMSTUDIO_COGVIDEOX_MODEL_PATH", "THUDM/CogVideoX-2b"
+        ),
+        cogvideox_generate_type=os.getenv("FILMSTUDIO_COGVIDEOX_GENERATE_TYPE", "t2v"),
+        cogvideox_num_frames=int(os.getenv("FILMSTUDIO_COGVIDEOX_NUM_FRAMES", "17")),
+        cogvideox_num_inference_steps=int(
+            os.getenv("FILMSTUDIO_COGVIDEOX_NUM_INFERENCE_STEPS", "10")
+        ),
+        cogvideox_guidance_scale=float(
+            os.getenv("FILMSTUDIO_COGVIDEOX_GUIDANCE_SCALE", "6.0")
+        ),
+        cogvideox_width=(
+            int(os.getenv("FILMSTUDIO_COGVIDEOX_WIDTH", "").strip())
+            if os.getenv("FILMSTUDIO_COGVIDEOX_WIDTH", "").strip()
+            else None
+        ),
+        cogvideox_height=(
+            int(os.getenv("FILMSTUDIO_COGVIDEOX_HEIGHT", "").strip())
+            if os.getenv("FILMSTUDIO_COGVIDEOX_HEIGHT", "").strip()
+            else None
+        ),
+        cogvideox_fps=int(os.getenv("FILMSTUDIO_COGVIDEOX_FPS", "8")),
+        cogvideox_dtype=os.getenv("FILMSTUDIO_COGVIDEOX_DTYPE", "float16"),
+        cogvideox_timeout_sec=float(
+            os.getenv("FILMSTUDIO_COGVIDEOX_TIMEOUT_SEC", "7200.0")
         ),
         chatterbox_base_url=os.getenv("FILMSTUDIO_CHATTERBOX_BASE_URL", "http://127.0.0.1:8001"),
         chatterbox_python_binary=os.getenv(

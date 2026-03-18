@@ -70,6 +70,13 @@ def test_health_endpoints() -> None:
     assert "wan_env" in backends_payload
     assert "wan_runtime" in backends_payload
     assert backends_payload["wan_runtime"]["config_supported"] is True
+    assert "cogvideox_env" in backends_payload
+    assert "cogvideox_runtime" in backends_payload
+    cogvideox_env = backends_payload["cogvideox_env"]
+    if cogvideox_env.get("available"):
+        assert "sentencepiece_available" in cogvideox_env
+        assert "protobuf_available" in cogvideox_env
+        assert "tiktoken_available" in cogvideox_env
     assert "chatterbox" in backends_payload
     assert "chatterbox_env" in backends_payload
     assert "ace_step" in backends_payload
@@ -134,6 +141,7 @@ def test_quick_generate_endpoints_create_project_with_profile_defaults() -> None
     catalog_payload = catalog_response.json()
     assert catalog_payload["defaults"]["stack_profile"] == "production_vertical"
     assert catalog_payload["profiles"]["production_vertical"]["label"] == "My PC (RTX 4060) Verified"
+    assert catalog_payload["profiles"]["production_vertical_cogvideox"]["backend_profile"]["video_backend"] == "cogvideox"
     assert any(example["slug"] == "fortnite_family_jump" for example in catalog_payload["examples"])
 
     planner_payload = {

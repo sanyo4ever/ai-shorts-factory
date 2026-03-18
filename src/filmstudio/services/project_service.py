@@ -98,7 +98,7 @@ class ProjectService:
             backend_kind="video",
             requested=request.video_backend,
             default=self.default_video_backend,
-            allowed={"deterministic", "wan"},
+            allowed={"deterministic", "wan", "cogvideox"},
         )
         resolved_tts_backend = self._resolve_backend_choice(
             backend_kind="TTS",

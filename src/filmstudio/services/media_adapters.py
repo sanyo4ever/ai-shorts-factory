@@ -58,6 +58,7 @@ from filmstudio.services.piper_tts import (
     PiperVoiceConfig,
     normalize_text_for_piper,
 )
+from filmstudio.services.cogvideox_runner import CogVideoXRunConfig, run_cogvideox_inference
 from filmstudio.services.wan_runner import WanRunConfig, run_wan_inference
 from filmstudio.services.runtime_support import (
     ffprobe_media,
@@ -115,6 +116,18 @@ class DeterministicMediaAdapters:
         wan_profile_enabled: bool = True,
         wan_profile_sync_cuda: bool = False,
         wan_timeout_sec: float = 1800.0,
+        cogvideox_python_binary: str = "",
+        cogvideox_repo_path: Path | None = None,
+        cogvideox_model_path: str = "THUDM/CogVideoX-5b",
+        cogvideox_generate_type: str = "t2v",
+        cogvideox_num_frames: int = 49,
+        cogvideox_num_inference_steps: int = 20,
+        cogvideox_guidance_scale: float = 6.0,
+        cogvideox_width: int | None = None,
+        cogvideox_height: int | None = None,
+        cogvideox_fps: int = 8,
+        cogvideox_dtype: str = "float16",
+        cogvideox_timeout_sec: float = 7200.0,
         tts_backend: str = "deterministic",
         chatterbox_base_url: str = "http://127.0.0.1:8001",
         chatterbox_request_timeout_sec: float = 900.0,
@@ -174,6 +187,18 @@ class DeterministicMediaAdapters:
         self.wan_profile_enabled = wan_profile_enabled
         self.wan_profile_sync_cuda = wan_profile_sync_cuda
         self.wan_timeout_sec = wan_timeout_sec
+        self.cogvideox_python_binary = cogvideox_python_binary
+        self.cogvideox_repo_path = cogvideox_repo_path
+        self.cogvideox_model_path = cogvideox_model_path
+        self.cogvideox_generate_type = cogvideox_generate_type
+        self.cogvideox_num_frames = cogvideox_num_frames
+        self.cogvideox_num_inference_steps = cogvideox_num_inference_steps
+        self.cogvideox_guidance_scale = cogvideox_guidance_scale
+        self.cogvideox_width = cogvideox_width
+        self.cogvideox_height = cogvideox_height
+        self.cogvideox_fps = cogvideox_fps
+        self.cogvideox_dtype = cogvideox_dtype
+        self.cogvideox_timeout_sec = cogvideox_timeout_sec
         self.tts_backend = tts_backend
         self.chatterbox_base_url = chatterbox_base_url
         self.chatterbox_request_timeout_sec = chatterbox_request_timeout_sec
@@ -248,6 +273,18 @@ class DeterministicMediaAdapters:
             wan_profile_enabled=self.wan_profile_enabled,
             wan_profile_sync_cuda=self.wan_profile_sync_cuda,
             wan_timeout_sec=self.wan_timeout_sec,
+            cogvideox_python_binary=self.cogvideox_python_binary,
+            cogvideox_repo_path=self.cogvideox_repo_path,
+            cogvideox_model_path=self.cogvideox_model_path,
+            cogvideox_generate_type=self.cogvideox_generate_type,
+            cogvideox_num_frames=self.cogvideox_num_frames,
+            cogvideox_num_inference_steps=self.cogvideox_num_inference_steps,
+            cogvideox_guidance_scale=self.cogvideox_guidance_scale,
+            cogvideox_width=self.cogvideox_width,
+            cogvideox_height=self.cogvideox_height,
+            cogvideox_fps=self.cogvideox_fps,
+            cogvideox_dtype=self.cogvideox_dtype,
+            cogvideox_timeout_sec=self.cogvideox_timeout_sec,
             tts_backend=tts_backend or self.tts_backend,
             chatterbox_base_url=self.chatterbox_base_url,
             chatterbox_request_timeout_sec=self.chatterbox_request_timeout_sec,
@@ -5442,6 +5479,8 @@ class DeterministicMediaAdapters:
         for shot in self._iter_target_shots(snapshot):
             if shot.strategy == "hero_insert" and self.video_backend == "wan":
                 shot_result = self._render_shot_wan(snapshot, shot)
+            elif shot.strategy == "hero_insert" and self.video_backend == "cogvideox":
+                shot_result = self._render_shot_cogvideox(snapshot, shot)
             else:
                 shot_result = self._render_shot_ffmpeg(
                     snapshot,
@@ -5647,6 +5686,171 @@ class DeterministicMediaAdapters:
                 "backend": "deterministic",
                 "command": " ".join(command),
                 "duration_sec": run.duration_sec,
+            }
+        )
+        return result
+
+    def _render_shot_cogvideox(
+        self,
+        snapshot: ProjectSnapshot,
+        shot: ShotPlan,
+    ) -> StageExecutionResult:
+        project_id = snapshot.project.project_id
+        project_dir = self.artifact_store.project_dir(project_id)
+        result_root = project_dir / f"shots/{shot.shot_id}/cogvideox"
+        raw_output_path = result_root / "cogvideox_raw.mp4"
+        normalized_output_path = project_dir / f"shots/{shot.shot_id}/raw.mp4"
+        duration_sec = self._effective_shot_duration(snapshot, shot)
+        storyboard_artifact = self._find_shot_artifact(snapshot, "storyboard", shot.shot_id)
+        input_media_path = self._resolve_cogvideox_input_media(storyboard_artifact)
+        prompt = self._cogvideox_prompt(snapshot, shot)
+        conditioning_manifest_path = self._write_shot_conditioning_manifest(
+            snapshot,
+            shot,
+            backend="cogvideox",
+            resolved_prompt_en=prompt,
+            prompt_source=(
+                "shot.conditioning.generation_prompt_en"
+                if shot.conditioning.generation_prompt_en
+                else "_cogvideox_prompt"
+            ),
+            storyboard_artifact=storyboard_artifact,
+            actual_input_mode=self._cogvideox_input_mode_label(input_media_path),
+        )
+        cogvideox_run = run_cogvideox_inference(
+            CogVideoXRunConfig(
+                python_binary=self.cogvideox_python_binary,
+                repo_path=self._require_cogvideox_repo(),
+                model_path=self.cogvideox_model_path,
+                generate_type=self.cogvideox_generate_type,
+                num_frames=self.cogvideox_num_frames,
+                num_inference_steps=self.cogvideox_num_inference_steps,
+                guidance_scale=self.cogvideox_guidance_scale,
+                width=self.cogvideox_width,
+                height=self.cogvideox_height,
+                fps=self.cogvideox_fps,
+                dtype=self.cogvideox_dtype,
+                timeout_sec=self.cogvideox_timeout_sec,
+            ),
+            prompt=prompt,
+            output_path=raw_output_path,
+            result_root=result_root,
+            input_media_path=input_media_path,
+            seed=stable_visual_seed(project_id, shot.shot_id, "cogvideox"),
+        )
+        raw_summary = summarize_probe(ffprobe_media(self.ffprobe_binary, raw_output_path))
+        raw_duration_sec = float(raw_summary.get("duration_sec") or 0.0)
+        target_duration_sec = max(raw_duration_sec, float(duration_sec or 0.0))
+        hold_duration_sec = max(0.0, target_duration_sec - raw_duration_sec)
+        normalize_filter = f"{self._scale_crop_filter()},fps={self.render_fps}"
+        if hold_duration_sec > 0.01:
+            normalize_filter += f",tpad=stop_mode=clone:stop_duration={hold_duration_sec:.3f}"
+        normalize_filter += ",format=yuv420p"
+        normalize_command = [
+            resolve_binary(self.ffmpeg_binary) or self.ffmpeg_binary,
+            "-y",
+            "-i",
+            str(raw_output_path),
+            "-vf",
+            normalize_filter,
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            "-t",
+            f"{target_duration_sec:.3f}",
+            str(normalized_output_path),
+        ]
+        normalize_run = run_command(normalize_command, timeout_sec=self.command_timeout_sec)
+        normalized_summary = summarize_probe(ffprobe_media(self.ffprobe_binary, normalized_output_path))
+        normalize_policy = "hold_last_frame" if hold_duration_sec > 0.01 else "trim_only"
+        manifest_path = self.artifact_store.write_json(
+            project_id,
+            f"shots/{shot.shot_id}/render_manifest.json",
+            {
+                "shot_id": shot.shot_id,
+                "scene_id": shot.scene_id,
+                "strategy": shot.strategy,
+                "duration_sec": duration_sec,
+                "composition": shot.composition.model_dump(),
+                "conditioning": shot.conditioning.model_dump(),
+                "conditioning_manifest_path": str(conditioning_manifest_path),
+                "backend": "cogvideox",
+                "video_backend": self.video_backend,
+                "model_path": self.cogvideox_model_path,
+                "generate_type": self.cogvideox_generate_type,
+                "target_resolution": self._render_resolution(),
+                "target_orientation": self._render_orientation(),
+                "prompt": prompt,
+                "prompt_path": str(cogvideox_run.prompt_path),
+                "input_mode": self._cogvideox_input_mode_label(input_media_path),
+                "input_media_path": str(input_media_path) if input_media_path is not None else None,
+                "cogvideox_command": cogvideox_run.command,
+                "cogvideox_stdout_path": str(cogvideox_run.stdout_path),
+                "cogvideox_stderr_path": str(cogvideox_run.stderr_path),
+                "cogvideox_duration_sec": cogvideox_run.duration_sec,
+                "raw_output_path": str(raw_output_path),
+                "raw_probe": raw_summary,
+                "normalize_target_duration_sec": target_duration_sec,
+                "normalize_hold_duration_sec": hold_duration_sec,
+                "normalize_duration_policy": normalize_policy,
+                "normalize_command": normalize_command,
+                "normalize_duration_sec": normalize_run.duration_sec,
+                "probe": normalized_summary,
+            },
+        )
+        result = StageExecutionResult()
+        result.artifacts.extend(
+            [
+                ArtifactRecord(
+                    artifact_id=new_id("artifact"),
+                    kind="shot_video_conditioning_manifest",
+                    path=str(conditioning_manifest_path),
+                    stage="render_shots",
+                    metadata={"shot_id": shot.shot_id, "backend": "cogvideox"},
+                ),
+                ArtifactRecord(
+                    artifact_id=new_id("artifact"),
+                    kind="shot_video_backend_raw",
+                    path=str(raw_output_path),
+                    stage="render_shots",
+                    metadata={"shot_id": shot.shot_id, "backend": "cogvideox", **raw_summary},
+                ),
+                ArtifactRecord(
+                    artifact_id=new_id("artifact"),
+                    kind="shot_video",
+                    path=str(normalized_output_path),
+                    stage="render_shots",
+                    metadata={"shot_id": shot.shot_id, "backend": "cogvideox", **normalized_summary},
+                ),
+                ArtifactRecord(
+                    artifact_id=new_id("artifact"),
+                    kind="shot_render_manifest",
+                    path=str(manifest_path),
+                    stage="render_shots",
+                    metadata={"shot_id": shot.shot_id, "backend": "cogvideox"},
+                ),
+            ]
+        )
+        result.logs.append(
+            {
+                "message": f"rendered shot {shot.shot_id}",
+                "shot_id": shot.shot_id,
+                "backend": "cogvideox",
+                "cogvideox_command": " ".join(cogvideox_run.command),
+                "normalize_command": " ".join(normalize_command),
+                "duration_sec": cogvideox_run.duration_sec + normalize_run.duration_sec,
+                "normalize_target_duration_sec": target_duration_sec,
+                "normalize_hold_duration_sec": hold_duration_sec,
+                "normalize_duration_policy": normalize_policy,
+                "input_mode": self._cogvideox_input_mode_label(input_media_path),
             }
         )
         return result
@@ -6071,6 +6275,43 @@ class DeterministicMediaAdapters:
             }
         )
         return result
+
+    def _cogvideox_prompt(self, snapshot: ProjectSnapshot, shot: ShotPlan) -> str:
+        conditioning = self._resolve_runtime_shot_conditioning(snapshot, shot)
+        prompt_parts = [
+            strip_duplicate_planning_label(
+                conditioning.generation_prompt_en or self._planning_seed(snapshot, shot)
+            ),
+            strip_duplicate_planning_label(conditioning.camera_intent_en or ""),
+            strip_duplicate_planning_label(conditioning.motion_intent_en or ""),
+            "One continuous action scene.",
+            "Keep the main subjects readable in the center of the frame.",
+            "Two characters maximum, no duplicates, no split screen, no collage, no poster layout.",
+        ]
+        return coerce_planning_english(" ".join(part.strip() for part in prompt_parts if part and part.strip()))
+
+    def _resolve_cogvideox_input_media(
+        self,
+        storyboard_artifact: ArtifactRecord | None,
+    ) -> Path | None:
+        if self.cogvideox_generate_type == "v2v":
+            raise RuntimeError("CogVideoX v2v is not supported by the current hero-shot path.")
+        if self.cogvideox_generate_type != "i2v":
+            return None
+        if storyboard_artifact is None:
+            raise RuntimeError("CogVideoX i2v requires a storyboard artifact for the hero shot.")
+        storyboard_path = Path(storyboard_artifact.path)
+        if not storyboard_path.exists():
+            raise RuntimeError(f"CogVideoX storyboard input not found: {storyboard_path}")
+        return storyboard_path
+
+    def _cogvideox_input_mode_label(self, input_media_path: Path | None) -> str:
+        return "image_to_video" if input_media_path is not None else "text_to_video"
+
+    def _require_cogvideox_repo(self) -> Path:
+        if self.cogvideox_repo_path is None or not self.cogvideox_repo_path.exists():
+            raise RuntimeError("CogVideoX repo path is not configured or does not exist.")
+        return self.cogvideox_repo_path
 
     def apply_lipsync(self, snapshot: ProjectSnapshot) -> StageExecutionResult:
         if self.lipsync_backend == "musetalk":

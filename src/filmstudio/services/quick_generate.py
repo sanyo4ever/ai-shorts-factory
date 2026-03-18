@@ -24,6 +24,22 @@ QUICK_STACK_PROFILES: dict[str, dict[str, Any]] = {
             "subtitle_backend": "whisperx",
         },
     },
+    "production_vertical_cogvideox": {
+        "label": "Scene-First Hero Beta",
+        "description": "Production stack with workstation-verified CogVideoX-2b scene generation for hero inserts.",
+        "hardware_hint": "RTX 4060 - sequential on-demand scene-first hero backend",
+        "backend_profile": {
+            "orchestrator_backend": "local",
+            "planner_backend": "ollama",
+            "planner_model": "qwen3:8b",
+            "visual_backend": "comfyui",
+            "video_backend": "cogvideox",
+            "tts_backend": "piper",
+            "music_backend": "ace_step",
+            "lipsync_backend": "musetalk",
+            "subtitle_backend": "whisperx",
+        },
+    },
     "deterministic_preview": {
         "label": "Fast Preview",
         "description": "Fast preview path with deterministic visuals and live Ukrainian TTS.",
