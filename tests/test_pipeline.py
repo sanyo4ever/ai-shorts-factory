@@ -1328,15 +1328,22 @@ def test_storyboard_prompts_strengthen_hero_insert_duo_contract(tmp_path) -> Non
 
     assert "exactly two characters only" in positive_prompt
     assert "same duo from the dialogue closeups" in positive_prompt
-    assert "not a poster" in positive_prompt
-    assert "single cinematic still" in positive_prompt
+    assert "vertical action storyboard keyframe" in positive_prompt
+    assert "medium full action shot" in positive_prompt
+    assert "one decisive mid-action payoff instant" in positive_prompt
     assert "contact sheet" in negative_prompt
     assert "storyboard page" in negative_prompt
     assert "squad" in negative_prompt
     assert "roster poster" in negative_prompt
     assert "extra fighters" in negative_prompt
-    assert "single frozen setup moment" in setup_prompt
-    assert "single frozen closing moment" in closing_prompt
+    assert "wide aerial shot" in negative_prompt
+    assert "tiny figures" in negative_prompt
+    assert "adult man" not in negative_prompt
+    assert "mature male face" not in negative_prompt
+    assert "one anticipation beat before takeoff" in setup_prompt
+    assert "launch ramp" in setup_prompt
+    assert "one resolved victory beat after the action" in closing_prompt
+    assert "clean duo finish" in closing_prompt
 
 
 def test_generate_storyboards_comfyui_generates_text_to_image_keyframes_for_duo_hero_insert(tmp_path, monkeypatch) -> None:
@@ -1422,8 +1429,10 @@ def test_generate_storyboards_comfyui_generates_text_to_image_keyframes_for_duo_
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["input_mode"] == "text_to_image"
-    assert manifest["storyboard_reference_kind"] == "duo_character_reference_composite"
-    assert Path(str(manifest["storyboard_reference_path"])).exists()
+    assert manifest["storyboard_reference_kind"] == "character_reference_artifacts"
+    assert manifest["storyboard_reference_path"] is None
+    assert manifest["storyboard_reference_command"] is None
+    assert len(manifest["storyboard_reference_artifacts"]) == 2
     assert manifest["comfyui_input_image_name"] is None
     assert manifest["selected_storyboard_label"] == "payoff"
     assert [item["label"] for item in manifest["keyframes"]] == ["setup", "payoff", "closing"]
@@ -1434,7 +1443,10 @@ def test_generate_storyboards_comfyui_generates_text_to_image_keyframes_for_duo_
             if artifact.kind == "storyboard_keyframe" and artifact.metadata.get("shot_id") == shot.shot_id
         ]
     ) == 3
-    assert any(artifact.kind == "storyboard_reference" for artifact in storyboard_result.artifacts)
+    assert not any(
+        artifact.kind == "storyboard_reference" and artifact.metadata.get("shot_id") == shot.shot_id
+        for artifact in storyboard_result.artifacts
+    )
     assert all(call[0] == "7" for call in workflow_calls[:3])
     assert ("8", "LoadImage") not in workflow_calls[:3]
 

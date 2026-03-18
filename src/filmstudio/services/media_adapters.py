@@ -1210,19 +1210,64 @@ class DeterministicMediaAdapters:
             {
                 "phase": "setup",
                 "label": "setup",
-                "prompt_hint": "setup beat, pre-launch anticipation, clean runway into the action",
+                "prompt_hint": "setup beat, grounded anticipation, clean launch read",
             },
             {
                 "phase": "payoff",
                 "label": "payoff",
-                "prompt_hint": "main payoff beat, strongest center action, decisive crown rush moment",
+                "prompt_hint": "main payoff beat, one decisive center action instant",
             },
             {
                 "phase": "closing",
                 "label": "closing",
-                "prompt_hint": "closing beat, victory pose, stable finish after the action",
+                "prompt_hint": "closing beat, grounded victory pose, stable finish",
             },
         ]
+
+    @staticmethod
+    def _hero_storyboard_phase_contract(hero_phase: str | None) -> dict[str, str]:
+        phase = (hero_phase or "payoff").strip().lower()
+        if phase == "setup":
+            return {
+                "moment": "one anticipation beat before takeoff",
+                "staging": (
+                    "both characters grounded once on the launch ramp, father slightly leading, "
+                    "son clearly beside him, no one in the far background"
+                ),
+                "background": "simple launch-ramp foreground, uncluttered island background, one clean jump lane",
+                "camera": (
+                    "medium full two-shot, subjects large in frame, eye-level action framing, "
+                    "no aerial distance"
+                ),
+                "negative": "airborne pose, jump already happening, landing pose, victory pose",
+            }
+        if phase == "closing":
+            return {
+                "moment": "one resolved victory beat after the action",
+                "staging": (
+                    "both characters grounded once in a clean duo finish, stable bodies, "
+                    "no extra motion and no duplicate landing echoes"
+                ),
+                "background": "simple landing platform, one clean glowing build piece behind the duo, no busy backdrop",
+                "camera": (
+                    "medium full two-shot, centered vertical framing, readable full bodies, "
+                    "no distant horizon-heavy background"
+                ),
+                "negative": "airborne pose, running start, mid-jump freeze, motion trail clones",
+            }
+        return {
+            "moment": "one decisive mid-action payoff instant",
+            "staging": (
+                "father leads and son follows close behind, both full bodies visible once, "
+                "single shared leap toward the objective"
+            ),
+            "background": "open sky behind the duo, one glowing objective in the distance, no crowd and no skyline clutter",
+            "camera": (
+                "medium full action shot, center-weighted vertical framing, readable silhouettes, "
+                "no distant or empty landscape"
+            ),
+            "negative": "standing pose, idle stance, static victory pose, second action beat",
+        }
 
     def _generate_storyboards_comfyui(self, snapshot: ProjectSnapshot) -> StageExecutionResult:
         client = self._require_comfyui()
@@ -1430,7 +1475,7 @@ class DeterministicMediaAdapters:
                                 },
                             )
                         ]
-                        if reference_payload is not None
+                        if reference_payload is not None and reference_payload.get("reference_image_path")
                         else []
                     ),
                     ArtifactRecord(
@@ -1528,67 +1573,96 @@ class DeterministicMediaAdapters:
                 ),
             )
         if shot.strategy == "hero_insert":
+            phase_contract = self._hero_storyboard_phase_contract(hero_phase)
             prompt_seed_compact = self._compact_prompt_text(
                 strip_duplicate_planning_label(prompt_seed_hint),
-                limit=140,
+                limit=48,
             )
             camera_hint = self._compact_prompt_text(
                 strip_duplicate_planning_label(conditioning.camera_intent_en or composition_hint),
-                limit=88,
+                limit=72,
             )
-            duo_focus = "exactly one father and one son only, one visible instance of each character, no extra crowd, "
-            hero_character_hint = f"characters: {compact_group_descriptor}, one shared payoff beat, readable vertical action, "
-            phase_hint = "single frozen payoff moment, one decisive center-frame action instant, "
-            if hero_phase == "setup":
-                phase_hint = "single frozen setup moment before the jump, both characters visible once on the ramp, "
-            elif hero_phase == "closing":
-                phase_hint = "single frozen closing moment in one victory pose, both characters standing once, "
+            duo_focus = "exactly one father and one son only, one visible instance of each character, no extra crowd"
+            hero_character_hint = f"characters: {compact_group_descriptor}"
             if len(shot_character_profiles) == 2:
                 duo_labels = [
                     self._character_action_fragment(character)
                     for character in shot_character_profiles
                 ]
                 duo_focus = (
-                    f"exactly two characters only, {duo_labels[0]} and {duo_labels[1]} only, "
+                    f"exactly two characters only, {duo_labels[0]} and {duo_labels[1]}, "
                     "same duo from the dialogue closeups, one visible instance of each character, "
-                    "no extra fighters, no squad, no crowd, "
+                    "no extra fighters, no squad, no crowd"
                 )
-                hero_character_hint = (
-                    f"{duo_labels[0]} and {duo_labels[1]}, one shared payoff beat, "
-                    "medium full shot, both characters large in frame, no background characters, "
-                    "readable vertical action, "
-                )
+                hero_character_hint = f"characters: {duo_labels[0]}, {duo_labels[1]}"
             hero_composition_hint = (
                 f"{shot.composition.orientation} {shot.composition.aspect_ratio}, centered duo action, "
-                "full bodies readable, leave a clean upper subtitle-safe band"
+                "full bodies readable, clean upper subtitle-safe band, lower frame free for body motion"
             )
+            positive_fragments = [
+                snapshot.project.style,
+                "vertical action storyboard keyframe",
+                "hero insert",
+                duo_focus,
+                phase_contract["moment"],
+                phase_contract["staging"],
+                phase_contract["background"],
+                hero_character_hint,
+                phase_contract["camera"],
+                hero_composition_hint,
+                f"camera intent: {camera_hint}" if camera_hint else "",
+                f"world hint: {prompt_seed_compact}" if prompt_seed_compact else "",
+            ]
+            negative_fragments = [
+                "collage",
+                "split-screen",
+                "diptych",
+                "triptych",
+                "comic panel",
+                "contact sheet",
+                "tiled image",
+                "mosaic grid",
+                "storyboard page",
+                "roster poster",
+                "team lineup",
+                "title card",
+                "logo",
+                "watermark",
+                "text",
+                "crowd",
+                "squad",
+                "extra fighters",
+                "third person",
+                "fourth person",
+                "duplicate father",
+                "duplicate son",
+                "repeated figure",
+                "repeated character",
+                "multi exposure",
+                "motion trail clones",
+                "multiple moments in one frame",
+                "montage",
+                "sequence montage",
+                "wide aerial shot",
+                "extreme wide shot",
+                "tiny figures",
+                "distant characters",
+                "empty landscape",
+                "face collage",
+                "giant closeup face",
+                "side-by-side portraits",
+                "cropped body",
+                "floating body",
+                "blurry",
+                "bad anatomy",
+                "duplicate body parts",
+                phase_contract["negative"],
+            ]
+            if shot_negative_hint and len(shot_character_profiles) < 2:
+                negative_fragments.append(shot_negative_hint)
             return (
-                (
-                    f"{snapshot.project.style}, cinematic action keyframe, hero insert, "
-                    f"hero action still, {duo_focus}"
-                    f"{phase_hint}"
-                    f"{hero_character_hint}"
-                    "single cinematic still, freeze-frame readability, not a poster, not a roster card, "
-                    "not a contact sheet, not a grid, not a storyboard page, clean silhouettes, "
-                    "single shared action scene, not split-screen, not a diptych, not dual closeups, "
-                    "not a montage, not multiple moments in one frame, not repeated action echoes, "
-                    "one adult father and one young boy son only, both clearly visible, "
-                    f"{hero_composition_hint}, "
-                    f"camera: {camera_hint}, "
-                    f"action beat: {prompt_seed_compact}"
-                ),
-                (
-                    "crowd, squad, team lineup, roster poster, splash art, ensemble poster, collage, "
-                    "extra fighters, third person, fourth person, trio, three people, overhead jumper, "
-                    "distant background people, duplicate heroes, "
-                    "split-screen, diptych, side-by-side portraits, face collage, giant closeup faces, "
-                    "contact sheet, tiled image, mosaic grid, storyboard page, comic panel, triptych, "
-                    "checkerboard collage, black matte background, empty poster background, "
-                    "duplicate father, duplicate son, repeated figure, repeated character, multi exposure, "
-                    "motion trail clones, sequence montage, multiple moments in one frame, "
-                    "busy key art, title card, logo, watermark, text, blurry, bad anatomy, duplicate body parts"
-                    f"{', ' + shot_negative_hint if shot_negative_hint else ''}"
-                ),
+                ", ".join(fragment for fragment in positive_fragments if fragment),
+                ", ".join(fragment for fragment in negative_fragments if fragment),
             )
         return (
             (
@@ -2463,6 +2537,16 @@ class DeterministicMediaAdapters:
             reference_artifacts.append(artifact)
         if not reference_artifacts:
             return None
+        if shot.strategy == "hero_insert":
+            return {
+                "reference_kind": "character_reference_artifacts",
+                "reference_image_path": None,
+                "reference_artifacts": [
+                    {"kind": artifact.kind, "path": artifact.path}
+                    for artifact in reference_artifacts[:2]
+                ],
+                "reference_command": None,
+            }
         if len(reference_artifacts) == 1:
             return {
                 "reference_kind": "single_character_reference",
