@@ -83,7 +83,7 @@ def test_get_settings_defaults_to_portrait_render_profile(monkeypatch, tmp_path:
     assert settings.wan22_sample_steps == 10
     assert settings.wan22_timeout_sec == 7200.0
     assert settings.wan22_offload_model is True
-    assert settings.wan22_t5_cpu is True
+    assert settings.wan22_t5_cpu is False
     assert settings.wan22_convert_model_dtype is True
     assert settings.cogvideox_model_path == "THUDM/CogVideoX-2b"
     assert settings.cogvideox_generate_type == "t2v"

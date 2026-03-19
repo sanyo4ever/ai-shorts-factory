@@ -23,7 +23,7 @@ class Wan22RunConfig:
     sample_shift: float = 5.0
     sample_guide_scale: float = 5.0
     offload_model: bool = True
-    t5_cpu: bool = True
+    t5_cpu: bool = False
     convert_model_dtype: bool = True
     use_prompt_extend: bool = False
     timeout_sec: float = 7200.0

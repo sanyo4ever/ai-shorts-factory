@@ -133,7 +133,7 @@ def _build_runtime_probe_cached(settings: Settings) -> dict[str, Any]:
         timeout_sec=30.0,
     )
     wan22_probe_code = (
-        "import json, pathlib\n"
+        "import importlib.util, json, pathlib\n"
         "repo = pathlib.Path(r'''"
         + str(settings.wan22_repo_path)
         + "''')\n"
@@ -148,6 +148,7 @@ def _build_runtime_probe_cached(settings: Settings) -> dict[str, Any]:
         "  'torch_version': None,\n"
         "  'cuda_version': None,\n"
         "  'cuda_available': False,\n"
+        "  'decord_available': importlib.util.find_spec('decord') is not None,\n"
         "}\n"
         "try:\n"
         "  import torch\n"
@@ -632,6 +633,8 @@ def _build_service_registry_cached(settings: Settings) -> list[ServiceStatus]:
                     and probe["wan22_env"].get("repo_exists")
                     and probe["wan22_env"].get("generate_script_exists")
                     and probe["wan22_env"].get("ckpt_dir_exists")
+                    and probe["wan22_env"].get("cuda_available")
+                    and probe["wan22_env"].get("decord_available")
                 )
                 or (
                     settings.video_backend == "wan"
@@ -671,6 +674,8 @@ def _build_service_registry_cached(settings: Settings) -> list[ServiceStatus]:
                                 and probe["wan22_env"].get("repo_exists")
                                 and probe["wan22_env"].get("generate_script_exists")
                                 and probe["wan22_env"].get("ckpt_dir_exists")
+                                and probe["wan22_env"].get("cuda_available")
+                                and probe["wan22_env"].get("decord_available")
                             )
                             else (
                                 "Wan2.2 runtime is not fully ready yet."
