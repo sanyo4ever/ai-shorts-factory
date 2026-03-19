@@ -454,7 +454,7 @@ def get_settings() -> Settings:
             os.getenv("FILMSTUDIO_WAN22_SAMPLE_GUIDE_SCALE", "5.0")
         ),
         wan22_offload_model=os.getenv("FILMSTUDIO_WAN22_OFFLOAD_MODEL", "1") == "1",
-        wan22_t5_cpu=os.getenv("FILMSTUDIO_WAN22_T5_CPU", "1") == "1",
+        wan22_t5_cpu=os.getenv("FILMSTUDIO_WAN22_T5_CPU", "0") == "1",
         wan22_convert_model_dtype=os.getenv(
             "FILMSTUDIO_WAN22_CONVERT_MODEL_DTYPE", "1"
         )

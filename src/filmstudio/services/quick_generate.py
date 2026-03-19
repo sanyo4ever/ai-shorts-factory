@@ -25,9 +25,9 @@ QUICK_STACK_PROFILES: dict[str, dict[str, Any]] = {
         },
     },
     "production_vertical_wan22": {
-        "label": "Wan 2.2 Hero Beta",
-        "description": "Production stack with Wan 2.2 TI2V hero-video generation for scene-first action inserts.",
-        "hardware_hint": "RTX 4060 - beta TI2V-5B profile with sequential managed services",
+        "label": "Wan 2.2 Hero Experimental",
+        "description": "Experimental Wan 2.2 TI2V hero-video stack for scene-first action inserts. Tiny workstation smokes are green, but full-project runtime is not yet promoted on RTX 4060 hardware.",
+        "hardware_hint": "RTX 4060 - experimental TI2V-5B path, long runtimes expected",
         "backend_profile": {
             "orchestrator_backend": "local",
             "planner_backend": "ollama",
