@@ -86,6 +86,25 @@ Current verified one-box milestones on this workstation:
 - the current semantic-quality release gate under `runtime/campaigns/product_readiness_v10_semantic_gate_v4_green/` completed `10/10` with `semantic_quality_gate_rate=1.0`, `subtitle_readability_rate=1.0`, `script_coverage_rate=1.0`, `shot_variety_rate=1.0`, `portrait_identity_consistency_rate=1.0`, `audio_mix_clean_rate=1.0`, `archetype_payoff_rate=1.0`, and `qc_finding_counts={}`
 - the current release-gate v5 suite under `runtime/campaigns/product_readiness_v12_release_gate_v5_green/` completed `12/12` with `product_ready_rate=1.0`, `all_requirements_met_rate=1.0`, `semantic_quality_gate_rate=1.0`, `revision_release_gate_rate=1.0`, `deliverables_ready_rate=1.0`, `operator_surface_ready_rate=1.0`, `product_preset_match_rate=1.0`, `suite_product_ready_case_coverage_met=true`, `suite_product_ready_category_coverage_met=true`, and `qc_finding_counts={}`
 
+## Local Video Reality Check (`RTX 4060`)
+
+The orchestration system is real and the pipeline completes real projects on this workstation. The visual-quality ceiling is also real.
+
+What we tried in the current local open stack:
+
+- `Wan 2.1` as the original `hero_insert` backend. This made the full pipeline complete, but the action clip often collapsed into a very short raw center segment plus storyboard-led fallback motion.
+- `CogVideoX-2b` as a scene-first replacement for `hero_insert`. This is structurally better than the old `Wan` fallback path and produces direct scene clips, but it still does not reliably deliver strong cinematic results on this workstation.
+- `Wan 2.2 TI2V-5B` as a fresher local scene-video experiment. Windows bring-up now works and tiny smoke runs complete, but the runtime and VRAM budget are still too heavy for it to be an honest promoted local production path on this `RTX 4060`.
+- A bilingual upstream contract: Ukrainian creator input is translated and expanded into English before planning, storyboard, and video prompting. Ukrainian is preserved only for spoken dialogue, TTS, and subtitles. This fixed prompt-language integrity issues, but it did not remove the core local video-quality ceiling.
+- LTX-style architectural ideas such as typed video conditioning, richer shot contracts, and retake-ready windows. These improved the system architecture and debugging surface, but they did not magically turn the current local video backends into cinematic generators.
+
+Current conclusion:
+
+- This repository is already a serious local orchestration and production-system codebase.
+- It can create structurally complete local shorts on an `RTX 4060`.
+- It does **not** currently produce consistently good cinematic local videos on an `RTX 4060`.
+- If the target bar is "Pixar-like" or even close-to-premium cinematic quality, the likely next step is a stronger scene-video backend and/or stronger hardware, not more README-level prompt tweaking.
+
 ## License
 
 This repository is licensed under the GNU Affero General Public License v3.0 (`AGPL-3.0`). If you modify the system and make it available over a network, the corresponding source for that modified version must remain available under the same license. See [LICENSE](LICENSE).
